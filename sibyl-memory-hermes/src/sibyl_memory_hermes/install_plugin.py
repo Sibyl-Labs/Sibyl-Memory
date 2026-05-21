@@ -1,4 +1,4 @@
-"""`sibyl-memory-hermes install-plugin` — installs the Sibyl adapter into Hermes.
+"""`sibyl-memory-hermes install-plugin`: installs the Sibyl adapter into Hermes.
 
 Hermes' loader does NOT use pip entry points (verified against
 plugins/memory/__init__.py source 2026-05-17). It scans the filesystem
@@ -95,7 +95,7 @@ def _looks_like_sibyl_install(dest: Path) -> bool:
         content = yaml_path.read_text(encoding="utf-8")
     except OSError:
         return False
-    # Loose match — yaml has `name: sibyl` somewhere near the top
+    # Loose match: yaml has `name: sibyl` somewhere near the top
     for line in content.splitlines()[:10]:
         stripped = line.strip().lower()
         if stripped.startswith("name:") and "sibyl" in stripped:
@@ -162,7 +162,7 @@ def install(hermes_home: Path, force: bool, dry_run: bool) -> int:
     print(a.section_header("next steps", subtitle="three to go · then your agent has memory"))
     print()
 
-    # Step 1 — activate in config.yaml
+    # Step 1: activate in config.yaml
     print(f"  {a.chip('1', palette='accent')}  {a.bold('Activate Sibyl in your Hermes config')}")
     print(f"      {a.color(str(hermes_home / 'config.yaml'), a.INK)}")
     print()
@@ -170,15 +170,15 @@ def install(hermes_home: Path, force: bool, dry_run: bool) -> int:
     print(f"          {a.color('provider:', a.ACCENT)} {a.color('sibyl', a.INK)}")
     print()
 
-    # Step 2 — bind account
+    # Step 2: bind account
     print(f"  {a.chip('2', palette='accent')}  {a.bold('Bind your account')}  {a.dim('(optional · lifts the 2 MB free-tier cap)')}")
     print(f"      {a.color('sibyl init', a.INK)}")
     print(a.dim("      three paths: desktop wallet · email + code · USDC-send from mobile"))
-    print(a.dim("      defer if you want — the plugin runs on a local default tenant without it"))
+    print(a.dim("      defer if you want: the plugin runs on a local default tenant without it"))
     print()
 
-    # Step 3 — start hermes
-    print(f"  {a.chip('3', palette='accent')}  {a.bold('Start Hermes — your agent now has memory')}")
+    # Step 3: start hermes
+    print(f"  {a.chip('3', palette='accent')}  {a.bold('Start Hermes: your agent now has memory')}")
     print(a.dim("      tools available to the agent:"))
     for tool in ("sibyl_remember", "sibyl_recall", "sibyl_search", "sibyl_list"):
         print(f"        {a.color(a.GLYPH_BULLET, a.PULSE)} {a.color(tool, a.INK)}")
@@ -193,7 +193,7 @@ def install(hermes_home: Path, force: bool, dry_run: bool) -> int:
 
 def uninstall(hermes_home: Path, dry_run: bool) -> int:
     dest = _plugin_dest(hermes_home)
-    # ── HEAVY: removal is also ceremonial — banner + section header.
+    # ── HEAVY: removal is also ceremonial: banner + section header.
     print_banner()
     print(a.section_header("uninstall-plugin",
                           subtitle="remove sibyl from this hermes install"))
@@ -202,7 +202,7 @@ def uninstall(hermes_home: Path, dry_run: bool) -> int:
     print(a.kv("Plugin dest", str(dest)))
     print()
     if not dest.exists():
-        print(a.warn_line("Nothing to uninstall — plugin directory does not exist."))
+        print(a.warn_line("Nothing to uninstall: plugin directory does not exist."))
         return 0
     if dest.is_symlink():
         print(a.err_line(f"Refused: {dest} is a symlink."))

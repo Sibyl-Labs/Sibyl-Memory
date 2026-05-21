@@ -22,22 +22,22 @@ from typing import Iterable
 # ─── Palette (RGB · derived from rule 46 creme-paper tokens) ─────────
 # Names map 1:1 to CSS custom properties on lab artifacts.
 
-PAPER       = (245, 241, 230)   # --paper        — foreground accent on dark
-PAPER_DEEP  = (237, 230, 211)   # --paper-deep   — depth on creme
-CARD        = (253, 251, 245)   # --card         — slightly lifted creme
-INK         = (21,  17,  10)    # --ink          — main text on creme
-INK_SOFT    = (44,  39,  29)    # --ink-soft     — body text
-INK_MUTE    = (106, 99,  86)    # --ink-mute     — secondary text
-INK_FAINT   = (152, 145, 127)   # --ink-faint    — tertiary text
-RULE        = (216, 208, 187)   # --rule         — hairline
-RULE_STRONG = (184, 174, 147)   # --rule-strong  — emphasised hairline
-ACCENT      = (138, 106, 42)    # --accent       — ochre highlight
-ACCENT_WARM = (160, 132, 56)    # --accent-warm  — softer ochre
-ACCENT_GOLD = (224, 194, 119)   # mid gold       — gradient bridge
-ACCENT_PALE = (244, 229, 184)   # pale gold      — gradient top
-JADE        = (45,  110, 106)   # --jade         — cool counterpoint
-PULSE       = (29,  138, 130)   # --pulse        — brighter jade (live signal)
-ERROR       = (162, 58,  42)    # --error        — measured red
+PAPER       = (245, 241, 230)   # --paper       : foreground accent on dark
+PAPER_DEEP  = (237, 230, 211)   # --paper-deep  : depth on creme
+CARD        = (253, 251, 245)   # --card        : slightly lifted creme
+INK         = (21,  17,  10)    # --ink         : main text on creme
+INK_SOFT    = (44,  39,  29)    # --ink-soft    : body text
+INK_MUTE    = (106, 99,  86)    # --ink-mute    : secondary text
+INK_FAINT   = (152, 145, 127)   # --ink-faint   : tertiary text
+RULE        = (216, 208, 187)   # --rule        : hairline
+RULE_STRONG = (184, 174, 147)   # --rule-strong : emphasised hairline
+ACCENT      = (138, 106, 42)    # --accent      : ochre highlight
+ACCENT_WARM = (160, 132, 56)    # --accent-warm : softer ochre
+ACCENT_GOLD = (224, 194, 119)   # mid gold      : gradient bridge
+ACCENT_PALE = (244, 229, 184)   # pale gold     : gradient top
+JADE        = (45,  110, 106)   # --jade        : cool counterpoint
+PULSE       = (29,  138, 130)   # --pulse       : brighter jade (live signal)
+ERROR       = (162, 58,  42)    # --error       : measured red
 
 # Status glyphs (Unicode, terminal-safe in modern fonts)
 GLYPH_OK    = "✓"
@@ -56,7 +56,7 @@ def supports_truecolor() -> bool:
         return False
     if os.environ.get("TERM", "").lower() == "dumb":
         return False
-    # SIBYL_FORCE_COLOR=1 — explicit override for non-tty rendering
+    # SIBYL_FORCE_COLOR=1: explicit override for non-tty rendering
     # (CI logs, doc captures, dev inspection in non-tty environments).
     if os.environ.get("SIBYL_FORCE_COLOR") == "1":
         return True
@@ -269,7 +269,7 @@ def err_line(text: str) -> str:
 
 
 def hr_caption(caption: str, *, width: int = 60) -> str:
-    """Caption line under a divider — small, muted, centered."""
+    """Caption line under a divider: small, muted, centered."""
     pad = max(0, (width - len(caption)) // 2)
     return " " * pad + dim(caption)
 

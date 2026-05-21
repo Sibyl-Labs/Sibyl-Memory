@@ -3,14 +3,14 @@
 **Sibyl Memory SDK + bundled Hermes plugin payload. Local-first, SQLite-backed, structured-tier memory for Hermes v0.13+ (and any Python orchestration that wants direct SDK access).**
 
 The package ships two things:
-1. **`SibylMemoryProvider`** — a framework-agnostic SDK class. Call it directly from any Python code that wants structured local memory.
-2. **A bundled Hermes plugin payload** — a thin adapter implementing Hermes v0.13's `MemoryProvider` ABC. Installed into `$HERMES_HOME/plugins/sibyl/` by the `sibyl-memory-hermes install-plugin` console script.
+1. **`SibylMemoryProvider`**: a framework-agnostic SDK class. Call it directly from any Python code that wants structured local memory.
+2. **A bundled Hermes plugin payload**: a thin adapter implementing Hermes v0.13's `MemoryProvider` ABC. Installed into `$HERMES_HOME/plugins/sibyl/` by the `sibyl-memory-hermes install-plugin` console script.
 
 Memory content lives on the user's own machine, never on our servers. Built on [`sibyl-memory-client`](https://pypi.org/project/sibyl-memory-client/), the SDK foundation.
 
 ## Install (Hermes path)
 
-Hermes' loader uses filesystem discovery, NOT pip entry points. A pip install alone won't make Sibyl visible to Hermes — the `install-plugin` console script bridges the gap.
+Hermes' loader uses filesystem discovery, NOT pip entry points. A pip install alone won't make Sibyl visible to Hermes: the `install-plugin` console script bridges the gap.
 
 ```bash
 pip install sibyl-memory-hermes
@@ -26,10 +26,10 @@ memory:
 
 Restart Hermes. Four tools become available to the agent:
 
-- `sibyl_remember(category, name, body)` — store a structured fact
-- `sibyl_recall(category, name)` — look up a known fact
-- `sibyl_search(query)` — FTS5 search across **all four tiers** (entities, state, journal, reference); hits are tier-tagged
-- `sibyl_list(category?, status?)` — browse what's remembered
+- `sibyl_remember(category, name, body)`: store a structured fact
+- `sibyl_recall(category, name)`: look up a known fact
+- `sibyl_search(query)`. FTS5 search across **all four tiers** (entities, state, journal, reference); hits are tier-tagged
+- `sibyl_list(category?, status?)`: browse what's remembered
 
 Optional: lift the 2 MB free-tier cap by binding your account:
 
@@ -84,7 +84,7 @@ Different intents, different lookups, no embedding model required. FTS5 covers f
 
 The Hermes plugin is implemented by a bundled adapter at `_hermes_plugin/adapter.py`. The adapter is copied into `$HERMES_HOME/plugins/sibyl/` by the `install-plugin` console script and is what Hermes' filesystem loader picks up. The adapter implements Hermes v0.13's `MemoryProvider` ABC and delegates every call to `SibylMemoryProvider`.
 
-The SDK class itself (`SibylMemoryProvider`) is framework-agnostic — it does not inherit from any framework ABC. This is the v0.3.0 architecture shift. v0.2.x and earlier attempted soft-inheritance via a broken import path; that path was removed and the adapter pattern replaced it.
+The SDK class itself (`SibylMemoryProvider`) is framework-agnostic: it does not inherit from any framework ABC. This is the v0.3.0 architecture shift. v0.2.x and earlier attempted soft-inheritance via a broken import path; that path was removed and the adapter pattern replaced it.
 
 ## Activation
 

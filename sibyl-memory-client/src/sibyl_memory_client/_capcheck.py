@@ -10,7 +10,7 @@ Design (v0.3.0):
        c) we have a recent cached server result that says we're under-cap
     3. The slow path (only fires at the cap boundary) hits the server endpoint
        POST /api/plugin/check-write with current_size + proposed_delta. The
-       server is the authoritative source for tier — credentials.json
+       server is the authoritative source for tier: credentials.json
        tampering is detected here because the server looks up the real tier
        from sibyl_plugin.accounts.
     4. Server response is cached for 7 days. After that, the next write at the
@@ -144,7 +144,7 @@ class TierCache:
 
         SEC-2 hardening (v0.3.3): the previous write_text() + chmod() pattern
         left a world-readable window between the syscalls. Now we open with
-        O_CREAT|O_EXCL|O_WRONLY and mode 0o600 — the kernel sets mode at the
+        O_CREAT|O_EXCL|O_WRONLY and mode 0o600: the kernel sets mode at the
         moment of creation, no race window."""
         payload = {
             "account_id": entry.account_id,
@@ -235,7 +235,7 @@ def _default_check_write_fn(
         # T2-3 fix: do NOT synthesize a fake "free tier" decision on HTTP
         # error. Previously a transient 502 would write `{tier:free, cap_bytes:2MB}`
         # into the cache for a legitimately paid user, locking them out
-        # for up to 7 days. Now we raise TierVerificationError — the
+        # for up to 7 days. Now we raise TierVerificationError: the
         # caller (_refresh_and_check) will fall back to a recent cache
         # if one exists, or hard-cap if no cache.
         try:
@@ -300,12 +300,12 @@ class CapGate:
         # HMAC signature + the claim it commits to. When both are present,
         # the server can verify and log mismatches as tamper-suspected
         # telemetry. Authoritative tier always comes from the DB regardless
-        # — these fields are advisory, defense in depth only.
+        #: these fields are advisory, defense in depth only.
         self._credentials_claim = credentials_claim
         self._credentials_signature = credentials_signature
 
     # ------------------------------------------------------------------
-    # Public entry point — called by every write path
+    # Public entry point: called by every write path
     # ------------------------------------------------------------------
     def check(self, proposed_delta_bytes: int = 0) -> None:
         """Verify that the proposed write is permitted. Raises
@@ -315,7 +315,7 @@ class CapGate:
         cached = self._cache.load()
         if cached and cached.is_fresh and cached.account_id == self.account_id:
             if cached.cap_bytes is None:
-                # Cached as paid (uncapped) within grace window — allow
+                # Cached as paid (uncapped) within grace window: allow
                 return
             # Cached as free with a cap. Enforce locally.
             new_size = self._db_size_fn() + proposed_delta_bytes
@@ -378,7 +378,7 @@ class CapGate:
         except TierVerificationError:
             # Offline. Fall back to the most recent cache if we have one,
             # even if technically expired (within an extended grace window
-            # of double the normal period — i.e., 14 days for tier=free).
+            # of double the normal period: i.e., 14 days for tier=free).
             #
             # T1-4 fix: respect server-supplied subscription expiry on the
             # offline path. The cache can no longer be honored past the
@@ -437,7 +437,7 @@ class CapGate:
 
         if ok:
             return  # server permitted the write
-        # Server rejected — typically free tier over cap.
+        # Server rejected: typically free tier over cap.
         raise CapExceededError(
             f"Your {tier} tier doesn't permit this write. "
             f"Current memory size: {current / 1024:.1f} KB. "

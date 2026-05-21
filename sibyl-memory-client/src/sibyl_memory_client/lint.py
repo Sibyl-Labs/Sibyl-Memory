@@ -29,7 +29,7 @@ Severity levels: `critical` | `warning` | `info`
 | fts-rowcount-mismatch  | warning  | FTS5 index count differs from entities count |
 | flagged-actors-fresh   | info     | recent flagged_actors entries (≤ N days)     |
 
-The check list is intentionally conservative for v0.2.0 — easy to extend.
+The check list is intentionally conservative for v0.2.0: easy to extend.
 """
 from __future__ import annotations
 
@@ -57,11 +57,11 @@ EXPECTED_SCHEMA_VERSION = 2
 # Tier → soft cap mapping. None means uncapped.
 TIER_SOFT_CAPS: dict[str, int | None] = {
     "free": 2 * 1024 * 1024,        # 2 MB
-    "sync": None,                    # uncapped — paid subscription
-    "team": None,                    # uncapped — paid subscription
-    "lifetime": None,                # uncapped — one-time payment
-    "stake": None,                   # uncapped — $SIBYL stake
-    "enterprise": None,              # uncapped — annual contract
+    "sync": None,                    # uncapped: paid subscription
+    "team": None,                    # uncapped: paid subscription
+    "lifetime": None,                # uncapped: one-time payment
+    "stake": None,                   # uncapped: $SIBYL stake
+    "enterprise": None,              # uncapped: annual contract
 }
 
 
@@ -162,7 +162,7 @@ class LintReport:
 
 
 # ----------------------------------------------------------------------
-# Linter — the actual checks
+# Linter: the actual checks
 # ----------------------------------------------------------------------
 
 class Linter:
@@ -205,7 +205,7 @@ class Linter:
                         f"DB schema version is {schema_version}, expected "
                         f">= {EXPECTED_SCHEMA_VERSION}"
                     ),
-                    recovery="Reopen the MemoryClient — schema migrations run on construction.",
+                    recovery="Reopen the MemoryClient: schema migrations run on construction.",
                 ))
 
             # Row counts
@@ -221,7 +221,7 @@ class Linter:
                     ).fetchone()
                     counts[tname] = int(row["n"]) if row else 0
                 except Exception:
-                    counts[tname] = -1  # table missing — schema-version check catches it
+                    counts[tname] = -1  # table missing: schema-version check catches it
 
             # ── JSON validity (defense-in-depth; CHECK constraints catch most)
             findings.extend(self._lint_json_bodies(conn))
@@ -338,7 +338,7 @@ class Linter:
                         severity="warning",
                         message=(
                             f"entities table has {ents} rows but FTS5 index "
-                            f"has {fts} — they should match"
+                            f"has {fts}: they should match"
                         ),
                         recovery="Rebuild FTS index: client.rebuild_fts() (planned).",
                         detail={"entities": ents, "fts": fts},
@@ -388,7 +388,7 @@ class Linter:
         )
 
     # ------------------------------------------------------------------
-    # Internal — JSON validity probe
+    # Internal. JSON validity probe
     # ------------------------------------------------------------------
     def _lint_json_bodies(self, conn: Any) -> list[Finding]:
         out: list[Finding] = []

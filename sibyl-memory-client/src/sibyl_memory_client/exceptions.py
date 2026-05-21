@@ -6,7 +6,7 @@ string suggesting what the caller should try next.
 v0.4.0 (2026-05-18): `CapExceededError` + `TierVerificationError` relocated
 here from `_capcheck.py` so they are importable from the canonical
 `sibyl_memory_client.exceptions` submodule path (KAPPA bug report against
-sibyl-memory-mcp 0.1.1 — server imported these from `.exceptions` but they
+sibyl-memory-mcp 0.1.1: server imported these from `.exceptions` but they
 only lived on `._capcheck`).
 """
 from __future__ import annotations

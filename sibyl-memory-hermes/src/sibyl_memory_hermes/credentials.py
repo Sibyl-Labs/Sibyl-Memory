@@ -55,8 +55,8 @@ class Credentials:
     the server re-verifies. Mismatches surface as `credentials_tamper_suspected`
     telemetry. The authoritative tier comes from the database regardless.
 
-    schema_version 1 credentials (no signature) still load — old fields are
-    None — and continue to work unsigned. The SDK just sends an unsigned
+    schema_version 1 credentials (no signature) still load: old fields are
+    None: and continue to work unsigned. The SDK just sends an unsigned
     request and the server skips the tamper check."""
 
     account_id: str
@@ -79,7 +79,7 @@ def load_credentials(path: str | Path = DEFAULT_CRED_PATH) -> Credentials:
     redirect this file to read from /dev/null or any sensitive path. We
     use ``Path.is_symlink()`` to detect, then ``lstat`` to confirm the
     file type. On detection, raises ``CredentialsNotFoundError`` (the
-    safe default — caller falls back to DEFAULT_TENANT).
+    safe default: caller falls back to DEFAULT_TENANT).
 
     Raises:
         CredentialsNotFoundError: file missing or symlinked
@@ -87,7 +87,7 @@ def load_credentials(path: str | Path = DEFAULT_CRED_PATH) -> Credentials:
         OSError: I/O failure reading the file
     """
     resolved = Path(path).expanduser()
-    # SEC-11: detect symlinks BEFORE resolve() — resolve follows them silently.
+    # SEC-11: detect symlinks BEFORE resolve(): resolve follows them silently.
     if resolved.is_symlink():
         raise CredentialsNotFoundError(resolved)
     resolved = resolved.resolve()
@@ -129,7 +129,7 @@ def write_credentials(creds: Credentials, path: str | Path = DEFAULT_CRED_PATH) 
     ``os.open(O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW, 0o600)``. Previously
     used ``tmp.write_text()`` then ``os.chmod(0o600)``, leaving a
     world-readable window between syscalls. Now mode is set by the
-    kernel at file-creation time — no race.
+    kernel at file-creation time: no race.
 
     Used by `sibyl init`.
     """

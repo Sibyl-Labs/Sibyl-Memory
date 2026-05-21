@@ -4,7 +4,7 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
-## [0.3.4] — 2026-05-20
+## [0.3.4] - 2026-05-20
 
 Branding pass on the vendored banner. Matches the change shipped in
 `sibyl-memory-cli` v0.3.2 in the same session. Operator directive:
@@ -21,10 +21,10 @@ Agentic Infrastructure and Memory Products' or something similar."
   on both `install-plugin` and `uninstall-plugin` since both commands
   print the banner before their section header.
 
-## [0.3.3] — 2026-05-20
+## [0.3.3] - 2026-05-20
 
 Visual identity pass on the `install-plugin` and `uninstall-plugin`
-commands. Operator directive: "typical app patterns — heavy menus on
+commands. Operator directive: "typical app patterns: heavy menus on
 install window and initial setup, light on dashboards etc." The
 install-plugin command is THE second-most-ceremonial moment a user has
 with SIBYL (after `sibyl init`), so it gets the full SIBYL banner +
@@ -55,7 +55,7 @@ sectioned numbered onboarding menu treatment.
 - Plain-text fallback preserves structure (still readable in dumb
   terminals or pipes).
 
-## [0.3.2] — 2026-05-18
+## [0.3.2] - 2026-05-18
 
 KAPPA external-tester remediation release. Family-wide alignment with the
 v0.4.0 client (KAPPA-attributed fixes: exception export path, db file
@@ -77,7 +77,7 @@ code changes in this release.
 
 ---
 
-## [0.3.1] — 2026-05-18
+## [0.3.1] - 2026-05-18
 
 Audit-remediation release. v0.3.0 pre-ship audit (2026-05-18T05:05Z)
 surfaced 10 critical findings across four lanes. This release lands the
@@ -87,7 +87,7 @@ Hermes-side fixes. Companion releases: `sibyl-memory-client` v0.3.3 (engine
 
 ### Added
 
-- `tests/test_adapter.py` — full regression coverage for the bundled Hermes
+- `tests/test_adapter.py`: full regression coverage for the bundled Hermes
   adapter. Validates: module imports cleanly off-Hermes (guarded ABC
   import + tool_error fallback), all 4 tool schemas resolve, end-to-end
   remember+recall round-trips through `handle_tool_call`, list filtering,
@@ -98,13 +98,13 @@ Hermes-side fixes. Companion releases: `sibyl-memory-client` v0.3.3 (engine
 
 ### Changed
 
-- **`SibylMemoryProvider.search()` now spans all four tiers** — entities +
+- **`SibylMemoryProvider.search()` now spans all four tiers**: entities +
   state + reference + journal. Returns tier-tagged hits (`{tier, key,
   category, body, snippet, rank, ts}`). The marketing claim of "FTS5
   across all tiers" is now true. Caller can restrict scope with
   `tiers=("entity",)` for the pre-v0.3.1 behavior. Backed by the new
   `MemoryClient.search()` in client v0.3.3.
-- `_hermes_plugin/adapter.py` — Hermes ABC + `tool_error` imports guarded
+- `_hermes_plugin/adapter.py`. Hermes ABC + `tool_error` imports guarded
   with try/except. The bundled module imports cleanly off-Hermes with
   no-op fallbacks. Audit P1.
 - `SibylAdapter.sync_turn` retries on transient failure (SQLITE_BUSY etc.)
@@ -121,7 +121,7 @@ Hermes-side fixes. Companion releases: `sibyl-memory-client` v0.3.3 (engine
   (`_DEFAULT_SEARCH_LIMIT=10`, `_DEFAULT_LIST_LIMIT=50`). Audit O1.
 - `RECALL_SCHEMA` description documents the row-wrapper return shape
   explicitly. `SEARCH_SCHEMA` updated for cross-tier coverage. Audit H2.
-- `provider.py` — `recall`, `forget`, `archive`, `set_state`, `get_state`,
+- `provider.py`. `recall`, `forget`, `archive`, `set_state`, `get_state`,
   `set_reference`, `get_reference` docstrings now include explicit
   `Raises:` sections and document return-shape asymmetry per tier.
   Audit H2/H3.
@@ -129,31 +129,31 @@ Hermes-side fixes. Companion releases: `sibyl-memory-client` v0.3.3 (engine
 
 ### Security
 
-- **SEC-2** — `credentials.write_credentials` now creates files atomically
+- **SEC-2**. `credentials.write_credentials` now creates files atomically
   with mode 0o600 set at creation via `os.open(O_WRONLY|O_CREAT|O_EXCL|
   O_NOFOLLOW, 0o600)`. No more world-readable window between `write_text()`
   and `os.chmod()` syscalls.
-- **SEC-5** — `install-plugin --force` and `uninstall-plugin` refuse to
+- **SEC-5**. `install-plugin --force` and `uninstall-plugin` refuse to
   `shutil.rmtree` any directory that doesn't contain a recognized prior
   Sibyl install (`plugin.yaml` with `name: sibyl` in the first 10 lines).
   Prevents destruction of arbitrary user-writable trees from misconfigured
   HERMES_HOME. Both commands also refuse symlinked destinations.
-- **SEC-11** — `load_credentials` refuses to follow symlinks. Checks
+- **SEC-11**. `load_credentials` refuses to follow symlinks. Checks
   `is_symlink()` BEFORE `resolve()`.
-- **SEC-10** — `handle_tool_call` error response carries only the
+- **SEC-10**. `handle_tool_call` error response carries only the
   exception class name.
 
 ### Fixed
 
-- **H7** — `hermes_bound` property emits `DeprecationWarning` on read.
+- **H7**. `hermes_bound` property emits `DeprecationWarning` on read.
   Always returns `False` (unchanged behavior). Slated for removal in v0.4.
-- `test_smoke.py` — schema_version assertion loosened to `>= 2` (audit T4);
+- `test_smoke.py`: schema_version assertion loosened to `>= 2` (audit T4);
   hermes_bound assertion tightened from `isinstance(..., bool)` to
   `is False` (audit T3).
-- README quickstart rewritten — removed the fictional
+- README quickstart rewritten: removed the fictional
   `Agent(memory=SibylMemoryProvider())` pattern (audit C5). Replaced
   with the real flow: `pip install` → `install-plugin` → config.yaml.
-- README "Hermes contract" section rewritten — removed the false claim
+- README "Hermes contract" section rewritten: removed the false claim
   that `SibylMemoryProvider` inherits Hermes' ABC at import time.
 
 ### Dependencies
@@ -170,10 +170,10 @@ sibyl-memory-hermes install-plugin --force
 ```
 
 The local SQLite schema auto-migrates from v2 to v3 on first open after
-upgrade. No application data is lost — FTS5 indexes rebuild from base
+upgrade. No application data is lost. FTS5 indexes rebuild from base
 tables. ~50ms per 10k entities on first open, idempotent thereafter.
 
-## [0.3.0] — 2026-05-17
+## [0.3.0] - 2026-05-17
 
 Real Hermes plugin landing. v0.2.x was structurally incompatible with
 Hermes' actual `MemoryProvider` ABC (wrong soft-bind import path, missing
@@ -187,37 +187,37 @@ and validated via Hermes' own `load_memory_provider('sibyl')` loader.
 ### Architecture shift
 
 - **Split into SDK + adapter.** `SibylMemoryProvider` is now a pure SDK
-  class — framework-agnostic, no ABC inheritance, no Hermes-specific glue.
+  class: framework-agnostic, no ABC inheritance, no Hermes-specific glue.
   All Hermes contract code lives in the bundled adapter at
   `_hermes_plugin/adapter.py`, copied to `$HERMES_HOME/plugins/sibyl/` by
   the new `sibyl-memory-hermes install-plugin` console script.
 - **Hermes uses filesystem discovery, NOT pip entry points.** Verified
-  against `plugins/memory/__init__.py` source — there is no
+  against `plugins/memory/__init__.py` source: there is no
   `importlib.metadata.entry_points()` call anywhere in Hermes' loader.
   `pip install sibyl-memory-hermes` is necessary but not sufficient; the
   install-plugin script bridges the gap.
 
 ### Added
 
-- **`_hermes_plugin/adapter.py`** — full `MemoryProvider` ABC implementation.
+- **`_hermes_plugin/adapter.py`**: full `MemoryProvider` ABC implementation.
   - 4 tools exposed: `sibyl_remember`, `sibyl_recall`, `sibyl_search`,
     `sibyl_list`.
   - Mandatory methods: `name`, `is_available`, `initialize`,
     `get_tool_schemas`, `handle_tool_call`.
   - Recommended overrides: `system_prompt_block` (model-facing tool list),
     `prefetch` (FTS5 + load_context block, with noise filter),
-    `queue_prefetch` (no-op — local SQLite is fast), `sync_turn`
+    `queue_prefetch` (no-op: local SQLite is fast), `sync_turn`
     (daemon-threaded per byterover pattern, 5s join + 10s shutdown).
   - Optional hooks: `on_session_switch`, `on_pre_compress`
     (paired user+assistant flush), `on_delegation`, `on_memory_write`
-    (accepts `metadata=None` kwarg — avoids the byterover signature bug).
+    (accepts `metadata=None` kwarg: avoids the byterover signature bug).
   - Defensive: `agent_context != 'primary'` guard in sync_turn so cron /
     subagent runs don't corrupt the user's representation.
   - `_stable_key()` uses blake2b for deterministic content addressing,
     so add+remove on the same content actually targets the same entity.
   - Validated end-to-end via `load_memory_provider('sibyl')` dry-run + all
     4 tool schemas resolved in OpenAI function-calling format.
-- **`_hermes_plugin/plugin.yaml`** — Hermes plugin metadata
+- **`_hermes_plugin/plugin.yaml`**. Hermes plugin metadata
   (name, description, version, homepage).
 - **`sibyl_memory_hermes.install_plugin`** + console script
   `sibyl-memory-hermes install-plugin`:
@@ -230,7 +230,7 @@ and validated via Hermes' own `load_memory_provider('sibyl')` loader.
   - Flags: `--hermes-home <path>`, `--force`, `--dry-run`.
 - **`sibyl-memory-hermes uninstall-plugin`** counterpart for clean removal.
 
-### Changed (breaking, but no users were affected — the prior path was broken)
+### Changed (breaking, but no users were affected: the prior path was broken)
 
 - **`SibylMemoryProvider` no longer subclasses `MemoryProvider`.** The
   conditional soft-bind in v0.2.x always failed (wrong import path); the
@@ -239,7 +239,7 @@ and validated via Hermes' own `load_memory_provider('sibyl')` loader.
   property and `health()` field are kept for backwards compatibility but
   always return False; they're deprecated for removal in a future major.
 - **`__init__.py` docstring rewritten.** The fictional `from hermes_agent
-  import Agent; Agent(memory=SibylMemoryProvider())` quickstart is gone —
+  import Agent; Agent(memory=SibylMemoryProvider())` quickstart is gone -
   that API never existed in any Hermes release. Replaced with the real
   install flow (`pip install` → `install-plugin` → config.yaml edit).
 - **`__version__` is now single-sourced** from `importlib.metadata.version(
@@ -249,15 +249,15 @@ and validated via Hermes' own `load_memory_provider('sibyl')` loader.
 ### Fixed
 
 - `provider.py:57` no longer attempts `from hermes_agent.memory import
-  MemoryProvider`. That import path does not exist in hermes-agent — the
+  MemoryProvider`. That import path does not exist in hermes-agent: the
   real module is `agent.memory_provider`. Removed entirely; the SDK class
   doesn't inherit from the ABC anymore (see Architecture shift above).
 
 ### Dependencies
 
-- `sibyl-memory-client>=0.3.2` (was `>=0.3.1` — picks up the cap-gate +
+- `sibyl-memory-client>=0.3.2` (was `>=0.3.1`: picks up the cap-gate +
   HTTPError fixes from yesterday's audit pass).
-- Optional: `hermes-agent>=0.13.0` (was `>=0.10.0` — the ABC is documented
+- Optional: `hermes-agent>=0.13.0` (was `>=0.10.0`: the ABC is documented
   for v0.13 specifically; older releases may work but aren't validated).
 
 ### How to upgrade from v0.2.x
@@ -270,7 +270,7 @@ hermes                                # picks up the new tools
 ```
 
 If you were importing `from hermes_agent import Agent` (per the old
-docstring), that never worked — delete those lines. If you were using
+docstring), that never worked: delete those lines. If you were using
 `SibylMemoryProvider()` directly from a non-Hermes Python orchestration,
 no changes needed; the SDK surface is unchanged.
 
@@ -282,27 +282,27 @@ no changes needed; the SDK surface is unchanged.
 - File-bundle validated: `importlib.resources.files('sibyl_memory_hermes.
   _hermes_plugin').joinpath('adapter.py').read_bytes()` returns the
   expected 18,118-byte payload.
-- install-plugin smoke-tested against a `/tmp/fake_hermes_home` target —
+- install-plugin smoke-tested against a `/tmp/fake_hermes_home` target -
   files land at `$HERMES_HOME/plugins/sibyl/{__init__.py, plugin.yaml}`.
 
 ### Authorship
 
 Developed by SIBYL, Sibyl Labs LLC. Adapter contract derived from the
-installed hermes-agent 0.13.0 wheel source — `agent/memory_provider.py`
+installed hermes-agent 0.13.0 wheel source. `agent/memory_provider.py`
 (the ABC) and `plugins/memory/byterover/` (the idiomatic threading +
 schema pattern). MIT licensed.
 
-## [0.2.2] — 2026-05-16
+## [0.2.2] - 2026-05-16
 
 Audit-remediation release. Companion to `sibyl-memory-client` v0.3.2.
 
 ### Changed
 
-- **T2-2 — `SibylMemoryProvider.recall()` narrows exception handling to
+- **T2-2. `SibylMemoryProvider.recall()` narrows exception handling to
   `NotFoundError` only**. Previously caught bare `Exception`, which
   swallowed `StorageError` / `TenantError` / `SchemaError` and returned
   `None` (the Hermes-style soft-miss). That masked real storage failures
-  end-to-end — exactly the silent-fallback pattern that caused the
+  end-to-end: exactly the silent-fallback pattern that caused the
   production Bug 2 on the server side. Now `NotFoundError` returns
   `None` as intended; every other exception propagates so the caller
   can surface or retry.
@@ -318,7 +318,7 @@ Audit-remediation release. Companion to `sibyl-memory-client` v0.3.2.
   `_check_fn` raise-on-HTTPError fix (T2-3). v0.3.1 still works; the
   changes are independent.
 
-## [0.2.1] — 2026-05-16
+## [0.2.1] - 2026-05-16
 
 HMAC signed-credentials plumbing. Companion to `sibyl-memory-client`
 v0.3.1 and the api-sibyllabs credential-signer release.
@@ -326,7 +326,7 @@ v0.3.1 and the api-sibyllabs credential-signer release.
 ### Changed
 
 - `Credentials` dataclass gained `signature: str | None = None` and
-  `signed_at: str | None = None` fields. Backwards compatible —
+  `signed_at: str | None = None` fields. Backwards compatible -
   schema v1 credentials still load with these fields as `None`.
 - `SibylMemoryProvider.__init__` reads the signature + canonical
   claim from credentials.json and passes them through to
@@ -344,7 +344,7 @@ database.
 
 - 21/21 unchanged, all green.
 
-## [0.2.0] — 2026-05-15
+## [0.2.0] - 2026-05-15
 
 Hard-cap plumbing release. Companion to `sibyl-memory-client` v0.3.0.
 
@@ -358,29 +358,29 @@ Hard-cap plumbing release. Companion to `sibyl-memory-client` v0.3.0.
   2 MB cap with no server-check fallback.
 - `Credentials` dataclass gained an optional `session_token` field
   (the long-lived bearer issued by the activation flow). Backwards
-  compatible — existing v0.1.x credentials files load fine,
+  compatible: existing v0.1.x credentials files load fine,
   `session_token` simply lands as `None`.
 
 ### Notes
 
 - Depends on `sibyl-memory-client>=0.3.0`. Earlier clients lack the
   cap-gate plumbing.
-- Pre-activation users (no credentials.json) still work — they hit
+- Pre-activation users (no credentials.json) still work: they hit
   the strict local 2 MB cap with no upgrade path until they run
   `sibyl init`.
 
-## [0.1.1] — 2026-05-15
+## [0.1.1] - 2026-05-15
 
 Patch: stripped placeholder GitHub URLs from pyproject metadata
 (operator scar: never write a link to a domain not verified to
 exist). No code changes.
 
-## [0.1.0] — 2026-05-15
+## [0.1.0] - 2026-05-15
 
 First real release. Replaces the v0.0.1 PyPI name-reservation placeholder.
 
 ### Added
-- `SibylMemoryProvider` — Hermes-compatible memory provider on top of
+- `SibylMemoryProvider`. Hermes-compatible memory provider on top of
   `sibyl-memory-client`. Auto-inherits Hermes' `MemoryProvider` ABC when
   Hermes is installed; degrades to standalone object base when not.
 - Five-tier memory routing: journal (`save_context`/`load_context`),
@@ -400,12 +400,12 @@ First real release. Replaces the v0.0.1 PyPI name-reservation placeholder.
   Hermes binding state.
 
 ### Notes
-- Depends on `sibyl-memory-client>=0.1.0`. No Hermes hard dep — install
+- Depends on `sibyl-memory-client>=0.1.0`. No Hermes hard dep: install
   via `pip install sibyl-memory-hermes[hermes]` to opt into the ABC.
 - License: MIT.
 - Compatible with Python 3.10+.
 
-## [0.0.1] — 2026-05-15 (name-reservation placeholder)
+## [0.0.1] - 2026-05-15 (name-reservation placeholder)
 
 Initial PyPI upload to reserve the package name. Empty package; not
 intended for use. Superseded by v0.1.0 in the same session.

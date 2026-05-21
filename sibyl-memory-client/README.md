@@ -33,7 +33,7 @@ results = memory.search_entities("atlas")
 Most agent-memory products store everything on someone else's servers, treat every piece of information the same way, and quietly forget the important things when you need them most. This SDK solves all three:
 
 - **Local-first.** Memory lives in a SQLite database in `~/.sibyl-memory/`. No cloud round-trip for any operation.
-- **Organized by kind.** Five separate tiers — state, entities, journal, reference, archive — each recalled the way it should be recalled.
+- **Organized by kind.** Five separate tiers: state, entities, journal, reference, archive: each recalled the way it should be recalled.
 - **Benchmarked.** The Sibyl Memory Plugin (built on this SDK) sits at #2 globally on the LongMemEval Oracle benchmark when paired with Claude Opus 4.6. Methodology open at [blog.sibylcap.com/longmemeval-v2](https://blog.sibylcap.com/longmemeval-v2).
 
 ## The five tiers

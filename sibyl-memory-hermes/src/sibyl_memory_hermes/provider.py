@@ -1,4 +1,4 @@
-"""SibylMemoryProvider — framework-agnostic Sibyl Memory SDK class.
+"""SibylMemoryProvider: framework-agnostic Sibyl Memory SDK class.
 
 DESIGN NOTES
 ============
@@ -16,7 +16,7 @@ that delegates to this class. The split is intentional:
 Prior versions (v0.2.x) attempted conditional inheritance from Hermes'
 ABC at import time, but the import path was wrong (`hermes_agent.memory`
 vs the actual `agent.memory_provider`), so the soft-bind silently failed
-on every install. v0.3.0 removes the conditional inheritance entirely —
+on every install. v0.3.0 removes the conditional inheritance entirely -
 the adapter handles all Hermes glue. See packages/sibyl-memory-hermes/
 CHANGELOG.md for the full ratification of this architectural shift.
 
@@ -64,7 +64,7 @@ class SibylMemoryProvider:
                         is loaded; if also missing, DEFAULT_TENANT is used.
         credentials_path: override for credentials.json discovery.
         require_credentials: if True, raise CredentialsNotFoundError when
-                        the file is missing. Default False — degrade to
+                        the file is missing. Default False: degrade to
                         DEFAULT_TENANT so callers can run pre-activation.
         autoload_credentials: if True (default), read credentials.json on
                         construction and apply tenant_id from it.
@@ -111,7 +111,7 @@ class SibylMemoryProvider:
         client_account_id = creds.account_id if creds else None
         client_session_token = creds.session_token if creds else None
         # Build the canonical signed-claim object that matches the server's
-        # SIGNING_FIELDS shape. Order doesn't matter on the JSON wire —
+        # SIGNING_FIELDS shape. Order doesn't matter on the JSON wire -
         # the server canonicalizes by field name.
         client_claim = None
         client_signature = None
@@ -136,7 +136,7 @@ class SibylMemoryProvider:
             credentials_signature=client_signature,
         )
 
-        # v0.3.0: no conditional super().__init__() — class is no longer
+        # v0.3.0: no conditional super().__init__(): class is no longer
         # an ABC subclass. Hermes binding lives in the bundled adapter.
 
     # ------------------------------------------------------------------
@@ -183,7 +183,7 @@ class SibylMemoryProvider:
     # ==================================================================
     # The Hermes v0.10.0 memory contract uses save_context / load_context
     # for the per-turn agent memory loop. We map these onto the journal
-    # (COLD) tier — every turn is an event in the agent's session log.
+    # (COLD) tier: every turn is an event in the agent's session log.
     #
     # remember() / recall() / forget() are the higher-level fact-store
     # operations that map onto entities (WARM tier).
@@ -210,7 +210,7 @@ class SibylMemoryProvider:
         return self._client.read_events(limit=limit)
 
     def clear_context(self) -> None:
-        """No-op for now — journal events are append-only by design.
+        """No-op for now: journal events are append-only by design.
 
         If a caller genuinely wants to wipe the journal, they should drop
         the database file. This method exists for Hermes contract
@@ -241,7 +241,7 @@ class SibylMemoryProvider:
         Note: the return shape is the full row wrapper, not just the body
         dict. To get the user payload only, use ``recall(...).["body"]``.
         State and reference tier reads (``get_state``, ``get_reference``)
-        return slimmer ``{body, updated_at}`` shapes — that asymmetry is
+        return slimmer ``{body, updated_at}`` shapes: that asymmetry is
         intentional (entities carry more provenance) and documented here
         per audit H2.
 
@@ -253,7 +253,7 @@ class SibylMemoryProvider:
         T2-2 fix: previously caught bare ``Exception``, which swallowed
         StorageError / TenantError / SchemaError as "not found". That
         masked underlying-storage failures end-to-end. Now narrows to
-        NotFoundError only — every other exception propagates so the
+        NotFoundError only: every other exception propagates so the
         caller can surface or retry.
         """
         try:
@@ -261,7 +261,7 @@ class SibylMemoryProvider:
         except NotFoundError:
             return None
 
-    def list(  # noqa: A003 — Hermes-compatible name
+    def list(  # noqa: A003. Hermes-compatible name
         self,
         category: str | None = None,
         *,
@@ -278,7 +278,7 @@ class SibylMemoryProvider:
             StorageError: backend failure
             TenantError: misconfigured tenant_id
 
-        Does NOT raise on missing entity — returns False instead (audit H3).
+        Does NOT raise on missing entity: returns False instead (audit H3).
         """
         return self._client.delete_entity(category, name)
 
@@ -299,7 +299,7 @@ class SibylMemoryProvider:
             CapExceededError: archive would push the DB past the free-tier cap
             StorageError: backend failure
 
-        Unlike ``forget``, ``archive`` is strict — missing entities raise
+        Unlike ``forget``, ``archive`` is strict: missing entities raise
         NotFoundError rather than no-oping (audit H3).
         """
         return self._client.archive_entity(category, name, reason=reason)
@@ -343,7 +343,7 @@ class SibylMemoryProvider:
         """Set a reference-tier document.
 
         Note: reference bodies are plain ``str`` (markdown, runbooks,
-        notes), not dict — intentionally different from entity / state
+        notes), not dict: intentionally different from entity / state
         which take dict|list bodies. Use the ``metadata`` kwarg for any
         structured side-data.
 
@@ -374,7 +374,7 @@ class SibylMemoryProvider:
         """Cross-tier FTS5 full-text search across all four searchable tiers.
 
         v0.3.1: search now spans entities + state + reference + journal
-        (was: entities only — the marketing claim of "search across all
+        (was: entities only: the marketing claim of "search across all
         tiers" was not yet true in v0.3.0).
 
         Returns: list of tier-tagged hits, each shaped::
@@ -394,7 +394,7 @@ class SibylMemoryProvider:
         restrict scope. ``prefix=True`` enables prefix matching on the
         last token.
 
-        Query is sanitized as a single FTS5 phrase — column-filter
+        Query is sanitized as a single FTS5 phrase: column-filter
         syntax (``name:foo``) is treated as literal text. Empty / invalid
         queries return ``[]``.
 
@@ -410,7 +410,7 @@ class SibylMemoryProvider:
     # Diagnostics
     # ------------------------------------------------------------------
     def health(self) -> dict[str, Any]:
-        """Return a small diagnostic dict — used by `sibyl status`."""
+        """Return a small diagnostic dict: used by `sibyl status`."""
         db_path = self._client.storage.db_path
         return {
             "ok": True,

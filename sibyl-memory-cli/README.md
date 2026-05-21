@@ -51,8 +51,8 @@ $ sibyl upgrade
 ```
 
 In the browser:
-- **Stake** — connect your wallet (browser or Coinbase Smart Wallet), sign to bind, and the page checks your `$SIBYL` balance on Base. If you hold the threshold (default 100,000 $SIBYL liquid+staked, configurable), the local cap lifts.
-- **Subscribe** — pick monthly ($29) / quarterly ($79) / annual ($290) USDC, sign the transfer, the server records the subscription. Tier flips immediately.
+- **Stake**: connect your wallet (browser or Coinbase Smart Wallet), sign to bind, and the page checks your `$SIBYL` balance on Base. If you hold the threshold (default 100,000 $SIBYL liquid+staked, configurable), the local cap lifts.
+- **Subscribe**: pick monthly ($29) / quarterly ($79) / annual ($290) USDC, sign the transfer, the server records the subscription. Tier flips immediately.
 
 On either path, the CLI sees the tier change, rewrites `credentials.json`, and clears `tier_cache.json` so your next write picks up the new entitlement without delay.
 
@@ -94,7 +94,7 @@ SIBYL_UPGRADE_BASE=https://staging.sibyllabs.org/plugin/upgrade sibyl upgrade
 ## Security
 
 - `credentials.json` is written atomically at mode 0600.
-- `session_token` is never printed in full — only a short slice.
+- `session_token` is never printed in full: only a short slice.
 - No memory content ever transits these endpoints. The CLI never reads `memory.db` content; it only checks file size.
 - Wallet operations happen in the browser. The CLI sees only the resulting tier change.
 

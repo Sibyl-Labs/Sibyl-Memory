@@ -1,5 +1,5 @@
 name: sibyl
-description: Sibyl Memory — local-first, SQLite-backed, structured-tier memory (warm entities, hot state, cold journal, reference docs). Backed by sibyl-memory-hermes.
+description: Sibyl Memory: local-first, SQLite-backed, structured-tier memory (warm entities, hot state, cold journal, reference docs). Backed by sibyl-memory-hermes.
 version: 0.3.1
 homepage: https://sibyllabs.org/memory
 author: SIBYL, Sibyl Labs LLC

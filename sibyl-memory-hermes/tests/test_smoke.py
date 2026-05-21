@@ -2,7 +2,7 @@
 
 These exercise the public provider surface. They run against a fresh
 SQLite DB per test via pytest tmp_path fixtures. Hermes is NOT required
-to be installed — the provider degrades gracefully.
+to be installed: the provider degrades gracefully.
 """
 from __future__ import annotations
 
@@ -229,7 +229,7 @@ def test_fts_search(tmp_path: Path) -> None:
 
     # v0.3.1: provider.search() now returns cross-tier hits with a `key`
     # field (was: entity rows with `name`). The shape is documented in
-    # MemoryClient.search() — each hit is {tier, key, category, body, ...}.
+    # MemoryClient.search(): each hit is {tier, key, category, body, ...}.
     results = provider.search("memory")
     keys = {r["key"] for r in results if r["tier"] == "entity"}
     assert "atlas" in keys
@@ -275,7 +275,7 @@ def test_health(tmp_path: Path) -> None:
     assert h["schema_version"] >= 2
     assert h["db_size_bytes"] >= 0
     assert h["tier"] == "free"
-    # hermes_bound is deprecated since v0.3.0 and always False — the asymmetry
+    # hermes_bound is deprecated since v0.3.0 and always False: the asymmetry
     # is the signal v0.4 cleanup is approaching. Tightened from bool-only check.
     assert h["hermes_bound"] is False
 

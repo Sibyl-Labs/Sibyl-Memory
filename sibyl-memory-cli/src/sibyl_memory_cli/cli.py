@@ -8,9 +8,9 @@ Design pillars:
   - Credentials are written atomically at mode 0600, set at file-creation
     time via O_CREAT|O_EXCL|O_NOFOLLOW (no chmod-after-write race).
   - The URL parameter handed to the browser is an opaque session identifier,
-    not the long-lived bearer (audit SEC-1 — server-side pairing handoff
+    not the long-lived bearer (audit SEC-1: server-side pairing handoff
     issues a separate bearer at activation completion if available).
-  - session_token is never printed in full — display short slice only.
+  - session_token is never printed in full: display short slice only.
   - Polling has explicit timeouts; no infinite loops.
   - Every command exits with a clear status code (0 ok, 1 user error, 2 server error).
 """
@@ -55,7 +55,7 @@ DEFAULT_TIER_CACHE_PATH = Path("~/.sibyl-memory/tier_cache.json").expanduser()
 
 POLL_INTERVAL_SEC = 3
 INIT_TIMEOUT_SEC = 10 * 60      # 10 minutes for /init activation
-UPGRADE_TIMEOUT_SEC = 15 * 60   # 15 minutes for upgrade — wallet ux can be slow
+UPGRADE_TIMEOUT_SEC = 15 * 60   # 15 minutes for upgrade: wallet ux can be slow
 
 # ---- Color / output ----------------------------------------------------
 
@@ -88,7 +88,7 @@ def _detect_os_family() -> str | None:
 
 def short(token: str | None) -> str:
     if not token:
-        return "—"
+        return "-"
     if len(token) <= 12:
         return token
     return f"{token[:8]}…{token[-4:]}"
@@ -209,7 +209,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     The pairing code is printed in the terminal. If the user picks the
     email path in the browser, they type both their email and this code.
     No external email service is required."""
-    # Brand moment — gold/white gradient SIBYL wordmark.
+    # Brand moment: gold/white gradient SIBYL wordmark.
     # Honors NO_COLOR + TTY detection automatically; safe to always call.
     from ._banner import print_banner
     print_banner()
@@ -231,7 +231,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # it as the activation rendezvous key only. The persistent bearer
     # is issued by the server in the /check response (`bearer_token`
     # field) after activation completes. Servers running pre-SEC-1
-    # firmware that echo the URL identifier as the bearer still work —
+    # firmware that echo the URL identifier as the bearer still work -
     # we use whichever the server returns in the bound credentials.
     session_id = str(uuid.uuid4())
     pairing_code = _gen_pairing_code()
@@ -290,7 +290,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             resp = http_request("GET", f"/api/plugin/check?session={urllib.parse.quote(session_id)}", timeout=10.0)
         except HttpError as e:
             if e.status in (404, 503, 0):
-                # Session not yet created server-side, or transient — keep polling
+                # Session not yet created server-side, or transient: keep polling
                 pass
             else:
                 print(red(f"\nUnexpected error: {e.body}"))
@@ -301,19 +301,19 @@ def cmd_init(args: argparse.Namespace) -> int:
             creds = resp["credentials"]
             # SEC-1: prefer the server-issued bearer_token (post-fix) over
             # echoing the URL pairing-session id. Servers running pre-SEC-1
-            # firmware echo `session_token` back as the bearer — we use
+            # firmware echo `session_token` back as the bearer: we use
             # whichever the server returns. The CLI's session_id (URL
             # identifier) is the rendezvous key, not the persistent bearer.
             bearer = creds.get("bearer_token") or creds.get("session_token")
             if not bearer:
                 # Fallback: pre-SEC-1 server flow where neither field is
-                # echoed back — inject the pairing session id so subsequent
+                # echoed back: inject the pairing session id so subsequent
                 # /access and /check-write calls have something to send.
                 bearer = session_id
             # Sanity check on echoed session_token (pre-SEC-1 flow only)
             if creds.get("session_token") and creds["session_token"] != session_id \
                     and not creds.get("bearer_token"):
-                print(red("\nSession token mismatch — refusing to write credentials."))
+                print(red("\nSession token mismatch: refusing to write credentials."))
                 return 2
             creds["session_token"] = bearer
             path = write_credentials_atomic(creds, cred_path)
@@ -323,8 +323,8 @@ def cmd_init(args: argparse.Namespace) -> int:
             print()
             print(a.kv("Account", short(creds.get("account_id"))))
             print(a.kv("Tier", (creds.get("tier") or "free").upper(), value_color="accent"))
-            print(a.kv("Wallet", creds.get("wallet") or "—"))
-            print(a.kv("Email", creds.get("email") or "—"))
+            print(a.kv("Wallet", creds.get("wallet") or "-"))
+            print(a.kv("Email", creds.get("email") or "-"))
             print(a.kv("Credentials", str(path)))
             print()
             print(a.section_header("wire it into your agent"))
@@ -417,7 +417,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
             if e.status == 401:
                 print(red("\nSession expired. Re-run `sibyl init`."))
                 return 1
-            # Transient — keep polling
+            # Transient: keep polling
             resp = {}
 
         new_tier = (resp.get("tier") or current_tier).lower()
@@ -444,8 +444,8 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
                 print(a.kv("Storage cap", f"{resp['cap_bytes']:,} bytes"))
             if resp.get("staker"):
                 s = resp["staker"]
-                print(a.kv("Wallet", s.get("wallet", "—")))
-                print(a.kv("$SIBYL held", str(s.get("total_sibyl", "—"))))
+                print(a.kv("Wallet", s.get("wallet", "-")))
+                print(a.kv("$SIBYL held", str(s.get("total_sibyl", "-"))))
             print()
             print(a.dim("  local tier cache cleared. your next write will sync the new tier."))
             return 0
@@ -490,9 +490,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(a.kv("Credentials", str(cred_path)))
     print(a.kv("Account", short(creds.get("account_id"))))
     print(a.kv("Tier", (creds.get("tier") or "free").upper(), value_color="accent"))
-    print(a.kv("Wallet", creds.get("wallet") or "—"))
-    print(a.kv("Email", creds.get("email") or "—"))
-    print(a.kv("Issued", creds.get("issued_at") or "—"))
+    print(a.kv("Wallet", creds.get("wallet") or "-"))
+    print(a.kv("Email", creds.get("email") or "-"))
+    print(a.kv("Issued", creds.get("issued_at") or "-"))
 
     db_path = Path(args.db).expanduser()
     if db_path.exists():
@@ -510,7 +510,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         cache = json.loads(tier_cache.read_text(encoding="utf-8"))
         print(a.kv("Tier cache", f"{cache.get('tier','?')} (checked {cache.get('checked_at','?')[:19]})"))
     else:
-        print(a.kv("Tier cache", "—"))
+        print(a.kv("Tier cache", "-"))
 
     # Server view (only if account_id + session_token are present)
     if creds.get("account_id") and creds.get("session_token"):
@@ -524,14 +524,14 @@ def cmd_status(args: argparse.Namespace) -> int:
                 timeout=10.0,
             )
             print(a.kv("Tier", (resp.get("tier") or "free").upper(), value_color="accent"))
-            print(a.kv("Source", resp.get("source") or "—"))
+            print(a.kv("Source", resp.get("source") or "-"))
             print(a.kv("Cap bytes", "unlimited" if resp.get("cap_bytes") is None else f"{resp['cap_bytes']:,}"))
             if resp.get("expires_at"):
                 print(a.kv("Expires", resp["expires_at"]))
             if resp.get("staker"):
                 s = resp["staker"]
-                print(a.kv("$SIBYL held", str(s.get("total_sibyl", "—"))))
-                print(a.kv("Threshold", str(s.get("threshold_sibyl", "—"))))
+                print(a.kv("$SIBYL held", str(s.get("total_sibyl", "-"))))
+                print(a.kv("Threshold", str(s.get("threshold_sibyl", "-"))))
                 print(a.kv("Qualified", "yes" if s.get("qualified") else "no",
                            value_color="ok" if s.get("qualified") else "soft"))
             # Detect server/local drift
@@ -558,7 +558,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     who muscle-memory it get a real result.
 
     When account.sibyllabs.org ships, this will flip to
-    `webbrowser.open(...)` with no UX disruption — same command, real
+    `webbrowser.open(...)` with no UX disruption: same command, real
     web dashboard."""
     DASHBOARD_BASE = os.environ.get("SIBYL_DASHBOARD_BASE")
     if DASHBOARD_BASE:
@@ -583,7 +583,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
 def _mask_email(e: str | None) -> str:
     if not e or "@" not in e:
-        return "—"
+        return "-"
     user, _, domain = e.partition("@")
     if "." not in domain:
         return f"{user[0]}***@{domain[0]}***"
@@ -593,7 +593,7 @@ def _mask_email(e: str | None) -> str:
 
 def _mask_wallet(w: str | None) -> str:
     if not w or not w.startswith("0x") or len(w) < 12:
-        return w or "—"
+        return w or "-"
     return f"{w[:6]}…{w[-4:]}"
 
 
@@ -616,8 +616,8 @@ def cmd_whoami(args: argparse.Namespace) -> int:
 
     print()
     print(f"  {a.color('account', a.INK_FAINT)}  {a.bold(short(acct))}  {a.dim(a.GLYPH_DOT)}  {a.gradient_gold(tier)}")
-    print(f"  {a.color('wallet ', a.INK_FAINT)}  {a.color(wallet or '—', a.INK)}")
-    print(f"  {a.color('email  ', a.INK_FAINT)}  {a.color(email or '—', a.INK)}")
+    print(f"  {a.color('wallet ', a.INK_FAINT)}  {a.color(wallet or '-', a.INK)}")
+    print(f"  {a.color('email  ', a.INK_FAINT)}  {a.color(email or '-', a.INK)}")
     os_label = _detect_os_family() or "unknown"
     device_line = f"sibyl-memory-cli/{_client_version()} {os_label}"
     print(f"  {a.color('device ', a.INK_FAINT)}  {a.dim(device_line)}")
@@ -667,7 +667,7 @@ def cmd_devices(args: argparse.Namespace) -> int:
             print(red(f"no device at index {idx}. Run `sibyl devices` to see indexes."))
             return 1
         if target.get("is_this_device"):
-            print(red("refusing to revoke your own device — that would lock you out. Run `sibyl logout` instead, then `sibyl init` on a fresh activation."))
+            print(red("refusing to revoke your own device: that would lock you out. Run `sibyl logout` instead, then `sibyl init` on a fresh activation."))
             return 1
         try:
             revoke_resp = http_request(
@@ -713,7 +713,7 @@ def cmd_devices(args: argparse.Namespace) -> int:
         is_this = d.get("is_this_device")
         marker = a.ok("▶") if is_this else " "
         label = d.get("device_label") or "(unlabeled)"
-        installed = d.get("install_method") or "—"
+        installed = d.get("install_method") or "-"
         last_seen = d.get("last_seen_at", "")[:19].replace("T", " ")
         idx_chip = a.chip(str(i), palette="jade" if is_this else "mute")
         label_color = a.gradient_gold(label) if is_this else a.color(label, a.INK)
@@ -727,7 +727,7 @@ def cmd_devices(args: argparse.Namespace) -> int:
 # ---- `sibyl logout` ----------------------------------------------------
 
 def cmd_logout(args: argparse.Namespace) -> int:
-    """Delete credentials.json + tier_cache.json. memory.db stays — that's your data."""
+    """Delete credentials.json + tier_cache.json. memory.db stays: that's your data."""
     cred_path = Path(args.credentials).expanduser()
     tier_cache = Path(args.tier_cache).expanduser()
 
@@ -757,7 +757,7 @@ def cmd_logout(args: argparse.Namespace) -> int:
 # ---- `sibyl health` ----------------------------------------------------
 
 def cmd_health(args: argparse.Namespace) -> int:
-    """SibylMemoryProvider.health() — minimal self-check."""
+    """SibylMemoryProvider.health(): minimal self-check."""
     try:
         from sibyl_memory_hermes import SibylMemoryProvider
     except ImportError:

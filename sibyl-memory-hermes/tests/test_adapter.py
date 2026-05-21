@@ -35,7 +35,7 @@ from sibyl_memory_hermes._hermes_plugin.adapter import (
 # Module loadability
 # ----------------------------------------------------------------------
 def test_module_imports_without_hermes() -> None:
-    """Off-Hermes the adapter still imports — the Hermes ABC + tool_error
+    """Off-Hermes the adapter still imports: the Hermes ABC + tool_error
     guards land their no-op fallbacks. Tests can therefore exercise it
     without spinning up a Hermes runtime."""
     # _HERMES_AVAILABLE reflects whether hermes-agent is installed.
@@ -50,7 +50,7 @@ def test_module_imports_without_hermes() -> None:
 
 
 def test_register_function_exists() -> None:
-    """register(ctx) is the Hermes plugin entry point — must exist for the
+    """register(ctx) is the Hermes plugin entry point: must exist for the
     filesystem loader to find it."""
     assert callable(adapter_module.register)
 
@@ -192,10 +192,10 @@ def test_handle_tool_call_search_sanitizes_malformed_query(tmp_path: Path) -> No
     """SEC-3 hardening: malformed FTS5 queries (unclosed quotes, column
     filters) must not crash or leak SQL error text."""
     adapter = _make_initialized_adapter(tmp_path)
-    # Unclosed quote — pre-v0.3.1 would surface OperationalError + db_path leak
+    # Unclosed quote: pre-v0.3.1 would surface OperationalError + db_path leak
     out = json.loads(adapter.handle_tool_call("sibyl_search", {"query": '"'}))
     assert "results" in out
-    # Empty input — should return empty results, not error
+    # Empty input: should return empty results, not error
     out2 = json.loads(adapter.handle_tool_call("sibyl_search", {"query": ""}))
     assert "error" in out2  # query is required
 
@@ -223,7 +223,7 @@ def test_sync_turn_during_shutdown_skips(tmp_path: Path) -> None:
     skipped via the shutdown flag check in the worker loop)."""
     adapter = _make_initialized_adapter(tmp_path)
     adapter.shutdown()
-    # Should not raise — even though we shut down, the call itself is safe
+    # Should not raise: even though we shut down, the call itself is safe
     adapter.sync_turn("user msg", "assistant reply")
 
 

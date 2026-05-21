@@ -4,9 +4,9 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
-## [0.4.1] — 2026-05-19
+## [0.4.1] - 2026-05-19
 
-Auth-redesign wave 1 step 15 — forward-compat with the server's v6 bearer
+Auth-redesign wave 1 step 15: forward-compat with the server's v6 bearer
 model. `/api/plugin/check-write` accepts `Authorization: Bearer <token>`
 headers in addition to the existing `session_token` body field. This
 release sends both: body field for older servers, header for the new
@@ -22,7 +22,7 @@ so legacy `session_token`-as-bearer credentials still resolve.
   (v1 backward compat). No behavior change against current production
   server. Companion: api-sibyllabs accepts both paths since v6 schema.
 
-## [0.4.0] — 2026-05-18
+## [0.4.0] - 2026-05-18
 
 KAPPA external-tester remediation release. Independent third-party install
 test (KAPPA, peer Tulip-referred) against the v0.3.3 family surfaced one
@@ -33,7 +33,7 @@ v0.1.3.
 
 ### Fixed
 
-- **KAPPA-BLOCKER** — `CapExceededError` and `TierVerificationError`
+- **KAPPA-BLOCKER**. `CapExceededError` and `TierVerificationError`
   relocated from `_capcheck.py` to `exceptions.py` so they are importable
   from the canonical `sibyl_memory_client.exceptions` submodule path. The
   v0.3.3 family had them defined and re-exported only at the top-level
@@ -41,19 +41,19 @@ v0.1.3.
   imports from) raised `ImportError`. `_capcheck.py` now imports them back
   for full backwards compatibility with anyone reaching into the private
   module.
-- **KAPPA-RED** — `~/.sibyl-memory/memory.db` now chmod 0600 after the
+- **KAPPA-RED**. `~/.sibyl-memory/memory.db` now chmod 0600 after the
   schema apply (was inheriting umask, typically 0644). WAL + SHM sidecar
   files also tightened to 0600 if present. Idempotent + non-fatal on
   chmod failure. Closes the file-perm gap KAPPA observed on a multi-user
   / CI / shared-dev-box install.
-- **KAPPA-YELLOW** — `set_entity`, `set_state`, and `set_reference` now
+- **KAPPA-YELLOW**. `set_entity`, `set_state`, and `set_reference` now
   validate user-supplied identifiers (category, name, key) before write.
   Rejects: non-string, empty, control characters / null bytes, length
   > 1024. Raises `ValidationError` with a recovery hint. Read paths are
   unchanged: already-stored bad identifiers remain accessible so users
   can introspect and migrate. New module-level helper
   `validate_identifier(value, *, field_name)`.
-- **KAPPA-YELLOW** — `search()` and `search_entities()` no longer silently
+- **KAPPA-YELLOW**. `search()` and `search_entities()` no longer silently
   swallow `sqlite3.OperationalError` into empty results. The error is now
   classified by `_classify_fts5_error()`:
   - schema-missing (`"no such table"`) returns empty (defense against
@@ -65,9 +65,9 @@ v0.1.3.
 
 ### Added
 
-- `validate_identifier(value, *, field_name)` — public helper for
+- `validate_identifier(value, *, field_name)`: public helper for
   validating user-supplied identifiers consistently across the SDK.
-- `_classify_fts5_error(err)` — internal helper for translating FTS5
+- `_classify_fts5_error(err)`: internal helper for translating FTS5
   `OperationalError` into the appropriate exception type.
 
 ### Notes
@@ -80,7 +80,7 @@ v0.1.3.
 
 ---
 
-## [0.3.3] — 2026-05-18
+## [0.3.3] - 2026-05-18
 
 Audit-remediation release. v0.3.0 pre-ship audit (2026-05-18T05:05Z) surfaced
 10 critical findings across four lanes; this release lands the engine-side
@@ -89,7 +89,7 @@ v0.1.2, `sibyl-memory-mcp` v0.1.1.
 
 ### Added
 
-- `MemoryClient.search(query, *, limit=20, prefix=False, tiers=None)` —
+- `MemoryClient.search(query, *, limit=20, prefix=False, tiers=None)` -
   cross-tier FTS5 search over entities + state + reference + journal. Each
   hit is tier-tagged with `{tier, key, category, body, snippet, rank, ts}`.
   Pass `tiers=("entity", "state")` to restrict scope. The marketing claim of
@@ -129,27 +129,27 @@ v0.1.2, `sibyl-memory-mcp` v0.1.1.
 
 ### Security
 
-- **SEC-2** — Atomic 0600-at-create for `TierCache.store`. Previously
+- **SEC-2**. Atomic 0600-at-create for `TierCache.store`. Previously
   used `write_text(...)` then `os.chmod(..., 0o600)`, leaving a
   world-readable window between syscalls every cache write. Now opens with
   `O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW` and mode `0o600` set at creation
   time. No race window.
-- **SEC-3** — FTS5 query sanitization on every MATCH path. Prevents
+- **SEC-3**. FTS5 query sanitization on every MATCH path. Prevents
   FTS5 injection / DoS via malformed queries.
-- **SEC-3** — `StorageError` messages no longer echo the absolute
+- **SEC-3**. `StorageError` messages no longer echo the absolute
   `db_path` or full SQLite error text. Original exception is chained via
   `from e` for debugging; user-visible message stays generic.
-- **SEC-9** — `TierVerificationError` no longer echoes the server-side
-  `error` body string in the user-visible message — strips to a generic
+- **SEC-9**. `TierVerificationError` no longer echoes the server-side
+  `error` body string in the user-visible message: strips to a generic
   "Retry shortly" pointer to avoid leaking internal server detail into
   user logs.
-- **SEC-11** — `TierCache.load` refuses to follow symlinks. A
+- **SEC-11**. `TierCache.load` refuses to follow symlinks. A
   low-privilege attacker who once had write to `~/.sibyl-memory` cannot
   redirect the cache to `/dev/null` or another file via symlink.
 
 ### Fixed
 
-- **C2** — `__version__` no longer hardcoded. Now sourced from
+- **C2**. `__version__` no longer hardcoded. Now sourced from
   `importlib.metadata.version("sibyl-memory-client")` with the same
   `+source` fallback pattern as sibyl-memory-hermes v0.3.0. The wheel and
   the in-Python `__version__` can no longer drift (v0.3.2 published with
@@ -166,7 +166,7 @@ v0.1.2, `sibyl-memory-mcp` v0.1.1.
 - Dropped unused `Iterable` and `ConflictError` imports from `client.py`
   (DC1/DC2). Both remain in `__all__` via re-export.
 
-## [0.3.2] — 2026-05-16
+## [0.3.2] - 2026-05-16
 
 Audit-remediation release. Companion to api-sibyllabs payment-rail fixes
 and the post-audit shipping pass. Closes T1-3, T1-4, T2-3 from the
@@ -175,7 +175,7 @@ msg_id 19e33139dfc3e4d4).
 
 ### Changed
 
-- **T1-3 — `archive_entity` now goes through CapGate**. The audit found
+- **T1-3. `archive_entity` now goes through CapGate**. The audit found
   that `MemoryClient.archive_entity` bypassed the cap check, letting a
   free user at 1.9 MB archive their largest entities (body copied into
   archived_entities, doubling footprint) to keep writing past 2 MB. The
@@ -183,20 +183,20 @@ msg_id 19e33139dfc3e4d4).
   (`body + name + category + reason + 200B overhead`), then calls
   `self._cap_gate.check(proposed_delta_bytes=delta)` before the write
   transaction. NotFoundError still raised before any cap-gate side effect.
-- **T1-3 — `Learner.accept_proposal` now accepts an optional `cap_gate`**.
+- **T1-3. `Learner.accept_proposal` now accepts an optional `cap_gate`**.
   `Learner.__init__` gains a `cap_gate: Any = None` parameter. When
   non-None, `accept_proposal` calls `cap_gate.check(proposed_delta_bytes=...)`
   before inserting the `reference_documents` row (skill body can be
   kilobytes). The convenience entry `MemoryClient.learner()` threads
   the client's CapGate through automatically. Direct-import callers can
   override `cap_gate=None` explicitly for tests.
-- **T2-3 — `_default_check_write_fn` no longer forges fake decisions on
+- **T2-3. `_default_check_write_fn` no longer forges fake decisions on
   HTTP error**. Previously a transient 502 response synthesized
   `{ok: False, tier: "free"}` and the caller cached it as authoritative,
   locking a paid user out for up to 7 days. Now raises
-  `TierVerificationError` on any HTTP error — the offline-grace path in
+  `TierVerificationError` on any HTTP error: the offline-grace path in
   `_refresh_and_check` decides whether to honor a recent cache or hard-cap.
-- **T1-4 — TierCacheEntry gains `server_expires_at` + `cache_token` fields**.
+- **T1-4. TierCacheEntry gains `server_expires_at` + `cache_token` fields**.
   `server_expires_at` is the server-supplied subscription expiry parsed
   from the `expires_at` field on the `/check-write` response. The cache
   is now honored only while `now < min(checked_at + grace_seconds,
@@ -220,7 +220,7 @@ msg_id 19e33139dfc3e4d4).
 
 - 53/53 unchanged, all green. The cap-gate addition in `archive_entity`
   fires under the default 2 MB cap on test data well below that
-  threshold — no test changes needed.
+  threshold: no test changes needed.
 
 ### Notes for downstream
 
@@ -229,7 +229,7 @@ msg_id 19e33139dfc3e4d4).
   hermes versions still work; the bug they had was over-aggressive
   exception swallowing, harmless to the cap-gate plumbing.
 
-## [0.3.1] — 2026-05-16
+## [0.3.1] - 2026-05-16
 
 Tamper-evidence release. Companion to api-sibyllabs HMAC signing.
 
@@ -242,13 +242,13 @@ Tamper-evidence release. Companion to api-sibyllabs HMAC signing.
 - `CapGate` accepts the same two kwargs and, when both are present,
   attaches them to every `/check-write` POST body. The server uses
   them to verify the signature and log `credentials_tamper_suspected`
-  telemetry on mismatch. The cap-gate decision itself is unaffected —
+  telemetry on mismatch. The cap-gate decision itself is unaffected -
   authoritative tier always comes from the database via
   `effectiveAccess`.
 
 ### Schema
 
-- Credentials JSON schema v2 (server-issued 2026-05-16+) — adds
+- Credentials JSON schema v2 (server-issued 2026-05-16+): adds
   `signature` (HMAC-SHA256 hex, 64 chars) and `signed_at` (ISO ts).
   Old schema v1 credentials still load and work; the client just
   sends an unsigned request and the server skips the tamper check.
@@ -257,7 +257,7 @@ Tamper-evidence release. Companion to api-sibyllabs HMAC signing.
 
 - 53/53 unchanged, all green. The signing path is purely additive.
 
-## [0.3.0] — 2026-05-15
+## [0.3.0] - 2026-05-15
 
 Hard-cap enforcement release. Operator directive 2026-05-15: "how do
 we hard-limit free users to the 2Mb size? and ensure they can't
@@ -268,19 +268,19 @@ boundary. Locked in: 7-day grace cache, hard cap on by default.
 ### Added
 
 - **`_capcheck.py` module** with the cap-enforcement primitives:
-  - `CapGate.check(proposed_delta_bytes)` — three fast paths plus one
+  - `CapGate.check(proposed_delta_bytes)`: three fast paths plus one
     slow server-refresh path. Most writes never phone home. The slow
     path only fires when (a) a free-tier user is about to push past
     2 MB or (b) the local tier cache has expired.
-  - `TierCache` — file-backed at `~/.sibyl-memory/tier_cache.json`,
+  - `TierCache`: file-backed at `~/.sibyl-memory/tier_cache.json`,
     mode 0600, atomic write, JSON shape `{ account_id, tier,
     checked_at, cap_bytes }`. Honored as fresh for 7 days; honored
     for an extended 14-day grace if the user is offline.
-  - `CapExceededError` (code `CAP_EXCEEDED`) — carries `upgrade_url`.
-  - `TierVerificationError` — raised only when the user is at the cap,
+  - `CapExceededError` (code `CAP_EXCEEDED`): carries `upgrade_url`.
+  - `TierVerificationError`: raised only when the user is at the cap,
     offline, AND has no valid grace cache. Distinct from CAP_EXCEEDED
     so callers can route the two error states differently.
-  - `_default_check_write_fn` — pure stdlib urllib transport. The
+  - `_default_check_write_fn`: pure stdlib urllib transport. The
     default endpoint is `https://api.sibyllabs.org/api/plugin/check-write`.
     Replaceable for tests via the `check_fn` constructor kwarg.
   - Constants `FREE_TIER_CAP_BYTES = 2 * 1024 * 1024` and
@@ -293,7 +293,7 @@ boundary. Locked in: 7-day grace cache, hard cap on by default.
     `set_reference`) calls `self._cap_gate.check(proposed_delta_bytes=...)`
     with a JSON-byte-length estimate. Reads are never gated.
   - Pre-activation users (no `account_id`) get a strict local 2 MB cap
-    with no server check possible — by design.
+    with no server check possible: by design.
 
 ### Tests
 
@@ -314,7 +314,7 @@ boundary. Locked in: 7-day grace cache, hard cap on by default.
   `memory/research/2026-05-15-hard-cap-enforcement.md` (deferred until
   `PLUGIN_CREDENTIAL_SIGNING_KEY` is provisioned in Doppler/Vercel).
 
-## [0.2.0] — 2026-05-15
+## [0.2.0] - 2026-05-15
 
 Self-learning + memory-linting release. Operator directive 2026-05-15:
 "add a self-learning cron + function to the memory deployment so the
@@ -323,47 +323,47 @@ do. could we also do memory linter?"
 
 ### Schema
 
-- **v2 migration** — adds two tables. Idempotent. v1 databases auto-upgrade on next open.
-  - `skill_proposals` — review queue for detected skills. Columns: id, tenant_id, created_at, pattern_kind, proposed_slug, proposed_title, proposed_body, evidence (JSON), confidence (REAL 0..1), summarizer, status (pending/accepted/rejected/superseded), reviewed_at, review_note, accepted_doc_key. UNIQUE indexes on (tenant_id, status, created_at) and (tenant_id, proposed_slug).
-  - `learning_runs` — watermark log so detectors don't rescan ground they covered. Columns: id, tenant_id, started_at, completed_at, summarizer, events_scanned, proposals_made, cursor_after_ts, notes.
+- **v2 migration**: adds two tables. Idempotent. v1 databases auto-upgrade on next open.
+  - `skill_proposals`: review queue for detected skills. Columns: id, tenant_id, created_at, pattern_kind, proposed_slug, proposed_title, proposed_body, evidence (JSON), confidence (REAL 0..1), summarizer, status (pending/accepted/rejected/superseded), reviewed_at, review_note, accepted_doc_key. UNIQUE indexes on (tenant_id, status, created_at) and (tenant_id, proposed_slug).
+  - `learning_runs`: watermark log so detectors don't rescan ground they covered. Columns: id, tenant_id, started_at, completed_at, summarizer, events_scanned, proposals_made, cursor_after_ts, notes.
 
 ### Added
 
 - **`learning.py` module** with the full self-learning loop:
-  - `Learner` class — scans journal_events since last watermark, runs four pattern detectors, dedupes by slug, persists top-N proposals.
+  - `Learner` class: scans journal_events since last watermark, runs four pattern detectors, dedupes by slug, persists top-N proposals.
   - Four deterministic detectors: `repeated_action`, `structural_similarity`, `co_occurrence`, `temporal_routine`.
   - Three pluggable summarizer backends (per operator design directive 2026-05-15):
-    - `LocalDeterministicSummarizer` (free tier default) — pure SQL + Python templates, zero network.
-    - `BYOKSummarizer` (paid tier opt-in) — user supplies their own inference callable, SDK never holds the key.
-    - `VeniceX402Summarizer` (paid tier hosted) — Venice-routed via x402 against the user's pre-funded plugin balance. Endpoint design at `memory/research/2026-05-15-self-learning-design.md`.
+    - `LocalDeterministicSummarizer` (free tier default): pure SQL + Python templates, zero network.
+    - `BYOKSummarizer` (paid tier opt-in): user supplies their own inference callable, SDK never holds the key.
+    - `VeniceX402Summarizer` (paid tier hosted). Venice-routed via x402 against the user's pre-funded plugin balance. Endpoint design at `memory/research/2026-05-15-self-learning-design.md`.
   - Review queue API: `list_proposals`, `get_proposal`, `accept_proposal` (writes `reference_documents` row under `skill/<slug>` key with provenance metadata), `reject_proposal`.
   - Both LLM-backed summarizers gracefully fall back to local-deterministic output when the inference callable raises.
 
-- **`lint.py` module** — local memory linter mirroring `scripts/memory-lint.mjs`:
+- **`lint.py` module**: local memory linter mirroring `scripts/memory-lint.mjs`:
   - `Linter` class with 9 checks across three severity tiers (critical / warning / info): schema-version, invalid-json-entity, invalid-json-state, invalid-json-journal, duplicate-entity, empty-reference, stale-entity, journal-without-acts, db-soft-cap, fts-rowcount-mismatch, flagged-actors-fresh.
   - `LintReport` dataclass with `to_dict()` (JSON-serializable) + `to_ascii()` (single-block boxed report for CLI).
   - Tunable thresholds: `soft_cap_bytes` (default 10 MB per operator decision), `stale_days` (default 90), `flag_recency_days` (default 30).
 
 - **`MemoryClient` API surface (additive)**:
-  - `client.learner(**kwargs)` — construct a tenant-bound Learner.
-  - `client.learn()` — convenience: one-shot Learner.run() returning a LearningRunReport.
+  - `client.learner(**kwargs)`: construct a tenant-bound Learner.
+  - `client.learn()`: convenience: one-shot Learner.run() returning a LearningRunReport.
   - `client.list_skill_proposals(status='pending', limit=50)`.
   - `client.accept_skill_proposal(id, note=None)`.
   - `client.reject_skill_proposal(id, note=None)`.
-  - `client.lint(**kwargs)` — returns a LintReport.
+  - `client.lint(**kwargs)`: returns a LintReport.
 
 - **Public exports** (`__init__.py`): added `Learner`, `SkillProposal`, `LearningRunReport`, `Summarizer`, `LocalDeterministicSummarizer`, `BYOKSummarizer`, `VeniceX402Summarizer`, `Linter`, `LintReport`, `Finding`.
 
 ### Tests
 
 - 22 new tests across two files:
-  - `tests/test_learning.py` — 12 tests: schema migration v2, no-event runs, repeated-action detection, watermark dedup, structural-similarity detection, accept/reject lifecycle, BYOK invocation, Venice/x402 fallback on failure, multi-tenant isolation.
-  - `tests/test_lint.py` — 10 tests: clean-DB baseline, duplicate-entity, empty-reference, stale-entity, journal-without-acts, soft-cap, ASCII report rendering, dict serialization, severity buckets, multi-tenant isolation.
+  - `tests/test_learning.py`: 12 tests: schema migration v2, no-event runs, repeated-action detection, watermark dedup, structural-similarity detection, accept/reject lifecycle, BYOK invocation, Venice/x402 fallback on failure, multi-tenant isolation.
+  - `tests/test_lint.py`: 10 tests: clean-DB baseline, duplicate-entity, empty-reference, stale-entity, journal-without-acts, soft-cap, ASCII report rendering, dict serialization, severity buckets, multi-tenant isolation.
 - Total package coverage: 10 (existing smoke) + 12 (learning) + 10 (lint) = **32 tests, all green**.
 
 ### Compatibility
 
-- v0.1.0 databases auto-upgrade to v2 on first open via existing idempotent `_ensure_schema()` path — no manual migration needed.
+- v0.1.0 databases auto-upgrade to v2 on first open via existing idempotent `_ensure_schema()` path: no manual migration needed.
 - `sibyl-memory-hermes` v0.1.0 is binary-compatible with v0.2.0 of this SDK (provider surface unchanged). Hermes-provider tests updated to expect schema_version=2.
 - Local-first promise unchanged: free tier remains zero-network. BYOK / Venice routes are paid-tier opt-in only and the CLI gate enforces tier checks upstream.
 
@@ -375,7 +375,7 @@ The CLI package will expose:
 - `sibyl lint` → runs `client.lint()`, prints `to_ascii()`, exits non-zero if `critical_count > 0`.
 - Optional cron install during `sibyl init` (Linux/macOS cron, Windows Task Scheduler) for daily learn + lint.
 
-## [0.1.0] — 2026-05-15
+## [0.1.0] - 2026-05-15
 
 Initial release.
 

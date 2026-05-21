@@ -1,4 +1,4 @@
-"""Sibyl memory plugin — MemoryProvider adapter for sibyl-memory-hermes.
+"""Sibyl memory plugin. MemoryProvider adapter for sibyl-memory-hermes.
 
 Developed by SIBYL, Sibyl Labs LLC. MIT licensed.
 
@@ -21,13 +21,13 @@ Install location:
 
 Configuration:
     Credentials live in ~/.sibyl-memory/credentials.json (managed by the
-    `sibyl init` CLI). This adapter does not duplicate that — it lets the
+    `sibyl init` CLI). This adapter does not duplicate that: it lets the
     SDK auto-load credentials. The only Hermes-side option is `db_path`,
     which defaults to <HERMES_HOME>/sibyl/memory.db so each profile has
     its own database.
 
 v0.3.1 hardening (audit-remediation):
-    - Hermes ABC + tool_error imports are guarded — module imports cleanly
+    - Hermes ABC + tool_error imports are guarded: module imports cleanly
       outside Hermes (tests, dry-run tooling). Off-Hermes the adapter
       degrades to a no-op MemoryProvider base; the tool dispatcher still
       works for offline validation.
@@ -70,7 +70,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Timeouts + sizes — all named constants, no magic numbers in dispatch logic.
+# Timeouts + sizes: all named constants, no magic numbers in dispatch logic.
 _SYNC_JOIN_TIMEOUT = 5.0          # wait this long for previous sync_turn write
 _SHUTDOWN_JOIN_TIMEOUT = 10.0     # wait this long on shutdown
 _MIN_QUERY_LEN = 10               # skip tiny prefetch queries (noise)
@@ -99,7 +99,7 @@ def _stable_key(content: str, prefix: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool schemas — OpenAI function-calling shape
+# Tool schemas. OpenAI function-calling shape
 # ---------------------------------------------------------------------------
 
 REMEMBER_SCHEMA = {
@@ -108,7 +108,7 @@ REMEMBER_SCHEMA = {
         "Upsert a structured fact into Sibyl's warm-entity tier. Use for "
         "anything worth remembering across sessions: project decisions, user "
         "preferences, API quirks, conventions. (category, name) is the unique "
-        "key — re-calling with the same pair overwrites."
+        "key: re-calling with the same pair overwrites."
     ),
     "parameters": {
         "type": "object",
@@ -139,7 +139,7 @@ RECALL_SCHEMA = {
     "description": (
         "Look up a single entity by (category, name). Returns the entity row "
         "(or null if absent) shaped {id, tenant_id, category, name, status, "
-        "body, created_at, updated_at} — the user data is under .body. Use "
+        "body, created_at, updated_at}: the user data is under .body. Use "
         "when you know exactly what to fetch; use sibyl_search for fuzzy/keyword lookup."
     ),
     "parameters": {
@@ -163,7 +163,7 @@ SEARCH_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "Search query. User input is sanitized as a single FTS5 phrase — column-filter syntax (name:foo) is treated as literal text."},
+            "query": {"type": "string", "description": "Search query. User input is sanitized as a single FTS5 phrase: column-filter syntax (name:foo) is treated as literal text."},
             "limit": {
                 "type": "integer",
                 "description": f"Max results (default {_DEFAULT_SEARCH_LIMIT}).",
@@ -226,7 +226,7 @@ class SibylAdapter(MemoryProvider):
         return "sibyl"
 
     def is_available(self) -> bool:
-        """Cheap local check — no network, no DB open."""
+        """Cheap local check: no network, no DB open."""
         try:
             import sibyl_memory_hermes  # noqa: F401
             return True
@@ -282,7 +282,7 @@ class SibylAdapter(MemoryProvider):
             return ""
         if not hits:
             return ""
-        lines = ["## Sibyl Memory — relevant context"]
+        lines = ["## Sibyl Memory: relevant context"]
         for hit in hits:
             tier = hit.get("tier", "?")
             category = hit.get("category", "")
@@ -297,7 +297,7 @@ class SibylAdapter(MemoryProvider):
         return block[:_MAX_PREFETCH_CHARS]
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        # Sibyl is local SQLite — prefetch() runs synchronously and is fast.
+        # Sibyl is local SQLite: prefetch() runs synchronously and is fast.
         # Nothing to queue.
         pass
 
@@ -342,7 +342,7 @@ class SibylAdapter(MemoryProvider):
                         # Exponential backoff for SQLITE_BUSY / transient errors
                         time.sleep(_BUSY_RETRY_BACKOFF * (2 ** (attempt - 1)))
                         continue
-                    # Final attempt failed — escalate from debug to warning
+                    # Final attempt failed: escalate from debug to warning
                     # so users see drops in production logs.
                     logger.warning(
                         "Sibyl sync_turn dropped a journal turn after %d attempts: %s",
@@ -478,7 +478,7 @@ class SibylAdapter(MemoryProvider):
                         metadata: dict[str, Any] | None = None) -> None:
         """Mirror built-in `memory` tool writes into Sibyl's warm tier.
 
-        Accepts metadata even though we treat it as informational only —
+        Accepts metadata even though we treat it as informational only -
         ignoring the kwarg would TypeError under strict callers.
         """
         if not self._sibyl or not content:
@@ -499,24 +499,24 @@ class SibylAdapter(MemoryProvider):
     # -- config ------------------------------------------------------------
 
     def get_config_schema(self) -> list[dict[str, Any]]:
-        """No Hermes-side config — prerequisite is the `sibyl init` CLI.
+        """No Hermes-side config: prerequisite is the `sibyl init` CLI.
 
         Sibyl manages its own credentials and identity outside Hermes:
         running `sibyl init` writes ~/.sibyl-memory/credentials.json,
         which the SDK auto-loads at construction time. We deliberately
         return [] here so `hermes memory setup` does NOT double-prompt
-        for credentials that already live in the Sibyl native file —
+        for credentials that already live in the Sibyl native file -
         running both flows would diverge tenant ids and confuse users.
 
         If a future version needs Hermes-side overrides (alt db_path,
         explicit tenant_id for testing), add them here as non-secret
-        fields — keep secrets in credentials.json so there's one
+        fields: keep secrets in credentials.json so there's one
         source of truth.
         """
         return []
 
     def save_config(self, values: dict[str, Any], hermes_home: str) -> None:
-        # Nothing to persist — values are read live from credentials.json and
+        # Nothing to persist: values are read live from credentials.json and
         # constructor args. This stays a no-op until a hermes-side config
         # file is actually needed.
         return

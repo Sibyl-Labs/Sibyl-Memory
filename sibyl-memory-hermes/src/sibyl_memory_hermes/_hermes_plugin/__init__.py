@@ -1,4 +1,4 @@
-"""Bundled Hermes plugin payload — NOT for direct import.
+"""Bundled Hermes plugin payload. NOT for direct import.
 
 Contains the validated MemoryProvider adapter (`adapter.py`) and its
 metadata (`plugin.yaml`). The `sibyl-memory-hermes install-plugin`

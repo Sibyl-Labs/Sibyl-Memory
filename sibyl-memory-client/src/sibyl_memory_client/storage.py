@@ -33,7 +33,7 @@ _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 # body, not just credentials. docs.sibyllabs.org/memory/install claims 0600
 # but sqlite3.connect inherits the process umask (typically yields 0644).
 # Tighten with explicit chmod after the schema apply guarantees the file
-# exists. Idempotent — safe to call every time. Also tightens WAL + SHM
+# exists. Idempotent: safe to call every time. Also tightens WAL + SHM
 # sidecar files if they exist after the first transaction.
 _DB_FILE_MODE = 0o600
 _DB_SIDECAR_SUFFIXES = ("-wal", "-shm")
@@ -56,7 +56,7 @@ def new_id() -> str:
 
 def dumps(payload: Any) -> str:
     """Canonical JSON serialization for body / payload fields.
-    sort_keys=False (preserve insertion order — matters for downstream diff).
+    sort_keys=False (preserve insertion order: matters for downstream diff).
     separators tight to keep DB rows compact."""
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
@@ -92,7 +92,7 @@ class Storage:
         manager for proper cleanup.
 
         SEC-3 hardening (v0.3.3): exception messages do not echo the absolute
-        db path — the original exception is chained via `from e` for debugging,
+        db path: the original exception is chained via `from e` for debugging,
         but the user-visible message stays generic."""
         try:
             conn = sqlite3.connect(
@@ -148,10 +148,10 @@ class Storage:
                 conn.execute("COMMIT")
 
     def _ensure_schema(self) -> None:
-        """Apply the canonical schema. Idempotent — safe to call on every open.
+        """Apply the canonical schema. Idempotent: safe to call on every open.
 
         After applying the schema, runs any pending migrations. v2 to v3 (2026-05-18)
-        is the only migration currently — it reshapes FTS5 tables from standalone
+        is the only migration currently: it reshapes FTS5 tables from standalone
         (body duplicated) to external-content (body lives in base tables only).
         Migration runs once and is idempotent thereafter."""
         if not _SCHEMA_PATH.exists():
@@ -180,7 +180,7 @@ class Storage:
         backfills state_documents_fts + journal_events_fts + the new
         reference_documents_fts shape for existing v2 databases.
 
-        Safe to call repeatedly — operations short-circuit once v3 is in place.
+        Safe to call repeatedly: operations short-circuit once v3 is in place.
         """
         with self.connection() as conn:
             row = conn.execute(
@@ -192,7 +192,7 @@ class Storage:
             sql = (row["sql"] or "").lower()
             needs_v3 = "entity_id" in sql or "content='entities'" not in sql.replace(" ", "")
             if not needs_v3:
-                # Already v3 shape — nothing to do.
+                # Already v3 shape: nothing to do.
                 return
 
         # v2 → v3: drop standalone FTS5 + triggers, re-create in external-content
@@ -220,7 +220,7 @@ class Storage:
                 conn.execute("INSERT INTO entities_fts(entities_fts) VALUES('rebuild')")
                 conn.execute("INSERT INTO state_documents_fts(state_documents_fts) VALUES('rebuild')")
                 conn.execute("INSERT INTO reference_documents_fts(reference_documents_fts) VALUES('rebuild')")
-                # journal_events_fts is contentless — can't 'rebuild' from
+                # journal_events_fts is contentless: can't 'rebuild' from
                 # outside. Backfill manually for any existing journal rows.
                 conn.execute(
                     """
@@ -235,7 +235,7 @@ class Storage:
         except sqlite3.Error as e:
             raise SchemaError(
                 f"FTS5 v2 to v3 migration failed: {e}",
-                recovery="Back up your memory.db, then delete it; the next open will create a fresh v3 DB. Your base-table data is unaffected by this migration failure — the FTS5 index will rebuild.",
+                recovery="Back up your memory.db, then delete it; the next open will create a fresh v3 DB. Your base-table data is unaffected by this migration failure: the FTS5 index will rebuild.",
             ) from e
 
     def schema_version(self) -> int | None:
@@ -249,7 +249,7 @@ class Storage:
     def _tighten_db_file_perms(self) -> None:
         """Set memory.db (and WAL/SHM sidecars if present) to mode 0600.
 
-        Idempotent. Safe on systems where chmod is a no-op (Windows) — we
+        Idempotent. Safe on systems where chmod is a no-op (Windows): we
         guard with hasattr. Errors during chmod are non-fatal: we want
         secure-by-default but won't block a working DB if the chmod call
         races a concurrent process or hits a read-only mount edge case.

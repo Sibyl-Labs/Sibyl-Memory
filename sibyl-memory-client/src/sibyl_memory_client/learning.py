@@ -15,7 +15,7 @@ THREE RUNTIME MODES (operator directive 2026-05-15)
 2. **byok** (paid-tier opt-in)
    User pastes their own Anthropic / OpenAI / Venice key into config.
    The Learner uses the key to summarize matched event clusters into
-   prose skill bodies. Local-first stays intact at the data layer —
+   prose skill bodies. Local-first stays intact at the data layer -
    the user controls where the inference call goes. Sibyl Labs never
    sees the key or the payload.
 
@@ -133,7 +133,7 @@ class LocalDeterministicSummarizer:
 
     Useful properties:
       • Zero network. Free-tier-safe.
-      • Deterministic — same input always produces the same body.
+      • Deterministic: same input always produces the same body.
       • Explains its own reasoning (so the user sees why the pattern
         was surfaced).
     """
@@ -175,7 +175,7 @@ class LocalDeterministicSummarizer:
                 f"the same journal entries."
             )
         else:
-            lines.append("(pattern kind unrecognized — flagged for review)")
+            lines.append("(pattern kind unrecognized: flagged for review)")
 
         lines.append("")
         lines.append("## Evidence")
@@ -183,7 +183,7 @@ class LocalDeterministicSummarizer:
         for ev in events[:5]:  # cap at five for readability
             ts = ev.get("ts") or "?"
             snippet = _short_event_snippet(ev)
-            lines.append(f"- `{ts}` — {snippet}")
+            lines.append(f"- `{ts}`: {snippet}")
         if len(events) > 5:
             lines.append(f"- _…and {len(events) - 5} more matching events_")
         lines.append("")
@@ -205,7 +205,7 @@ class BYOKSummarizer:
 
     The user passes a callable `inference_fn(prompt: str) -> str` so the
     SDK never holds the key itself. The callable can be implemented
-    against Anthropic, OpenAI, Venice, or any provider — the SDK
+    against Anthropic, OpenAI, Venice, or any provider: the SDK
     doesn't care.
 
     Free-tier installs cannot construct this class (the CLI's tier
@@ -287,7 +287,7 @@ class VeniceX402Summarizer:
 
 
 # ----------------------------------------------------------------------
-# Learner — orchestrates detection + summarization + persistence
+# Learner: orchestrates detection + summarization + persistence
 # ----------------------------------------------------------------------
 
 class Learner:
@@ -301,7 +301,7 @@ class Learner:
         max_proposals_per_run: cap to avoid swamping the review queue
         cap_gate: optional CapGate. When provided, accept_proposal calls
             the gate before writing the reference_documents row (T1-3 fix).
-            When None, no cap check is performed — exposed for advanced
+            When None, no cap check is performed: exposed for advanced
             callers who construct Learner directly and own their own
             enforcement.
     """
@@ -331,7 +331,7 @@ class Learner:
         run_id = new_id()
         started_at = _utc_now_iso()
 
-        # Resolve watermark — explicit `since` wins, otherwise look up last run
+        # Resolve watermark: explicit `since` wins, otherwise look up last run
         since_ts = since or self._last_watermark()
         events = self._load_events(since=since_ts)
         scanned = len(events)
@@ -366,7 +366,7 @@ class Learner:
         # temporal_routine: light-touch detector, deliberately last
         candidates.extend(_detect_temporal_routine(events, min_hits=self._min_hits))
 
-        # Deduplicate by slug — keep the highest-confidence candidate per slug
+        # Deduplicate by slug: keep the highest-confidence candidate per slug
         deduped: dict[str, _Candidate] = {}
         for c in candidates:
             existing = deduped.get(c.slug)
@@ -758,7 +758,7 @@ def _detect_temporal_routine(
         mean = sum(gaps_min) / len(gaps_min)
         if mean <= 0:
             continue
-        # Coefficient of variation — lower = more regular
+        # Coefficient of variation: lower = more regular
         var = sum((g - mean) ** 2 for g in gaps_min) / len(gaps_min)
         cov = (var ** 0.5) / mean
         if cov >= 0.6:

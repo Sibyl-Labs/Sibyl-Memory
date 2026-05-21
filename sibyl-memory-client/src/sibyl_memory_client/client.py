@@ -25,7 +25,7 @@ from .storage import Storage, dumps, loads, new_id, _utc_now_iso
 # but null bytes break downstream consumers (logs, exports, CLI display),
 # empty strings are nonsense as primary keys, and unbounded length is a
 # latent vector if any code path ever spills to filesystem. Validate on
-# WRITE only — reads of already-stored bad identifiers still work so users
+# WRITE only: reads of already-stored bad identifiers still work so users
 # can introspect and migrate.
 
 _IDENT_MAX_LENGTH = 1024
@@ -95,7 +95,7 @@ _FTS5_QUERY_ERROR_MARKERS = (
     "no such column",
 )
 
-# Substring marking the schema-missing case — keep silent (return empty)
+# Substring marking the schema-missing case: keep silent (return empty)
 # for defense against partial schema state on very old DBs.
 _SCHEMA_MISSING_MARKER = "no such table"
 
@@ -161,7 +161,7 @@ def _sanitize_fts5_query(raw: str, *, prefix: bool = False) -> str:
         quoted phrases (`"phrase"*` is invalid syntax) so we use bare
         tokens here. The character filter still blocks operator injection.
 
-    Empty / whitespace-only queries return an empty string — callers
+    Empty / whitespace-only queries return an empty string: callers
     should short-circuit on empty.
     """
     if not raw or not isinstance(raw, str):
@@ -175,7 +175,7 @@ def _sanitize_fts5_query(raw: str, *, prefix: bool = False) -> str:
         return ""
 
     if prefix:
-        # Reduce to safe bare tokens — alphanumeric + underscore only.
+        # Reduce to safe bare tokens: alphanumeric + underscore only.
         # Anything else (quotes, colons, hyphens, FTS5 operators) becomes
         # a space, then we split-and-rejoin to get clean whitespace.
         cleaned = "".join(ch if (ch.isalnum() or ch == "_") else " " for ch in s)
@@ -231,7 +231,7 @@ class MemoryClient:
         self._account_id = account_id
         self._session_token = session_token
 
-        # Cap gate — enforces the 2 MB free-tier cap with server-authoritative
+        # Cap gate: enforces the 2 MB free-tier cap with server-authoritative
         # tier verification at the boundary. See _capcheck.py for the design.
         if cap_gate is None:
             from ._capcheck import CapGate, TierCache
@@ -332,7 +332,7 @@ class MemoryClient:
             )
 
     # ------------------------------------------------------------------
-    # Entities (WARM tier) — single source of truth per rule 43
+    # Entities (WARM tier): single source of truth per rule 43
     # ------------------------------------------------------------------
     def set_entity(
         self,
@@ -359,7 +359,7 @@ class MemoryClient:
         validate_identifier(category, field_name="category")
         validate_identifier(name, field_name="name")
         body_json = _check_json(body)
-        # Cap gate — rough byte estimate (FTS5 + indexes add overhead)
+        # Cap gate: rough byte estimate (FTS5 + indexes add overhead)
         self._cap_gate.check(proposed_delta_bytes=len(body_json) + len(name) + len(category) + 200)
         with self._storage.transaction() as conn:
             existing = conn.execute(
@@ -454,7 +454,7 @@ class MemoryClient:
         return {"body": loads(row["body"]), "updated_at": row["updated_at"]}
 
     # ------------------------------------------------------------------
-    # Journal (COLD tier) — append-only event log
+    # Journal (COLD tier): append-only event log
     # ------------------------------------------------------------------
     def write_event(
         self,
@@ -523,7 +523,7 @@ class MemoryClient:
         ]
 
     # ------------------------------------------------------------------
-    # Reference (REFERENCE tier) — static lookup documents
+    # Reference (REFERENCE tier): static lookup documents
     # ------------------------------------------------------------------
     def set_reference(
         self,
@@ -574,7 +574,7 @@ class MemoryClient:
         raised before any cap-gate work.
         """
         # Read the row first so we can size the archive insert. NotFoundError
-        # propagates as before — no cap-gate side effect for missing entities.
+        # propagates as before: no cap-gate side effect for missing entities.
         with self._storage.connection() as conn:
             preview = conn.execute(
                 "SELECT id, body FROM entities WHERE tenant_id = ? AND category = ? AND name = ?",
@@ -605,7 +605,7 @@ class MemoryClient:
         return {"archived_id": arch_id, "original_id": row["id"]}
 
     # ------------------------------------------------------------------
-    # Self-learning + lint (v0.2.0) — paid-tier only
+    # Self-learning + lint (v0.2.0): paid-tier only
     # ------------------------------------------------------------------
     # Both convenience entrypoints below gate on tier and raise
     # TierGateError for free-tier callers. The underlying Learner / Linter
@@ -661,17 +661,17 @@ class MemoryClient:
         if "soft_cap_bytes" not in kwargs:
             from .lint import TIER_SOFT_CAPS, DEFAULT_SOFT_CAP_BYTES
             cap = TIER_SOFT_CAPS.get(self._tier, DEFAULT_SOFT_CAP_BYTES)
-            # Paid tiers map to None — pass a huge cap so the check effectively never fires
+            # Paid tiers map to None: pass a huge cap so the check effectively never fires
             kwargs["soft_cap_bytes"] = cap if cap is not None else (1 << 62)
         return Linter(self._storage, tenant_id=self._tenant_id, **kwargs).run()
 
     # ------------------------------------------------------------------
-    # Free-tier read access (no gating) — visibility into the upgrade pressure
+    # Free-tier read access (no gating): visibility into the upgrade pressure
     # ------------------------------------------------------------------
     def free_tier_status(self) -> dict[str, Any]:
         """Return current free-tier state: DB size, soft cap, % used.
 
-        Always available regardless of tier — free-tier callers use this
+        Always available regardless of tier: free-tier callers use this
         to render the "you're at X% of your free cap" upgrade prompt
         without needing to call the (gated) linter.
         """
@@ -708,7 +708,7 @@ class MemoryClient:
         Returns warm-tier entity rows only. For cross-tier search (entities +
         state + reference + journal in one call), use ``search()``.
 
-        Query is sanitized as a single FTS5 phrase — column-filter syntax
+        Query is sanitized as a single FTS5 phrase: column-filter syntax
         (``name:foo``) and unclosed quotes can't escape into the parser.
         Set ``prefix=True`` for prefix matching on the final token.
 
@@ -757,7 +757,7 @@ class MemoryClient:
               "body":  <JSON-decoded payload or string>,
               "snippet": <FTS5 snippet, up to ~120 chars around the match>,
               "rank":  <FTS5 rank, lower is better>,
-              "ts":    <ISO timestamp — updated_at or journal ts>
+              "ts":    <ISO timestamp: updated_at or journal ts>
             }
 
         Ordered by FTS5 rank across the union. The default ``limit`` applies
@@ -778,7 +778,7 @@ class MemoryClient:
             # v0.4.0 (KAPPA YELLOW finding): per-tier OperationalError handling
             # now classifies via _classify_fts5_error. Schema-missing keeps the
             # previous behavior (skip this tier silently, other tiers continue).
-            # FTS5 syntax / real backend errors raise — the query is bad for
+            # FTS5 syntax / real backend errors raise: the query is bad for
             # ALL tiers, no point continuing through the union.
             if "entity" in allowed:
                 try:
@@ -848,7 +848,7 @@ class MemoryClient:
                         raise exc from e
             if "journal" in allowed:
                 try:
-                    # Journal FTS5 is standalone — fetch the event_id from
+                    # Journal FTS5 is standalone: fetch the event_id from
                     # the FTS5 table directly, then join to journal_events
                     # by id (TEXT PK) for the typed body fields.
                     for r in conn.execute(

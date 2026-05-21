@@ -151,7 +151,7 @@ def test_double_accept_raises(client: MemoryClient) -> None:
 
 
 # ----------------------------------------------------------------------
-# Custom summarizer plumbing — BYOK + Venice/x402 stubs
+# Custom summarizer plumbing. BYOK + Venice/x402 stubs
 # ----------------------------------------------------------------------
 def test_byok_summarizer_invokes_inference_fn(client: MemoryClient) -> None:
     captured = {}
@@ -215,7 +215,7 @@ def test_learner_is_tenant_scoped(tmp_path: Path) -> None:
 
 
 # ----------------------------------------------------------------------
-# Tier gating — free tier blocked from self-learning
+# Tier gating: free tier blocked from self-learning
 # ----------------------------------------------------------------------
 def test_free_tier_cannot_learn(tmp_path: Path) -> None:
     from sibyl_memory_client import TierGateError
@@ -234,7 +234,7 @@ def test_free_tier_cannot_list_proposals(tmp_path: Path) -> None:
 
 
 def test_free_tier_can_still_use_core_memory(tmp_path: Path) -> None:
-    """Free-tier users get the full memory SDK — only learning/lint are gated.
+    """Free-tier users get the full memory SDK: only learning/lint are gated.
     This is the upgrade-pressure design: free tier is fully functional storage
     + retrieval, paid tier adds the intelligence layer."""
     free = MemoryClient.local(str(tmp_path / "free.db"))

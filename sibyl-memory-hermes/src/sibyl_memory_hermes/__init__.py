@@ -1,4 +1,4 @@
-"""sibyl-memory-hermes — Sibyl Memory SDK + bundled Hermes plugin payload.
+"""sibyl-memory-hermes. Sibyl Memory SDK + bundled Hermes plugin payload.
 
 Public exports:
     SibylMemoryProvider     framework-agnostic Sibyl Memory SDK class
@@ -12,20 +12,20 @@ ARCHITECTURE (v0.3.0+)
 
 This package ships two things:
 
-  1. `SibylMemoryProvider` — a pure-Python SDK class. Framework-agnostic.
+  1. `SibylMemoryProvider`: a pure-Python SDK class. Framework-agnostic.
      Routes memory operations across the five Sibyl tiers (warm entities,
      hot state, cold journal, reference docs, archive). Can be called
      directly by any orchestration that wants a structured local memory
      backend.
 
-  2. A bundled Hermes plugin payload (`_hermes_plugin/`) — a thin adapter
+  2. A bundled Hermes plugin payload (`_hermes_plugin/`): a thin adapter
      implementing Hermes v0.13+ `MemoryProvider` ABC that delegates to
      `SibylMemoryProvider`. Installed into `$HERMES_HOME/plugins/sibyl/`
      by the `sibyl-memory-hermes install-plugin` console script.
 
 Hermes' plugin loader uses filesystem discovery, NOT pip entry points
 (verified against `plugins/memory/__init__.py` source 2026-05-17). A pip
-install alone won't make Sibyl visible to Hermes — the install-plugin
+install alone won't make Sibyl visible to Hermes: the install-plugin
 script bridges that gap.
 
 HERMES INSTALL FLOW

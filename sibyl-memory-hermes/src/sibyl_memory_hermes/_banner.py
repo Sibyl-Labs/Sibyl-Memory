@@ -2,7 +2,7 @@
 
 Prints the SIBYL wordmark in ANSI Shadow boxchars with a 24-bit truecolor
 vertical gradient flowing from cream/white at the top through warm gold
-to deep ochre at the bottom — aligned with the lab visual identity per
+to deep ochre at the bottom: aligned with the lab visual identity per
 the operator's brand-discipline rule (creme palette, deep-ochre accent).
 
 Gracefully degrades:
@@ -10,7 +10,7 @@ Gracefully degrades:
   - stdout is not a TTY        → plain text fallback (or skip entirely)
   - TERM=dumb                  → plain text fallback
 
-Truecolor support is detected via $COLORTERM (truecolor / 24bit) — most
+Truecolor support is detected via $COLORTERM (truecolor / 24bit): most
 modern terminals (iTerm2, Alacritty, Kitty, wezterm, Windows Terminal,
 modern xterm builds, Ghostty) advertise it. Falls back to 256-color
 gradient when not available.
@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import sys
 
-# ANSI Shadow rendering of "SIBYL" — 6 rows, 41 cols. Each row gets its
+# ANSI Shadow rendering of "SIBYL": 6 rows, 41 cols. Each row gets its
 # own gradient color (top = pale cream/white, bottom = deep ochre).
 _LINES = (
     "███████╗██╗██████╗ ██╗   ██╗██╗     ",
@@ -49,7 +49,7 @@ _ATTRIBUTION = "a Sibyl Labs LLC Product. Agentic Infrastructure and Memory Prod
 
 
 def _supports_truecolor() -> bool:
-    """Detect 24-bit color support. Conservative — fall back gracefully."""
+    """Detect 24-bit color support. Conservative: fall back gracefully."""
     if os.environ.get("NO_COLOR"):
         return False
     if os.environ.get("TERM", "").lower() == "dumb":
@@ -96,22 +96,22 @@ def render_banner(*, force_color: bool | None = None) -> str:
     use_truecolor = force_color if force_color is not None else _supports_truecolor()
 
     if not use_truecolor:
-        # Plain text — still visually clean, just no color.
+        # Plain text: still visually clean, just no color.
         body = "\n".join("  " + line for line in _LINES)
         tagline = f"\n  {_TAGLINE}"
         attribution = f"\n  {_ATTRIBUTION}\n"
         return body + tagline + attribution
 
-    # Colored — apply per-row gradient.
+    # Colored: apply per-row gradient.
     colored_lines = []
     for line, (r, g, b) in zip(_LINES, _GRADIENT):
         colored_lines.append(f"  {_rgb(r, g, b)}{line}{_RESET}")
 
     body = "\n".join(colored_lines)
-    # Tagline in the deepest gold — present, but not competing with the wordmark.
+    # Tagline in the deepest gold: present, but not competing with the wordmark.
     r, g, b = _GRADIENT[-1]
     tagline = f"\n  {_rgb(r, g, b)}{_TAGLINE}{_RESET}"
-    # Attribution dimmer still — a half-step below the tagline so the hierarchy
+    # Attribution dimmer still: a half-step below the tagline so the hierarchy
     # reads SIBYL > tagline > attribution at a glance. ANSI dim (\033[2m) gives
     # ~55% perceived opacity across the supported terminals.
     attribution = f"\n  \033[2m{_rgb(r, g, b)}{_ATTRIBUTION}{_RESET}\n"

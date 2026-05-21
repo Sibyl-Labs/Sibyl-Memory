@@ -4,7 +4,7 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
-## [0.1.2] — 2026-05-18
+## [0.1.2] - 2026-05-18
 
 KAPPA external-tester remediation release. v0.1.1 was functionally broken
 on PyPI: `pip install sibyl-memory-mcp` followed by the entry-point invocation
@@ -17,7 +17,7 @@ clean-venv install smoke test in CI. Gap closed by the companion
 
 ### Fixed
 
-- **KAPPA-BLOCKER** — `sibyl-memory-mcp` now imports cleanly in a fresh
+- **KAPPA-BLOCKER**. `sibyl-memory-mcp` now imports cleanly in a fresh
   venv. The fix lives in the companion `sibyl-memory-client` v0.4.0 which
   exports `CapExceededError` and `TierVerificationError` from the
   `.exceptions` submodule path. This release bumps the client pin to
@@ -39,7 +39,7 @@ clean-venv install smoke test in CI. Gap closed by the companion
 
 ---
 
-## [0.1.1] — 2026-05-18
+## [0.1.1] - 2026-05-18
 
 Audit-remediation release. v0.3.0 plugin-family pre-ship audit (2026-05-18T05:05Z)
 flagged this package's `memory_record_event` tool as broken end-to-end (every
@@ -49,27 +49,27 @@ Companion releases: `sibyl-memory-client` v0.3.3, `sibyl-memory-hermes` v0.3.1,
 
 ### Fixed
 
-- **C1** — `memory_record_event` now calls the SDK's actual signature
+- **C1**. `memory_record_event` now calls the SDK's actual signature
   ``client.write_event(*, evaluated, acted, forward, extra, ts)``. The
   previous call ``client.write_event(kind, body, category=category,
   name=name)`` referenced parameters that don't exist and raised
   TypeError on every invocation. The high-level (kind, body, category,
   name) contract is preserved by translating: kind+body → `acted={kind,
   body}`, optional category+name → `extra={category, name}`.
-- **H2** — `memory_get_state` now unpacks the SDK's `{body, updated_at}`
+- **H2**. `memory_get_state` now unpacks the SDK's `{body, updated_at}`
   return shape into a flat response: `{ok, key, body: <user payload>,
   updated_at: <iso ts>}`. Previously returned `body` containing the full
   wrapper, so "body" meant two different things at different nesting
   depths in the same response.
-- **N3** — `memory_list` `category` parameter is now Optional. Matches
-  the SDK + Hermes adapter behavior — pass it to filter, omit to list
+- **N3**. `memory_list` `category` parameter is now Optional. Matches
+  the SDK + Hermes adapter behavior: pass it to filter, omit to list
   across all categories.
 
 ### Changed
 
-- **P-H1** — `MemoryClient` is cached at module scope. Previously rebuilt
+- **P-H1**. `MemoryClient` is cached at module scope. Previously rebuilt
   on every tool call (reading schema.sql from disk + bootstrapping FTS5
-  vtables — 10-50 ms per call). Cache invalidates on credentials.json
+  vtables: 10-50 ms per call). Cache invalidates on credentials.json
   mtime change so `sibyl upgrade` is still picked up without a server
   restart. Net effect: agent recall/search latency drops to single-digit
   milliseconds.
@@ -79,11 +79,11 @@ Companion releases: `sibyl-memory-client` v0.3.3, `sibyl-memory-hermes` v0.3.1,
   description and tool docstring now match the actual behavior.
 - Query sanitization handled by the client SDK (FTS5 column-filter
   syntax can't break out into the parser). MCP server didn't need
-  its own sanitization — it's downstream of the SDK fix.
+  its own sanitization: it's downstream of the SDK fix.
 
 ### Security
 
-- **SEC-4 / SEC-11** — `_load_credentials` refuses to follow symlinks.
+- **SEC-4 / SEC-11**. `_load_credentials` refuses to follow symlinks.
   Previously called `read_text()` on the resolved path, which would
   silently follow.
 
@@ -92,11 +92,11 @@ Companion releases: `sibyl-memory-client` v0.3.3, `sibyl-memory-hermes` v0.3.1,
 - `sibyl-memory-client>=0.3.3` (was `>=0.3.2`)
 - `sibyl-memory-hermes>=0.3.1` (was `>=0.2.2`)
 
-## [0.1.0] — 2026-05-17
+## [0.1.0] - 2026-05-17
 
 Initial release. Operator question 2026-05-17: "currently i'm only seeing
 instructions for Hermes agent, how could this be used with claude code or
-codex?" — answer: an MCP server wrapping `MemoryClient.local()`. Both Claude
+codex?": answer: an MCP server wrapping `MemoryClient.local()`. Both Claude
 Code and Codex CLI consume MCP, so a single server unlocks both.
 
 ### Added
@@ -104,14 +104,14 @@ Code and Codex CLI consume MCP, so a single server unlocks both.
 - **MCP server** (`sibyl-memory-mcp` console script + `python -m sibyl_memory_mcp`)
   using the official `mcp>=1.0.0` Python SDK with FastMCP convenience layer.
 - **8 tools** exposed over stdio transport:
-  - `memory_remember` — `set_entity(category, name, body)`
-  - `memory_recall` — `get_entity(category, name)`
-  - `memory_search` — `search_entities(query, limit)` (FTS5)
-  - `memory_list` — `list_entities(category, limit)`
-  - `memory_forget` — `archive_entity(category, name, reason)`
-  - `memory_set_state` — `set_state(key, body)` (HOT tier)
-  - `memory_get_state` — `get_state(key)`
-  - `memory_record_event` — `write_event(kind, body, category, name)` (COLD tier)
+  - `memory_remember`. `set_entity(category, name, body)`
+  - `memory_recall`. `get_entity(category, name)`
+  - `memory_search`. `search_entities(query, limit)` (FTS5)
+  - `memory_list`. `list_entities(category, limit)`
+  - `memory_forget`. `archive_entity(category, name, reason)`
+  - `memory_set_state`. `set_state(key, body)` (HOT tier)
+  - `memory_get_state`. `get_state(key)`
+  - `memory_record_event`. `write_event(kind, body, category, name)` (COLD tier)
 - **Auto-reads** `~/.sibyl-memory/credentials.json` on every tool call so tier
   changes from `sibyl upgrade` are picked up without restarting the server.
 - **Typed error envelope** mapping SDK exceptions to MCP-friendly payloads:
@@ -123,7 +123,7 @@ Code and Codex CLI consume MCP, so a single server unlocks both.
 ### Design notes
 
 - Re-opens `MemoryClient.local()` on every tool call. SQLite open is
-  sub-millisecond and this keeps the server stateless — no stale tier cache
+  sub-millisecond and this keeps the server stateless: no stale tier cache
   in the process, every call sees the current credentials.
 - Free-tier 2 MB cap is enforced server-side against the database (HMAC-signed
   credentials prevent local tampering). The MCP server has no way to bypass it.
@@ -138,10 +138,10 @@ Code and Codex CLI consume MCP, so a single server unlocks both.
 
 ### Compatible with
 
-- **Claude Code** — add to `~/.claude/settings.json` or project `.mcp.json`
-- **Codex CLI** — add to `~/.codex/config.toml`
-- **Cursor** — add to `~/.cursor/mcp.json`
-- **Continue** — add to `~/.continue/config.json` mcpServers block
+- **Claude Code**: add to `~/.claude/settings.json` or project `.mcp.json`
+- **Codex CLI**: add to `~/.codex/config.toml`
+- **Cursor**: add to `~/.cursor/mcp.json`
+- **Continue**: add to `~/.continue/config.json` mcpServers block
 - Any other MCP-spec-compliant client.
 
 ### License

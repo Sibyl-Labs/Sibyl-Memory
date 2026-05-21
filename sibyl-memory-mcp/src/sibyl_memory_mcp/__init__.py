@@ -1,4 +1,4 @@
-"""sibyl-memory-mcp — MCP server for Sibyl Memory Plugin.
+"""sibyl-memory-mcp. MCP server for Sibyl Memory Plugin.
 
 Wraps the local SQLite + FTS5 memory engine (sibyl-memory-client) and
 exposes it to any MCP-compatible agent: Claude Code, Codex CLI, Cursor,

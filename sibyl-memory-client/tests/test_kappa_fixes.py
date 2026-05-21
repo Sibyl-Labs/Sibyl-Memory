@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 
 # ----------------------------------------------------------------------
-# BLOCKER — submodule exception path
+# BLOCKER: submodule exception path
 # ----------------------------------------------------------------------
 
 def test_cap_exceeded_error_importable_from_exceptions_submodule():
@@ -66,7 +66,7 @@ def test_capcheck_backwards_compat_reexports():
 
 def test_top_level_package_still_exports_both():
     """The top-level `from sibyl_memory_client import CapExceededError` path
-    that already worked in v0.3.3 must still work — no regression on the
+    that already worked in v0.3.3 must still work: no regression on the
     main public surface."""
     from sibyl_memory_client import CapExceededError, TierVerificationError
     assert CapExceededError.__name__ == "CapExceededError"
@@ -74,7 +74,7 @@ def test_top_level_package_still_exports_both():
 
 
 # ----------------------------------------------------------------------
-# RED — memory.db file perms
+# RED: memory.db file perms
 # ----------------------------------------------------------------------
 
 @pytest.mark.skipif(not hasattr(os, "chmod"), reason="POSIX-only test")
@@ -107,7 +107,7 @@ def test_memory_db_wal_sidecar_perms_tighten_when_present(tmp_path):
 
 
 # ----------------------------------------------------------------------
-# YELLOW — validate_identifier
+# YELLOW: validate_identifier
 # ----------------------------------------------------------------------
 
 def test_validate_identifier_rejects_empty():
@@ -159,7 +159,7 @@ def test_validate_identifier_accepts_reasonable():
 
 
 # ----------------------------------------------------------------------
-# YELLOW — write paths call validate_identifier
+# YELLOW: write paths call validate_identifier
 # ----------------------------------------------------------------------
 
 def test_set_entity_rejects_empty_name(tmp_path):
@@ -195,7 +195,7 @@ def test_set_reference_rejects_empty_key(tmp_path):
 
 
 def test_read_paths_unaffected_by_validation(tmp_path):
-    """Read paths (get_entity, get_state, get_reference) must NOT validate —
+    """Read paths (get_entity, get_state, get_reference) must NOT validate -
     users with already-stored bad identifiers should still be able to read
     and migrate them.
 
@@ -205,7 +205,7 @@ def test_read_paths_unaffected_by_validation(tmp_path):
     from sibyl_memory_client import MemoryClient
     from sibyl_memory_client.exceptions import NotFoundError
     client = MemoryClient.local(tmp_path / "memory.db")
-    # Read on bad identifier should be NotFound, not ValidationError —
+    # Read on bad identifier should be NotFound, not ValidationError -
     # we don't gate reads. (NB: passing through SQLite, which handles it.)
     with pytest.raises(NotFoundError):
         client.get_entity("project", "nonexistent-but-validly-named")
@@ -214,7 +214,7 @@ def test_read_paths_unaffected_by_validation(tmp_path):
 
 
 # ----------------------------------------------------------------------
-# YELLOW — FTS5 error classifier
+# YELLOW. FTS5 error classifier
 # ----------------------------------------------------------------------
 
 def test_classify_fts5_error_schema_missing_returns_none():
@@ -250,12 +250,12 @@ def test_classify_fts5_error_other_returns_storage_error():
 
 
 def test_search_with_valid_query_does_not_raise(tmp_path):
-    """Normal queries should still work — no false-positive ValidationError."""
+    """Normal queries should still work: no false-positive ValidationError."""
     from sibyl_memory_client import MemoryClient
     client = MemoryClient.local(tmp_path / "memory.db")
     client.set_entity("project", "atlas", {"description": "alpha bravo charlie"})
     client.set_entity("project", "babel", {"description": "delta echo foxtrot"})
-    # Plain text query — should not raise, returns matching results
+    # Plain text query: should not raise, returns matching results
     hits = client.search("alpha")
     assert len(hits) >= 1
     # Empty query short-circuits to []
@@ -267,7 +267,7 @@ def test_search_with_valid_query_does_not_raise(tmp_path):
 def test_search_entities_phrase_match_semantics(tmp_path):
     """Document the actual phrase-match behavior so KAPPA's confusion
     (queries containing AND/OR/* return zero hits) is verified expected.
-    These queries get wrapped as phrases — they only match literal occurrences
+    These queries get wrapped as phrases: they only match literal occurrences
     of the phrase text in entity bodies."""
     from sibyl_memory_client import MemoryClient
     client = MemoryClient.local(tmp_path / "memory.db")
@@ -275,7 +275,7 @@ def test_search_entities_phrase_match_semantics(tmp_path):
     # "alpha bravo" should match because the body contains that exact phrase
     hits = client.search_entities("alpha bravo")
     assert len(hits) == 1
-    # "AND" is a literal here — no entity body contains "AND"
+    # "AND" is a literal here: no entity body contains "AND"
     hits = client.search_entities("AND OR NOT")
     assert hits == []
     # "*" is wrapped as a literal phrase

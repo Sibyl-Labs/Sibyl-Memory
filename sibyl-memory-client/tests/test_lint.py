@@ -104,7 +104,7 @@ def test_soft_cap_critical_threshold(client: MemoryClient) -> None:
     # Write enough rows to push the DB well above any tiny cap we set.
     for i in range(20):
         client.set_entity("project", f"p{i}", {"i": i, "payload": "x" * 200})
-    # Run with a 2 KB cap — well below the actual DB size after writes
+    # Run with a 2 KB cap: well below the actual DB size after writes
     report = client.lint(soft_cap_bytes=2 * 1024)
     matches = [f for f in report.findings if f.check == "db-soft-cap"]
     assert matches, f"expected db-soft-cap finding; got {[f.check for f in report.findings]}"
@@ -153,7 +153,7 @@ def test_lint_is_tenant_scoped(tmp_path: Path) -> None:
 
 
 # ----------------------------------------------------------------------
-# Tier gating — free tier blocked, paid tier allowed
+# Tier gating: free tier blocked, paid tier allowed
 # ----------------------------------------------------------------------
 def test_free_tier_cannot_lint(tmp_path: Path) -> None:
     from sibyl_memory_client import TierGateError

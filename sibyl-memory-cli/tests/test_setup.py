@@ -36,7 +36,7 @@ from sibyl_memory_cli.setup import (  # noqa: E402
 # ----------------------------------------------------------------------
 
 def _stub_install_plugin(hermes_home: str):
-    """Replacement for sibyl_memory_hermes.install_plugin.install — drops a fake
+    """Replacement for sibyl_memory_hermes.install_plugin.install: drops a fake
     adapter file so the wirer sees plugin_installed=True afterwards."""
     plugin_dir = Path(hermes_home) / "plugins" / "sibyl"
     plugin_dir.mkdir(parents=True, exist_ok=True)

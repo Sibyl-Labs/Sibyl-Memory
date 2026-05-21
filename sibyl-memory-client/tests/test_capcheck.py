@@ -23,7 +23,7 @@ from sibyl_memory_client import (
 
 
 # ----------------------------------------------------------------------
-# Fake check-write transport — lets us simulate server responses without
+# Fake check-write transport: lets us simulate server responses without
 # hitting the network
 # ----------------------------------------------------------------------
 
@@ -105,7 +105,7 @@ def test_at_cap_server_upgrades_user(tmp_path: Path) -> None:
         check_fn=server,
     )
     gate.check(proposed_delta_bytes=500)
-    # No exception — server told us we're paid
+    # No exception: server told us we're paid
     # Verify cache was updated
     cached = cache.load()
     assert cached is not None
@@ -127,7 +127,7 @@ def test_paid_cache_skips_server(tmp_path: Path) -> None:
     gate = CapGate(
         account_id="acc-1",
         session_token="sess-1",
-        db_size_fn=lambda: 100 * 1024 * 1024,  # 100 MB — way past free cap
+        db_size_fn=lambda: 100 * 1024 * 1024,  # 100 MB: way past free cap
         local_tier_hint="free",
         cache=cache,
         check_fn=server,
@@ -178,7 +178,7 @@ def test_offline_at_cap_with_recent_paid_cache(tmp_path: Path) -> None:
         cache=cache,
         check_fn=server,
     )
-    # No exception — cache is fresh and says paid
+    # No exception: cache is fresh and says paid
     gate.check(proposed_delta_bytes=10_000)
 
 
@@ -263,7 +263,7 @@ def test_e2e_free_tier_blocked_at_cap(tmp_path: Path) -> None:
         cap_gate=gate,
     )
 
-    # Under the cap — works fine
+    # Under the cap: works fine
     client.set_entity("project", "atlas", {"status": "active"})
 
     # Simulate being near the cap
@@ -283,7 +283,7 @@ def test_e2e_paid_tier_no_cap(tmp_path: Path) -> None:
     cache = TierCache(tmp_path / "tc.json")
     db_path = tmp_path / "memory.db"
 
-    fake_size = [50 * 1024 * 1024]  # 50 MB — way past free cap
+    fake_size = [50 * 1024 * 1024]  # 50 MB: way past free cap
 
     from sibyl_memory_client._capcheck import CapGate
     gate = CapGate(

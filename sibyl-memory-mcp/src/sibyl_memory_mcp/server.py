@@ -12,7 +12,7 @@
 
 All operations run against the local SQLite at ~/.sibyl-memory/memory.db.
 The cap gate (free-tier 2 MB hard cap, paid-tier uncapped) is enforced
-automatically by the underlying sibyl-memory-client SDK — the MCP server
+automatically by the underlying sibyl-memory-client SDK: the MCP server
 just surfaces the typed errors back to the caller.
 
 v0.1.1 hardening (audit-remediation):
@@ -66,7 +66,7 @@ def _load_credentials() -> dict[str, Any]:
 
     v0.1.1 hardening:
       - Refuses to follow symlinks (SEC-11). If the file is a symlink,
-        treat as absent — same behavior as the Hermes provider.
+        treat as absent: same behavior as the Hermes provider.
       - Treats any I/O / parse error as absent (existing behavior).
     """
     if not DEFAULT_CRED_PATH.exists():
@@ -108,7 +108,7 @@ def _open_client() -> MemoryClient:
     """Return a MemoryClient bound to the local DB + credentials.
 
     v0.1.1 (audit P-H1): cached at module scope. Previously rebuilt every
-    tool call (reading schema.sql from disk + bootstrapping FTS5 vtables —
+    tool call (reading schema.sql from disk + bootstrapping FTS5 vtables -
     10-50ms per call). Now invalidated only when credentials.json mtime
     changes, which is the only thing that should change tier behavior.
     """
@@ -189,7 +189,7 @@ def build_server() -> FastMCP:
         """Store an entity in long-term memory.
 
         Use for facts, project state, person profiles, anything the agent
-        should remember across sessions. Idempotent on (category, name) —
+        should remember across sessions. Idempotent on (category, name) -
         a second call with the same key updates the entry.
 
         Args:
@@ -225,10 +225,10 @@ def build_server() -> FastMCP:
 
         v0.1.1: spans all four searchable tiers. Each hit carries a `tier`
         tag so the agent knows where the match came from. Previously was
-        entities-only — the v0.3.0 plugin family marketing claim of
+        entities-only: the v0.3.0 plugin family marketing claim of
         "search across all tiers" is now actually true.
 
-        Query is sanitized as a single FTS5 phrase — column-filter syntax
+        Query is sanitized as a single FTS5 phrase: column-filter syntax
         (`name:foo`, `rowid:*`) is treated as literal text and cannot
         break out into the FTS5 parser. Empty/invalid queries return [].
 
@@ -250,7 +250,7 @@ def build_server() -> FastMCP:
     ) -> dict[str, Any]:
         """List entities, optionally filtered by category. Most-recently-updated first.
 
-        v0.1.1: `category` is now optional (audit N3 — matches the SDK and
+        v0.1.1: `category` is now optional (audit N3: matches the SDK and
         Hermes adapter behavior). Pass it to filter; omit to list across
         all categories.
 
@@ -267,7 +267,7 @@ def build_server() -> FastMCP:
 
     @mcp.tool()
     def memory_forget(category: str, name: str, reason: str | None = None) -> dict[str, Any]:
-        """Archive an entity (not destroyed — moved to archived_entities).
+        """Archive an entity (not destroyed: moved to archived_entities).
 
         The body is preserved in the archive table for forensic recovery
         but no longer appears in recall/list/search. Pass a `reason` to
@@ -284,7 +284,7 @@ def build_server() -> FastMCP:
     def memory_set_state(key: str, body: dict[str, Any] | list[Any]) -> dict[str, Any]:
         """Write a HOT-tier state document.
 
-        Use for ephemeral working state the agent updates frequently —
+        Use for ephemeral working state the agent updates frequently -
         current focus, in-flight task list, working draft. Faster than
         entity writes; one row per key, overwritten on each set.
         """
@@ -299,7 +299,7 @@ def build_server() -> FastMCP:
     def memory_get_state(key: str) -> dict[str, Any]:
         """Read a HOT-tier state document by key.
 
-        v0.1.1 (audit H2): response shape is now flat —
+        v0.1.1 (audit H2): response shape is now flat -
             {ok, key, body: <user payload>, updated_at: <iso ts>}
         Previously returned ``body`` = the full ``{body, updated_at}`` dict
         from the SDK, so "body" meant two different things at different
@@ -330,7 +330,7 @@ def build_server() -> FastMCP:
     ) -> dict[str, Any]:
         """Append a COLD-tier journal event.
 
-        Use for things that happened — actions taken, decisions made,
+        Use for things that happened: actions taken, decisions made,
         observations recorded. Append-only; never overwrites. Best paired
         with entities (the entity is the noun, the journal is the verb).
 
