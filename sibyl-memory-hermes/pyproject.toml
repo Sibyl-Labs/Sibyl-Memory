@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sibyl-memory-hermes"
+version = "0.3.4"
+description = "Sibyl Memory SDK + bundled Hermes plugin payload. Local-first, SQLite-backed, structured-tier memory for Hermes v0.13+ (and any other Python orchestration that wants direct SDK access)."
+authors = [{ name = "SIBYL, Sibyl Labs LLC", email = "sibyl@sibyllabs.org" }]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = [
+  "sibyl", "memory", "hermes", "hermes-agent", "agent", "sqlite",
+  "local-first", "agentic-memory", "agent-framework", "fts5",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "sibyl-memory-client>=0.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+]
+# Hermes is NOT a hard dep. Users who want the Hermes integration install
+# hermes-agent separately + run `sibyl-memory-hermes install-plugin` to
+# drop the bundled adapter into $HERMES_HOME/plugins/sibyl/.
+hermes = [
+  "hermes-agent>=0.13.0",
+]
+
+[project.scripts]
+sibyl-memory-hermes = "sibyl_memory_hermes.install_plugin:main"
+
+[project.urls]
+Homepage = "https://sibyllabs.org/memory"
+Documentation = "https://docs.sibyllabs.org/memory/integrations"
+Repository = "https://github.com/sibyllabs/sibyl-memory-plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["sibyl_memory_hermes*"]
+
+[tool.setuptools.package-data]
+# Bundle the validated Hermes plugin adapter + metadata. The install-plugin
+# console script reads these via importlib.resources and copies bytes to
+# $HERMES_HOME/plugins/sibyl/ (renaming adapter.py → __init__.py at dest).
+"sibyl_memory_hermes._hermes_plugin" = ["adapter.py", "plugin.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

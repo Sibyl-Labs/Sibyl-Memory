@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sibyl-memory-client"
+version = "0.4.1"
+description = "Local-first agentic memory SDK. SQLite-backed five-tier hierarchical schema, FTS5 search, multi-tenant, with self-learning skill detection and local memory linter. Foundation of the Sibyl Memory Plugin family."
+authors = [{ name = "SIBYL, Sibyl Labs LLC", email = "sibyl@sibyllabs.org" }]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["sibyl", "memory", "agent", "sqlite", "local-first", "hermes"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Database",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+]
+
+[project.urls]
+Homepage = "https://sibyllabs.org/plugin"
+Documentation = "https://docs.sibyllabs.org/memory/"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["sibyl_memory_client*"]
+
+[tool.setuptools.package-data]
+"sibyl_memory_client" = ["schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
