@@ -1,8 +1,43 @@
-# Sibyl Labs
+<div align="center">
 
-Agentic memory infrastructure. Local-first, SQLite-backed, structured-tier memory for AI agents — plus the CLI, MCP server, and Hermes plugin that ship on top of it.
+```
+███████╗██╗██████╗ ██╗   ██╗██╗     
+██╔════╝██║██╔══██╗╚██╗ ██╔╝██║     
+███████╗██║██████╔╝ ╚████╔╝ ██║     
+╚════██║██║██╔══██╗  ╚██╔╝  ██║     
+███████║██║██████╔╝   ██║   ███████╗
+╚══════╝╚═╝╚═════╝    ╚═╝   ╚══════╝
 
-This is the official source repository for the Sibyl Memory Plugin family. All packages are published to PyPI under the MIT license.
+         M  E  M  O  R  Y
+```
+
+**agentic memory infrastructure · file-based · zero embeddings**
+
+[![PyPI · client](https://img.shields.io/pypi/v/sibyl-memory-client?label=client&color=8a6a2a)](https://pypi.org/project/sibyl-memory-client/)
+[![PyPI · cli](https://img.shields.io/pypi/v/sibyl-memory-cli?label=cli&color=8a6a2a)](https://pypi.org/project/sibyl-memory-cli/)
+[![PyPI · hermes](https://img.shields.io/pypi/v/sibyl-memory-hermes?label=hermes&color=8a6a2a)](https://pypi.org/project/sibyl-memory-hermes/)
+[![PyPI · mcp](https://img.shields.io/pypi/v/sibyl-memory-mcp?label=mcp&color=8a6a2a)](https://pypi.org/project/sibyl-memory-mcp/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-15110a.svg)](./LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-15110a.svg)](https://www.python.org/downloads/)
+[![LongMemEval](https://img.shields.io/badge/LongMemEval-95.6%25%20%23%E2%80%832-2e6b3a.svg)](https://blog.sibylcap.com/longmemeval-v2)
+
+<sub><i>built by an autonomous agent · sibyl labs llc</i></sub>
+
+</div>
+
+---
+
+## What this is
+
+Five PyPI packages, one schema family, one architecture.
+
+`sibyl-memory-client` is a local-first agentic memory SDK. SQLite-backed, five-tier hierarchical schema, FTS5 search, multi-tenant by design. No vector database. No embedding model. No external retrieval service. The memory lives on the agent's machine; the substrate is a single file on disk.
+
+The other four packages ride on top: `sibyl-memory-cli` for activation and tier management, `sibyl-memory-hermes` for Hermes Agent integration, `sibyl-memory-mcp` for any MCP-compatible client (Claude Code, Codex, Cursor, Continue), and `sibyl-plugin-schema` for the activation database that backs account, subscription, and staker-tier state on the server side.
+
+The architecture was benchmarked publicly on [LongMemEval Oracle](https://blog.sibylcap.com/longmemeval-v2) (ICLR 2025, University of Michigan, 500 questions) and placed **#2 overall at 95.6%**, tied with Chronos (PwC), beating Mastra, MemMachine, Hindsight, Mem0, Supermemory, Zep, and the Oracle baseline. It is the only file-based system in the top tier — running on a single 4 vCPU / 16 GB box, no vector infrastructure, no embedding fees.
+
+This is the entire stack as it ships to production agents today.
 
 ---
 
@@ -25,7 +60,7 @@ pip install sibyl-memory-cli
 sibyl init
 ```
 
-`sibyl init` opens a browser to activate your account at https://sibyllabs.org/plugin/activate, binds your wallet (SIWE) or email, and writes credentials to `~/.sibyl-memory/credentials.json`. Free tier is the default; staker and subscription tiers unlock additional capacity.
+`sibyl init` opens a browser to activate your account at https://sibyllabs.org/plugin/activate, binds your wallet (SIWE), email (six-digit terminal pairing code), or any wallet via USDC-send on Base, and writes credentials to `~/.sibyl-memory/credentials.json`. Free tier is the default; staker and subscription tiers unlock self-learning, the memory linter, and remove the local cap.
 
 For direct SDK use:
 
@@ -37,14 +72,20 @@ For Hermes integration:
 
 ```bash
 pip install sibyl-memory-hermes
+sibyl-memory-hermes install-plugin
+# then edit ~/.hermes/config.yaml:
+#   memory:
+#     provider: sibyl
 ```
 
-For MCP:
+For MCP (Claude Code, Codex, Cursor, Continue, ...):
 
 ```bash
 pip install sibyl-memory-mcp
-# Then point your MCP client at the server entry point.
+# then point your MCP client at the server entry point.
 ```
+
+Full documentation at [docs.sibyllabs.org/memory](https://docs.sibyllabs.org/memory/).
 
 ---
 
@@ -75,16 +116,36 @@ pip install sibyl-memory-mcp
 └─────────────────────────────────────────────────────────┘
 ```
 
-Each package has its own `README.md` and `CHANGELOG.md` for details.
+Each package has its own `README.md` and `CHANGELOG.md` for the detail.
+
+The five tiers, in case you're curious:
+
+```
+  HOT        state/        live working state, rewritten in place
+  WARM       entities/     single source of truth per (category, name)
+  COLD       journal/      append-only event log
+  REFERENCE  reference/    static knowledge, rarely changes
+  ARCHIVE    archive/      retired entities, kept for audit
+```
+
+Rule 43 (single source of truth per entity) is enforced at the schema level via a `UNIQUE (tenant_id, category, name)` constraint, not just a convention in the application code. Drift is impossible by construction.
+
+---
+
+## Provenance
+
+Built by [SIBYL](https://x.com/sibylcap), the autonomous agent operating at [Sibyl Labs LLC](https://sibyllabs.org).
+
+The agent has been operating in production since February 2026, ships code daily, holds an on-chain identity on Base (ERC-8004 agent ID 20880), runs an autonomous trading engine, an on-chain messaging protocol, an x402 payment rail, a token-gated chat demo, an advisory dashboard, and this memory product family. Everything verifiable on-chain.
+
+Memory architecture is the proven core. Sibyl Labs LLC owns the IP, signs contracts, and holds the legal wrapper around the agent's work. The work itself is shipped by the agent, in sessions, through the operator (`@tradingtulips`). The PyPI releases, the schema migrations, the CLI banner above — all of it is autonomous agent output.
+
+The on-chain record is the resume. This repository is one chapter of it.
 
 ---
 
 ## License
 
 MIT. See [LICENSE](./LICENSE).
-
-## About
-
-Built by SIBYL, the autonomous agent operating at Sibyl Labs LLC. Follow the work on X at [@sibylcap](https://x.com/sibylcap), or at [sibyllabs.org](https://sibyllabs.org).
 
 Copyright (c) 2026 Sibyl Labs LLC.
