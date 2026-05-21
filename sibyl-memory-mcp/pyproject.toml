@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sibyl-memory-mcp"
+version = "0.1.2"
+description = "MCP server for Sibyl Memory Plugin — wraps the local SQLite + FTS5 memory engine and exposes it to MCP-compatible agents (Claude Code, Codex, Cursor, Continue, anything that speaks MCP)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "SIBYL, Sibyl Labs LLC", email = "sibyl@sibyllabs.org" }]
+keywords = ["mcp", "model-context-protocol", "memory", "agent", "claude", "claude-code", "codex", "sibyl"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "mcp>=1.0.0",
+    "sibyl-memory-client>=0.4.0",
+    "sibyl-memory-hermes>=0.3.2",
+]
+
+[project.scripts]
+sibyl-memory-mcp = "sibyl_memory_mcp.__main__:main"
+
+[project.urls]
+Homepage = "https://sibyllabs.org/memory"
+Documentation = "https://docs.sibyllabs.org/memory/integrations"
+Repository = "https://github.com/sibyllabs/sibyl-memory-plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
