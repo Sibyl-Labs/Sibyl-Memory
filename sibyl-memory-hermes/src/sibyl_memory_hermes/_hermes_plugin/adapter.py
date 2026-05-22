@@ -268,20 +268,66 @@ class SibylAdapter(MemoryProvider):
             "tiers (warm entities, hot state, cold journal, reference docs).\n"
             "- sibyl_remember(category, name, body): store a fact\n"
             "- sibyl_recall(category, name): look up a known fact (returns {body, ...} row)\n"
-            "- sibyl_search(query): FTS5 search across ALL tiers; hits are tier-tagged\n"
+            "- sibyl_search(query): FTS5 search across ALL tiers; hits are tier-tagged. "
+            "Query is treated as AND-of-tokens by default (every word in the query must "
+            "appear in the matched row, in any order). For consecutive-phrase match, wrap "
+            "the input in double-quotes (e.g. query='\"Christopher Nolan\"').\n"
             "- sibyl_list(category?, status?): browse what's remembered"
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not self._sibyl or not query or len(query.strip()) < _MIN_QUERY_LEN:
             return ""
+        # Multi-strategy prefetch: try the full query first (the SDK default
+        # is AND-of-tokens as of sibyl-memory-client v0.4.2, so multi-word
+        # natural queries DO hit), then top up with per-significant-token
+        # searches if recall is thin. This matches the behaviour the LongMemEval
+        # 50-Q benchmark on 2026-05-22 showed gives competitive recall.
+        clean = query.strip()[:1000]
+        merged: dict[tuple[str, str | None], dict[str, Any]] = {}
+
+        def _absorb(hits):
+            for h in hits:
+                k = (h.get("tier"), h.get("key"))
+                r = h.get("rank", 0.0)
+                if k in merged:
+                    merged[k]["match_count"] += 1
+                    if r < merged[k]["best_rank"]:
+                        merged[k]["best_rank"] = r
+                else:
+                    merged[k] = {"hit": h, "match_count": 1, "best_rank": r}
+
         try:
-            hits = self._sibyl.search(query.strip()[:1000], limit=_PREFETCH_LIMIT)
+            _absorb(self._sibyl.search(clean, limit=_PREFETCH_LIMIT))
         except Exception as e:
-            logger.debug("Sibyl prefetch search failed: %s", e)
+            logger.debug("Sibyl prefetch primary search failed: %s", e)
+
+        # Per-token top-up. Skip stopwords + short tokens to avoid noise.
+        if len(merged) < _PREFETCH_LIMIT:
+            stop = {
+                "the","a","an","and","or","but","is","are","was","were","be","do","did",
+                "does","have","has","had","i","you","he","she","it","we","they","my","your",
+                "what","which","who","whom","when","where","why","how","to","of","in","on",
+                "at","for","with","this","that","these","those","not","can","will","would",
+                "should","could","may","might","just","also","all","any","some","more","most",
+            }
+            import re as _re
+            tokens = _re.findall(r"[A-Za-z0-9&]+(?:['-][A-Za-z0-9&]+)*", clean.lower())
+            tokens = [t for t in tokens if len(t) >= 3 and t not in stop]
+            for tok in tokens[:5]:  # cap to keep prefetch cheap
+                try:
+                    _absorb(self._sibyl.search(tok, limit=_PREFETCH_LIMIT))
+                except Exception:
+                    pass
+                if len(merged) >= _PREFETCH_LIMIT * 2:
+                    break
+
+        if not merged:
             return ""
-        if not hits:
-            return ""
+        # Rank by per-key match count desc, then best (most negative) FTS5 rank
+        ranked = sorted(merged.values(),
+                        key=lambda x: (-x["match_count"], x["best_rank"]))
+        hits = [x["hit"] for x in ranked[:_PREFETCH_LIMIT]]
         lines = ["## Sibyl Memory: relevant context"]
         for hit in hits:
             tier = hit.get("tier", "?")

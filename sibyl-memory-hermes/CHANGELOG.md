@@ -4,6 +4,42 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.5] - 2026-05-22
+
+Plugin default-UX fixes surfaced by the LongMemEval 50-Q benchmark on
+2026-05-22. Three coordinated changes: depend on `sibyl-memory-client>=0.4.2`
+(which flipped `search()` default from phrase-match to AND-of-tokens),
+upgrade `SibylAdapter.prefetch()` to multi-strategy retrieval, and add
+explicit search-mode coaching to `system_prompt_block()`.
+
+### Changed
+
+- `dependencies`: bumped pin to `sibyl-memory-client>=0.4.2` so the new
+  default AND-of-tokens search semantics flow through automatically. Every
+  Hermes user's first natural-language search now returns matches
+  consistently (was: 0 hits for any query with 2+ words).
+- `SibylAdapter.prefetch(query)`: replaced single passive `search(query)`
+  call with a multi-strategy retrieval: tries the full query first, then
+  tops up with per-significant-token searches if recall is thin, merges
+  by per-key match count + best FTS5 rank. Stopwords + short tokens
+  filtered out. Caps per-token searches at 5 to keep prefetch cheap.
+- `SibylAdapter.system_prompt_block()`: added explicit guidance to LLMs
+  using the plugin: `sibyl_search` now AND-tokenizes by default; for
+  consecutive-phrase match wrap input in double-quotes
+  (`'"Christopher Nolan"'`). Closes the gap where agents would form
+  multi-word queries assuming phrase-match was the right shape.
+
+### Why
+
+The 2026-05-22 LongMemEval 50-Q benchmark in
+`/mnt/sibyl-data/plugin-lme-test/` showed plugin v0.3.4 lost 8.5pp to a
+no-plugin baseline (80.9% vs 89.4%) when used naïvely. The cause was
+isolated to retrieval, not storage. With a runner-side workaround
+matching what v0.3.5 now ships internally, the plugin matched the no-plugin
+baseline at 89.4% (+1 win on preferences for an incl-all 86% vs 84%).
+The plugin imposes ZERO LLM cost on users: all storage + retrieval is
+local SQLite + FTS5 + tier-check pings.
+
 ## [0.3.4] - 2026-05-20
 
 Branding pass on the vendored banner. Matches the change shipped in

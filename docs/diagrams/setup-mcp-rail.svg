@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1180" font-family="'IBM Plex Mono', 'Menlo', monospace">
+  <defs>
+    <style><![CDATA[
+      .title    { font-family: 'Fraunces', 'Georgia', serif; font-weight: 600; }
+      .body     { font-family: 'IBM Plex Mono', 'Menlo', monospace; }
+      .mono     { font-family: 'IBM Plex Mono', 'Menlo', monospace; }
+    ]]></style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L10,6 L0,12 z" fill="#8a6a2a"/>
+    </marker>
+    <marker id="arrowSoft" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,5 L0,10 z" fill="#b8ae93"/>
+    </marker>
+  </defs>
+
+  <!-- Paper background -->
+  <rect width="1200" height="1180" fill="#f5f1e6"/>
+
+  <!-- Header band -->
+  <g transform="translate(60, 50)">
+    <text class="body" x="0" y="0" font-size="11" letter-spacing="2" fill="#8a6a2a">SIBYL MEMORY · INSTALL FLOW · 01 / 02</text>
+    <text class="title" x="0" y="42" font-size="36" fill="#15110a">claude code · codex · cursor · continue</text>
+    <text class="title" x="0" y="76" font-size="22" fill="#6a6356" font-style="italic">the MCP rail</text>
+    <line x1="0" y1="100" x2="1080" y2="100" stroke="#d8d0bb" stroke-width="1"/>
+  </g>
+
+  <!-- SETUP card -->
+  <g transform="translate(60, 180)">
+    <rect width="1080" height="280" rx="6" fill="#fdfbf5" stroke="#b8ae93" stroke-width="1"/>
+    <text class="body" x="24" y="32" font-size="10" letter-spacing="2" fill="#8a6a2a">STEP 01</text>
+    <text class="title" x="24" y="60" font-size="22" fill="#15110a">setup</text>
+
+    <!-- Command rows -->
+    <g transform="translate(24, 92)">
+      <rect x="0" y="0" width="1032" height="34" rx="3" fill="#f5f1e6" stroke="#d8d0bb" stroke-width="1"/>
+      <text class="mono" x="14" y="22" font-size="13" fill="#15110a">$ pip install sibyl-memory-cli sibyl-memory-mcp</text>
+      <text class="mono" x="700" y="22" font-size="11" fill="#98917f">resolves both from PyPI</text>
+    </g>
+
+    <g transform="translate(24, 140)">
+      <rect x="0" y="0" width="1032" height="34" rx="3" fill="#f5f1e6" stroke="#d8d0bb" stroke-width="1"/>
+      <text class="mono" x="14" y="22" font-size="13" fill="#15110a">$ sibyl init</text>
+      <text class="mono" x="200" y="22" font-size="11" fill="#98917f">opens browser  ·  SIWE wallet  /  email + pairing code  /  USDC-send</text>
+    </g>
+
+    <g transform="translate(24, 188)">
+      <rect x="0" y="0" width="1032" height="34" rx="3" fill="#f5f1e6" stroke="#d8d0bb" stroke-width="1"/>
+      <text class="mono" x="14" y="22" font-size="13" fill="#15110a">$ claude mcp add sibyl-memory  python -m sibyl_memory_mcp</text>
+      <text class="mono" x="660" y="22" font-size="11" fill="#98917f">registers the server in claude code</text>
+    </g>
+
+    <text class="mono" x="24" y="252" font-size="12" fill="#6a6356">writes  ~/.sibyl-memory/credentials.json  (HMAC-signed, chmod 0600)</text>
+    <text class="mono" x="24" y="270" font-size="12" fill="#6a6356">writes  ~/.claude.json  (or ~/.claude/mcp_servers.json) with the server entry</text>
+  </g>
+
+  <!-- Arrow down -->
+  <line x1="600" y1="475" x2="600" y2="510" stroke="#8a6a2a" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- RUNTIME card -->
+  <g transform="translate(60, 525)">
+    <rect width="1080" height="370" rx="6" fill="#fdfbf5" stroke="#b8ae93" stroke-width="1"/>
+    <text class="body" x="24" y="32" font-size="10" letter-spacing="2" fill="#8a6a2a">STEP 02</text>
+    <text class="title" x="24" y="60" font-size="22" fill="#15110a">runtime  ·  inside a claude code session</text>
+
+    <!-- Flow blocks -->
+    <!-- Claude Code agent -->
+    <g transform="translate(80, 100)">
+      <rect x="0" y="0" width="220" height="80" rx="4" fill="#15110a"/>
+      <text class="title" x="110" y="34" font-size="16" fill="#f5f1e6" text-anchor="middle">claude code</text>
+      <text class="mono" x="110" y="56" font-size="11" fill="#b8ae93" text-anchor="middle">(or codex / cursor /</text>
+      <text class="mono" x="110" y="70" font-size="11" fill="#b8ae93" text-anchor="middle">continue)</text>
+    </g>
+
+    <!-- Arrow Claude → MCP -->
+    <line x1="305" y1="140" x2="425" y2="140" stroke="#8a6a2a" stroke-width="2" marker-end="url(#arrow)"/>
+    <text class="mono" x="365" y="130" font-size="11" fill="#6a6356" text-anchor="middle">tool call</text>
+    <text class="mono" x="365" y="158" font-size="10" fill="#98917f" text-anchor="middle">sibyl_remember()</text>
+    <text class="mono" x="365" y="170" font-size="10" fill="#98917f" text-anchor="middle">sibyl_recall()</text>
+
+    <!-- MCP server -->
+    <g transform="translate(430, 100)">
+      <rect x="0" y="0" width="240" height="80" rx="4" fill="#fdfbf5" stroke="#8a6a2a" stroke-width="2"/>
+      <text class="title" x="120" y="32" font-size="15" fill="#15110a" text-anchor="middle">sibyl-memory-mcp</text>
+      <text class="mono" x="120" y="52" font-size="11" fill="#6a6356" text-anchor="middle">python process</text>
+      <text class="mono" x="120" y="68" font-size="11" fill="#6a6356" text-anchor="middle">speaks MCP protocol</text>
+    </g>
+
+    <!-- Arrow MCP → Client -->
+    <line x1="675" y1="140" x2="795" y2="140" stroke="#8a6a2a" stroke-width="2" marker-end="url(#arrow)"/>
+    <text class="mono" x="735" y="130" font-size="11" fill="#6a6356" text-anchor="middle">in-process</text>
+    <text class="mono" x="735" y="158" font-size="10" fill="#98917f" text-anchor="middle">SDK call</text>
+
+    <!-- Client SDK -->
+    <g transform="translate(800, 100)">
+      <rect x="0" y="0" width="240" height="80" rx="4" fill="#fdfbf5" stroke="#b8ae93" stroke-width="1"/>
+      <text class="title" x="120" y="32" font-size="15" fill="#15110a" text-anchor="middle">sibyl-memory-client</text>
+      <text class="mono" x="120" y="52" font-size="11" fill="#6a6356" text-anchor="middle">python SDK</text>
+      <text class="mono" x="120" y="68" font-size="11" fill="#6a6356" text-anchor="middle">SQLite + FTS5 engine</text>
+    </g>
+
+    <!-- Arrow back: structured JSON -->
+    <path d="M 920 185 Q 920 230 240 230 Q 140 230 140 195" stroke="#b8ae93" stroke-width="1.5" stroke-dasharray="4 4" fill="none" marker-end="url(#arrowSoft)"/>
+    <text class="mono" x="540" y="222" font-size="11" fill="#98917f" text-anchor="middle">structured JSON  ·  typed result  ·  no shell, no parsing</text>
+
+    <!-- Storage row -->
+    <line x1="80" y1="270" x2="1000" y2="270" stroke="#d8d0bb" stroke-width="1"/>
+    <text class="body" x="80" y="262" font-size="10" letter-spacing="2" fill="#8a6a2a">STORAGE</text>
+
+    <g transform="translate(80, 290)">
+      <rect x="0" y="0" width="430" height="56" rx="3" fill="#f5f1e6" stroke="#d8d0bb" stroke-width="1"/>
+      <text class="mono" x="14" y="22" font-size="12" fill="#15110a">~/.sibyl-memory/memory.db</text>
+      <text class="mono" x="14" y="42" font-size="11" fill="#6a6356">SQLite + FTS5  ·  five-tier hierarchical schema  ·  0600</text>
+    </g>
+
+    <g transform="translate(540, 290)">
+      <rect x="0" y="0" width="460" height="56" rx="3" fill="#f5f1e6" stroke="#d8d0bb" stroke-width="1"/>
+      <text class="mono" x="14" y="22" font-size="12" fill="#15110a">~/.sibyl-memory/credentials.json</text>
+      <text class="mono" x="14" y="42" font-size="11" fill="#6a6356">HMAC-signed account_id + session_token + tier  ·  0600</text>
+    </g>
+  </g>
+
+  <!-- Arrow down -->
+  <line x1="600" y1="910" x2="600" y2="945" stroke="#8a6a2a" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- TIER CHECK card -->
+  <g transform="translate(60, 960)">
+    <rect width="1080" height="140" rx="6" fill="#fdfbf5" stroke="#b8ae93" stroke-width="1"/>
+    <text class="body" x="24" y="32" font-size="10" letter-spacing="2" fill="#8a6a2a">STEP 03  ·  BACKGROUND</text>
+    <text class="title" x="24" y="60" font-size="22" fill="#15110a">tier check</text>
+
+    <text class="mono" x="24" y="92" font-size="13" fill="#15110a">sibyl-memory-client  →  api.sibyllabs.org/api/plugin/check  →  returns  { tier, expires_at, cap_remaining }</text>
+    <text class="mono" x="24" y="116" font-size="11" fill="#6a6356">cached locally with TTL  ·  server-side schema v6  ·  bearer-token auth  ·  HMAC tamper-evidence on credentials</text>
+  </g>
+
+  <!-- Footer -->
+  <g transform="translate(60, 1140)">
+    <text class="mono" x="0" y="0" font-size="10" fill="#98917f">sibyl labs llc  ·  2026  ·  github.com/Sibyl-Labs/Sibyl-Memory</text>
+    <text class="mono" x="1080" y="0" font-size="10" fill="#98917f" text-anchor="end">rule 46 visual identity  ·  fraunces + ibm plex mono  ·  creme paper</text>
+  </g>
+</svg>

@@ -4,6 +4,40 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.2] - 2026-05-22
+
+`_sanitize_fts5_query` default mode flipped from phrase-match to
+AND-of-tokens. Pre-0.4.2, multi-word natural-language queries were wrapped
+as FTS5 phrases: required exact word sequence: so
+`client.search("H&M tops bought")` returned 0 hits even when the haystack
+contained all three words. Surfaced by the LongMemEval 50-Q benchmark on
+2026-05-22 as the dominant default-UX gap for Hermes-plugin users (every
+natural-language query against the plugin's search returned 0 hits).
+
+### Changed
+
+- `_sanitize_fts5_query(raw, *, prefix=False, as_phrase=False)`: new
+  default behaviour: tokenize input into alphanumeric + underscore tokens,
+  wrap each as a single-term phrase, join with spaces. FTS5 treats
+  space-joined terms as implicit AND, so every token must appear in the
+  matched row (in any order). Callers that need phrase-match semantics
+  must now pass `as_phrase=True` explicitly.
+- Empty / all-symbol input still falls back to phrase-wrapping rather than
+  returning an empty match string: preserves prior safety posture.
+
+### Added
+
+- `tests/test_search_default_mode.py`: 8 regression tests pinning the
+  new default behaviour, including end-to-end multi-word recall against
+  live SQLite + FTS5 storage.
+
+### Migration
+
+- Callers who relied on phrase-match (rare: would have needed exact
+  word sequences in stored content): pass `as_phrase=True`.
+- Most callers see strictly better recall on natural-language queries with
+  no code change.
+
 ## [0.4.1] - 2026-05-19
 
 Auth-redesign wave 1 step 15: forward-compat with the server's v6 bearer

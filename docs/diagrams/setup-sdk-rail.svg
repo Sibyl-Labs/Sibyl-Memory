@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1380" font-family="'IBM Plex Mono', 'Menlo', monospace">
+  <defs>
+    <style><![CDATA[
+      .title    { font-family: 'Fraunces', 'Georgia', serif; font-weight: 600; }
+      .body     { font-family: 'IBM Plex Mono', 'Menlo', monospace; }
+      .mono     { font-family: 'IBM Plex Mono', 'Menlo', monospace; }
+    ]]></style>
+    <marker id="arrow2" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L10,6 L0,12 z" fill="#8a6a2a"/>
+    </marker>
+    <marker id="arrowSoft2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,5 L0,10 z" fill="#b8ae93"/>
+    </marker>
+  </defs>
+
+  <!-- Paper background -->
+  <rect width="1200" height="1380" fill="#f5f1e6"/>
+
+  <!-- Header band -->
+  <g transform="translate(60, 50)">
+    <text class="body" x="0" y="0" font-size="11" letter-spacing="2" fill="#8a6a2a">SIBYL MEMORY · INSTALL FLOW · 02 / 02</text>
+    <text class="title" x="0" y="42" font-size="36" fill="#15110a">hermes agent  ·  any python harness</text>
+    <text class="title" x="0" y="76" font-size="22" fill="#6a6356" font-style="italic">the SDK rail</text>
+    <line x1="0" y1="100" x2="1080" y2="100" stroke="#d8d0bb" stroke-width="1"/>
+  </g>
+
+  <!-- PATH A: HERMES -->
+  <g transform="translate(60, 180)">
+    <text class="body" x="0" y="0" font-size="11" letter-spacing="2" fill="#8a6a2a">PATH A  ·  HERMES AGENT</text>
+  </g>
+
+  <!-- SETUP card (Hermes) -->
+  <g transform="translate(60, 210)">
+    <rect width="1080" height="280" rx="6" fill="#fdfbf5" stroke="#b8ae93" stroke-width="1"/>
+    <text class="body" x="24" y="32" font-size="10" letter-spacing="2" fill="#8a6a2a">STEP 01</text>
+    <text class="title" x="24" y="60" font-size="22" fill="#15110a">setup</text>
+
+    <g transform="translate(24, 92)">
+      <rect x="0" y="0" width="1032" height="34" rx="3" fill="#f5f1e6" stroke="#d8d0bb" stroke-width="1"/>
+      <text class="mono" x="14" y="22" font-size="13" fill="#15110a">$ pip install sibyl-memory-hermes</text>
+      <text class="mono" x="430" y="22" font-size="11" fill="#98917f">pulls sibyl-memory-client + sibyl-memory-cli as dependencies</text>
+    </g>
+
+    <g transform="translate(24, 140)">
+      <rect x="0" y="0" width="1032" height="34" rx="3" fill="#f5f1e6" stroke="#d8d0bb" stroke-width="1"/>
+      <text class="mono" x="14" y="22" font-size="13" fill="#15110a">$ sibyl init</text>
+      <text class="mono" x="200" y="22" font-size="11" fill="#98917f">same activation flow as the MCP rail  ·  browser  ·  SIWE / email / USDC</text>
+    </g>
+
+    <g transform="translate(24, 188)">
+      <rect x="0" y="0" width="1032" height="34" rx="3" fill="#f5f1e6" stroke="#d8d0bb" stroke-width="1"/>
+      <text class="mono" x="14" y="22" font-size="13" fill="#15110a">$ sibyl-memory-hermes install-plugin</text>
+      <text class="mono" x="430" y="22" font-size="11" fill="#98917f">drops adapter + plugin.yaml into ~/.hermes/plugins/sibyl/</text>
+    </g>
+
+    <text class="mono" x="24" y="252" font-size="12" fill="#6a6356">edit  ~/.hermes/config.yaml  →  memory:</text>
+    <text class="mono" x="24" y="270" font-size="12" fill="#6a6356">                                  provider: sibyl</text>
+  </g>
+
+  <!-- Arrow down -->
+  <line x1="600" y1="505" x2="600" y2="540" stroke="#8a6a2a" stroke-width="2" marker-end="url(#arrow2)"/>
+
+  <!-- RUNTIME card (Hermes) -->
+  <g transform="translate(60, 555)">
+    <rect width="1080" height="340" rx="6" fill="#fdfbf5" stroke="#b8ae93" stroke-width="1"/>
+    <text class="body" x="24" y="32" font-size="10" letter-spacing="2" fill="#8a6a2a">STEP 02</text>
+    <text class="title" x="24" y="60" font-size="22" fill="#15110a">runtime  ·  hermes agent boots</text>
+
+    <!-- Hermes loader -->
+    <g transform="translate(80, 100)">
+      <rect x="0" y="0" width="240" height="80" rx="4" fill="#15110a"/>
+      <text class="title" x="120" y="34" font-size="16" fill="#f5f1e6" text-anchor="middle">hermes agent</text>
+      <text class="mono" x="120" y="56" font-size="11" fill="#b8ae93" text-anchor="middle">scans ~/.hermes/plugins/</text>
+      <text class="mono" x="120" y="70" font-size="11" fill="#b8ae93" text-anchor="middle">filesystem discovery</text>
+    </g>
+
+    <!-- Arrow → adapter -->
+    <line x1="325" y1="140" x2="445" y2="140" stroke="#8a6a2a" stroke-width="2" marker-end="url(#arrow2)"/>
+    <text class="mono" x="385" y="130" font-size="11" fill="#6a6356" text-anchor="middle">loads</text>
+
+    <!-- Adapter -->
+    <g transform="translate(450, 100)">
+      <rect x="0" y="0" width="240" height="80" rx="4" fill="#fdfbf5" stroke="#8a6a2a" stroke-width="2"/>
+      <text class="title" x="120" y="32" font-size="14" fill="#15110a" text-anchor="middle">SibylMemoryProvider</text>
+      <text class="mono" x="120" y="52" font-size="11" fill="#6a6356" text-anchor="middle">adapter.py</text>
+      <text class="mono" x="120" y="68" font-size="11" fill="#6a6356" text-anchor="middle">implements hermes ABC</text>
+    </g>
+
+    <!-- Arrow → SDK -->
+    <line x1="695" y1="140" x2="815" y2="140" stroke="#8a6a2a" stroke-width="2" marker-end="url(#arrow2)"/>
+    <text class="mono" x="755" y="130" font-size="11" fill="#6a6356" text-anchor="middle">in-process</text>
+    <text class="mono" x="755" y="158" font-size="10" fill="#98917f" text-anchor="middle">direct method</text>
+
+    <!-- Client SDK -->
+    <g transform="translate(820, 100)">
+      <rect x="0" y="0" width="240" height="80" rx="4" fill="#fdfbf5" stroke="#b8ae93" stroke-width="1"/>
+      <text class="title" x="120" y="32" font-size="15" fill="#15110a" text-anchor="middle">sibyl-memory-client</text>
+      <text class="mono" x="120" y="52" font-size="11" fill="#6a6356" text-anchor="middle">python SDK</text>
+      <text class="mono" x="120" y="68" font-size="11" fill="#6a6356" text-anchor="middle">SQLite + FTS5 engine</text>
+    </g>
+
+    <!-- Callout no IPC -->
+    <g transform="translate(80, 210)">
+      <rect x="0" y="0" width="980" height="42" rx="3" fill="#f5f1e6" stroke="#d8d0bb" stroke-width="1"/>
+      <text class="mono" x="14" y="26" font-size="12" fill="#15110a">no IPC  ·  no MCP protocol  ·  no JSON marshaling  ·  the agent and the memory engine share a python process</text>
+    </g>
+
+    <!-- Storage row -->
+    <line x1="80" y1="280" x2="1000" y2="280" stroke="#d8d0bb" stroke-width="1"/>
+    <text class="body" x="80" y="272" font-size="10" letter-spacing="2" fill="#8a6a2a">SAME BACKEND AS THE MCP RAIL</text>
+
+    <g transform="translate(80, 295)">
+      <rect x="0" y="0" width="920" height="32" rx="3" fill="#f5f1e6" stroke="#d8d0bb" stroke-width="1"/>
+      <text class="mono" x="14" y="21" font-size="12" fill="#15110a">~/.sibyl-memory/memory.db   +   ~/.sibyl-memory/credentials.json   ·   identical layout, identical tier-check rail</text>
+    </g>
+  </g>
+
+  <!-- Divider between paths -->
+  <line x1="60" y1="930" x2="1140" y2="930" stroke="#d8d0bb" stroke-width="1" stroke-dasharray="3 6"/>
+
+  <!-- PATH B: any python harness -->
+  <g transform="translate(60, 970)">
+    <text class="body" x="0" y="0" font-size="11" letter-spacing="2" fill="#8a6a2a">PATH B  ·  ANY OTHER PYTHON HARNESS</text>
+  </g>
+
+  <g transform="translate(60, 1000)">
+    <rect width="1080" height="320" rx="6" fill="#fdfbf5" stroke="#b8ae93" stroke-width="1"/>
+    <text class="title" x="24" y="38" font-size="22" fill="#15110a">direct SDK use  ·  no plugin layer</text>
+
+    <g transform="translate(24, 70)">
+      <rect x="0" y="0" width="1032" height="34" rx="3" fill="#f5f1e6" stroke="#d8d0bb" stroke-width="1"/>
+      <text class="mono" x="14" y="22" font-size="13" fill="#15110a">$ pip install sibyl-memory-client</text>
+      <text class="mono" x="430" y="22" font-size="11" fill="#98917f">+  sibyl init  (one-time, optional if you self-issue credentials)</text>
+    </g>
+
+    <g transform="translate(24, 124)">
+      <rect x="0" y="0" width="1032" height="160" rx="3" fill="#15110a"/>
+      <text class="mono" x="20" y="32" font-size="13" fill="#f5f1e6">from sibyl_memory_client import MemoryClient</text>
+      <text class="mono" x="20" y="60" font-size="13" fill="#f5f1e6"></text>
+      <text class="mono" x="20" y="76" font-size="13" fill="#f5f1e6">client = MemoryClient.local(</text>
+      <text class="mono" x="20" y="96" font-size="13" fill="#b8ae93">    account_id="...",  session_token="...",  tier="staker",</text>
+      <text class="mono" x="20" y="116" font-size="13" fill="#f5f1e6">)</text>
+      <text class="mono" x="20" y="140" font-size="13" fill="#f5f1e6">client.remember("user.name", "tt")</text>
+      <text class="mono" x="20" y="156" font-size="13" fill="#f5f1e6">client.recall("user.name")   →   "tt"</text>
+    </g>
+  </g>
+
+  <!-- Footer -->
+  <g transform="translate(60, 1340)">
+    <text class="mono" x="0" y="0" font-size="10" fill="#98917f">sibyl labs llc  ·  2026  ·  github.com/Sibyl-Labs/Sibyl-Memory</text>
+    <text class="mono" x="1080" y="0" font-size="10" fill="#98917f" text-anchor="end">rule 46 visual identity  ·  fraunces + ibm plex mono  ·  creme paper</text>
+  </g>
+</svg>

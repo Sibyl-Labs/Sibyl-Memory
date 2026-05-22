@@ -146,23 +146,37 @@ _FTS5_COLUMN_TOKENS = frozenset({"name", "category", "body", "tenant_id",
                                   "payload", "ts", "rowid"})
 
 
-def _sanitize_fts5_query(raw: str, *, prefix: bool = False) -> str:
+def _sanitize_fts5_query(raw: str, *, prefix: bool = False, as_phrase: bool = False) -> str:
     """Wrap a user query as a safe FTS5 MATCH expression.
 
-    Two modes:
-      - Default (``prefix=False``): wrap the entire input as a single
-        double-quoted phrase. FTS5 treats `"a b c"` as a phrase match;
-        operators (AND/OR/NOT/NEAR/^/+/-) and column filters (`name:foo`)
-        inside the quotes are literal text. Internal double-quotes are
-        doubled per FTS5 escape rules. Safe against injection / DoS.
-      - Prefix (``prefix=True``): strip the input to alphanumeric +
-        underscore tokens, join with spaces, and append `*` to the last
-        token for prefix matching. FTS5 does NOT support prefix on
-        quoted phrases (`"phrase"*` is invalid syntax) so we use bare
-        tokens here. The character filter still blocks operator injection.
+    Three modes:
+      - Default (``prefix=False, as_phrase=False``): tokenize input into
+        alphanumeric + underscore tokens, wrap each as a single-term
+        phrase, and join with spaces. FTS5 treats space-joined terms as
+        implicit AND so every token must appear in the matched row
+        (in any order). This is the natural-language behaviour most
+        callers want: ``search("H&M tops bought")`` now matches rows
+        containing "H", "M", "tops", and "bought" anywhere. Each token
+        is phrase-quoted so embedded FTS5 operators stay literal.
+      - Explicit phrase (``as_phrase=True``): wrap the entire input as a
+        single double-quoted phrase. Use when consecutive-token phrase
+        match is what the caller actually wants. Embedded double-quotes
+        are doubled per FTS5 escape rules. Safe against injection.
+      - Prefix (``prefix=True``, mutually exclusive with as_phrase;
+        prefix wins): strip to alphanumeric tokens, append ``*`` to the
+        last token for prefix matching.
 
-    Empty / whitespace-only queries return an empty string: callers
+    Empty / whitespace-only queries return an empty string; callers
     should short-circuit on empty.
+
+    Behaviour change in v0.4.2 (2026-05-22): default mode flipped from
+    phrase-match to AND-of-tokens. Phrase-match was an unintuitive
+    default because it made natural-language queries fail silently -
+    ``search("H&M tops bought")`` returned 0 hits even when the haystack
+    contained all three words. Callers who relied on phrase semantics
+    must now pass ``as_phrase=True`` explicitly. Surfaced by the
+    LongMemEval 50-Q benchmark on 2026-05-22 as the dominant default-UX
+    gap for Hermes-plugin users (every natural-language query hit 0).
     """
     if not raw or not isinstance(raw, str):
         return ""
@@ -187,9 +201,23 @@ def _sanitize_fts5_query(raw: str, *, prefix: bool = False) -> str:
         # Multiple tokens: all earlier tokens are literal, the last gets `*`.
         return " ".join(tokens[:-1]) + f" {tokens[-1]}*"
 
-    # Default: single quoted phrase. Escape embedded double-quotes.
-    escaped = s.replace('"', '""')
-    return f'"{escaped}"'
+    if as_phrase:
+        # Explicit phrase mode (legacy default before v0.4.2). Escape
+        # embedded double-quotes per FTS5 rules.
+        escaped = s.replace('"', '""')
+        return f'"{escaped}"'
+
+    # NEW default (v0.4.2+): tokenize into alphanumeric + underscore
+    # tokens, wrap each as a single-term phrase, join with spaces. FTS5
+    # treats space-joined terms as implicit AND.
+    cleaned = "".join(ch if (ch.isalnum() or ch == "_") else " " for ch in s)
+    tokens = [t for t in cleaned.split() if t]
+    if not tokens:
+        # All-symbol input: fall back to the legacy phrase wrap so the
+        # query still has SOME defensible shape rather than empty.
+        escaped = s.replace('"', '""')
+        return f'"{escaped}"'
+    return " ".join(f'"{t}"' for t in tokens)
 
 # The default tenant for single-user local installs.
 DEFAULT_TENANT = "00000000-0000-0000-0000-000000000001"
