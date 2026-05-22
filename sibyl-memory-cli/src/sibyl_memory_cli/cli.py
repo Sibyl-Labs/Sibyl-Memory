@@ -8,9 +8,9 @@ Design pillars:
   - Credentials are written atomically at mode 0600, set at file-creation
     time via O_CREAT|O_EXCL|O_NOFOLLOW (no chmod-after-write race).
   - The URL parameter handed to the browser is an opaque session identifier,
-    not the long-lived bearer (audit SEC-1: server-side pairing handoff
+    not the long-lived bearer (audit SEC-1 — server-side pairing handoff
     issues a separate bearer at activation completion if available).
-  - session_token is never printed in full: display short slice only.
+  - session_token is never printed in full — display short slice only.
   - Polling has explicit timeouts; no infinite loops.
   - Every command exits with a clear status code (0 ok, 1 user error, 2 server error).
 """
@@ -46,7 +46,11 @@ def _client_version() -> str:
 # ---- Defaults ----------------------------------------------------------
 
 API_BASE = os.environ.get("SIBYL_API_BASE", "https://api.sibyllabs.org")
-ACTIVATE_BASE = os.environ.get("SIBYL_ACTIVATE_BASE", "https://sibyllabs.org/plugin/activate")
+# Dedicated short-URL auth subdomain (2026-05-20). Trust + phishing resistance:
+# the URL the user sees in their terminal + browser is purpose-specific and
+# short enough to read at a glance. Legacy URL `sibyllabs.org/plugin/activate
+# ?session=<uuid>` still resolves so older CLI installs continue to work.
+ACTIVATE_BASE = os.environ.get("SIBYL_ACTIVATE_BASE", "https://auth.sibyllabs.org")
 UPGRADE_BASE = os.environ.get("SIBYL_UPGRADE_BASE", "https://sibyllabs.org/plugin/upgrade")
 
 DEFAULT_CRED_PATH = Path("~/.sibyl-memory/credentials.json").expanduser()
@@ -54,8 +58,16 @@ DEFAULT_DB_PATH = Path("~/.sibyl-memory/memory.db").expanduser()
 DEFAULT_TIER_CACHE_PATH = Path("~/.sibyl-memory/tier_cache.json").expanduser()
 
 POLL_INTERVAL_SEC = 3
-INIT_TIMEOUT_SEC = 10 * 60      # 10 minutes for /init activation
-UPGRADE_TIMEOUT_SEC = 15 * 60   # 15 minutes for upgrade: wallet ux can be slow
+# v0.3.5 fix: the CLI no longer carries its own activation deadline. The
+# server's /session-init response includes pairing_ttl_seconds — the CLI
+# polls until that timestamp, deferring to the server as the single source
+# of truth. The constants below are fallbacks only, used when session-init
+# fails to return a value (network error, schema drift). Drift between CLI
+# and server is now impossible by construction; the prior 10min/15min
+# silent-success gap can't recur because there is no CLI-side number to
+# diverge from the server's.
+INIT_TIMEOUT_FALLBACK_SEC = 30 * 60   # used only if session-init returns no TTL
+UPGRADE_TIMEOUT_SEC = 30 * 60         # upgrade flow uses local constant — no server handshake to defer to
 
 # ---- Color / output ----------------------------------------------------
 
@@ -88,7 +100,7 @@ def _detect_os_family() -> str | None:
 
 def short(token: str | None) -> str:
     if not token:
-        return "-"
+        return "—"
     if len(token) <= 12:
         return token
     return f"{token[:8]}…{token[-4:]}"
@@ -209,7 +221,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     The pairing code is printed in the terminal. If the user picks the
     email path in the browser, they type both their email and this code.
     No external email service is required."""
-    # Brand moment: gold/white gradient SIBYL wordmark.
+    # Brand moment — gold/white gradient SIBYL wordmark.
     # Honors NO_COLOR + TTY detection automatically; safe to always call.
     from ._banner import print_banner
     print_banner()
@@ -231,18 +243,35 @@ def cmd_init(args: argparse.Namespace) -> int:
     # it as the activation rendezvous key only. The persistent bearer
     # is issued by the server in the /check response (`bearer_token`
     # field) after activation completes. Servers running pre-SEC-1
-    # firmware that echo the URL identifier as the bearer still work -
+    # firmware that echo the URL identifier as the bearer still work —
     # we use whichever the server returns in the bound credentials.
     session_id = str(uuid.uuid4())
     pairing_code = _gen_pairing_code()
     code_hash = _hash_pairing_code(pairing_code, session_id)
-    activate_url = f"{ACTIVATE_BASE}?session={session_id}"
+    # Path-based URL on the dedicated auth subdomain (2026-05-20).
+    # auth.sibyllabs.org/<uuid> reads cleaner in the terminal than the old
+    # query-string form and aligns the wallet popup's "X wants you to sign in"
+    # header with the browser URL bar.
+    if ACTIVATE_BASE.rstrip("/").endswith(".sibyllabs.org") or ACTIVATE_BASE.rstrip("/").endswith("/auth"):
+        activate_url = f"{ACTIVATE_BASE.rstrip('/')}/{session_id}"
+    else:
+        # Legacy fallback: anyone with SIBYL_ACTIVATE_BASE pointing at the old
+        # /plugin/activate path keeps the query-string shape.
+        activate_url = f"{ACTIVATE_BASE}?session={session_id}"
 
     # Pre-register the session + pairing code hash with the server.
     # The code itself never leaves the user's machine until they type it
     # into the browser.
+    #
+    # v0.3.5: capture pairing_ttl_seconds from the response and use it as
+    # the activation deadline. Server is the single source of truth — if
+    # the server-side TTL ever changes, the CLI adopts the new value
+    # automatically without a re-publish. INIT_TIMEOUT_FALLBACK_SEC only
+    # applies when the call fails entirely (network error) or the response
+    # is missing the field (schema drift).
+    pairing_ttl_seconds = None
     try:
-        http_request(
+        init_resp = http_request(
             "POST",
             "/api/plugin/session-init",
             body={
@@ -256,10 +285,16 @@ def cmd_init(args: argparse.Namespace) -> int:
             },
             timeout=10.0,
         )
+        if isinstance(init_resp, dict):
+            v = init_resp.get("pairing_ttl_seconds")
+            if isinstance(v, (int, float)) and v > 0:
+                pairing_ttl_seconds = int(v)
     except HttpError as e:
         # Non-fatal: SIWE path doesn't need the pairing code. If session-init
         # fails the user can still complete SIWE. Surface the warning.
         print(yellow(f"Warning: session-init failed ({e.status}). Wallet path still works; email path may not."))
+
+    activation_window_sec = pairing_ttl_seconds if pairing_ttl_seconds else INIT_TIMEOUT_FALLBACK_SEC
 
     print()
     print(a.section_header("activation", subtitle="three paths · pick whichever fits your device"))
@@ -280,7 +315,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         pass
 
     # Poll /api/plugin/check
-    deadline = time.time() + INIT_TIMEOUT_SEC
+    deadline = time.time() + activation_window_sec
     last_status = ""
     spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     spin_i = 0
@@ -290,7 +325,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             resp = http_request("GET", f"/api/plugin/check?session={urllib.parse.quote(session_id)}", timeout=10.0)
         except HttpError as e:
             if e.status in (404, 503, 0):
-                # Session not yet created server-side, or transient: keep polling
+                # Session not yet created server-side, or transient — keep polling
                 pass
             else:
                 print(red(f"\nUnexpected error: {e.body}"))
@@ -301,19 +336,19 @@ def cmd_init(args: argparse.Namespace) -> int:
             creds = resp["credentials"]
             # SEC-1: prefer the server-issued bearer_token (post-fix) over
             # echoing the URL pairing-session id. Servers running pre-SEC-1
-            # firmware echo `session_token` back as the bearer: we use
+            # firmware echo `session_token` back as the bearer — we use
             # whichever the server returns. The CLI's session_id (URL
             # identifier) is the rendezvous key, not the persistent bearer.
             bearer = creds.get("bearer_token") or creds.get("session_token")
             if not bearer:
                 # Fallback: pre-SEC-1 server flow where neither field is
-                # echoed back: inject the pairing session id so subsequent
+                # echoed back — inject the pairing session id so subsequent
                 # /access and /check-write calls have something to send.
                 bearer = session_id
             # Sanity check on echoed session_token (pre-SEC-1 flow only)
             if creds.get("session_token") and creds["session_token"] != session_id \
                     and not creds.get("bearer_token"):
-                print(red("\nSession token mismatch: refusing to write credentials."))
+                print(red("\nSession token mismatch — refusing to write credentials."))
                 return 2
             creds["session_token"] = bearer
             path = write_credentials_atomic(creds, cred_path)
@@ -323,8 +358,8 @@ def cmd_init(args: argparse.Namespace) -> int:
             print()
             print(a.kv("Account", short(creds.get("account_id"))))
             print(a.kv("Tier", (creds.get("tier") or "free").upper(), value_color="accent"))
-            print(a.kv("Wallet", creds.get("wallet") or "-"))
-            print(a.kv("Email", creds.get("email") or "-"))
+            print(a.kv("Wallet", creds.get("wallet") or "—"))
+            print(a.kv("Email", creds.get("email") or "—"))
             print(a.kv("Credentials", str(path)))
             print()
             print(a.section_header("wire it into your agent"))
@@ -357,7 +392,12 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     print()
     print(a.err_line("Activation timed out."))
-    print(a.dim("  Re-run `sibyl init` to try again."))
+    print(a.dim("  Re-run `sibyl init --force` to try again."))
+    print()
+    print(a.dim("  If your browser already showed 'Activation successful',"))
+    print(a.dim("  your bind landed server-side but didn't reach this terminal."))
+    print(a.dim("  Running `sibyl init --force` again will start a fresh handshake;"))
+    print(a.dim("  bind through the same browser to write credentials locally."))
     return 1
 
 
@@ -417,7 +457,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
             if e.status == 401:
                 print(red("\nSession expired. Re-run `sibyl init`."))
                 return 1
-            # Transient: keep polling
+            # Transient — keep polling
             resp = {}
 
         new_tier = (resp.get("tier") or current_tier).lower()
@@ -444,8 +484,8 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
                 print(a.kv("Storage cap", f"{resp['cap_bytes']:,} bytes"))
             if resp.get("staker"):
                 s = resp["staker"]
-                print(a.kv("Wallet", s.get("wallet", "-")))
-                print(a.kv("$SIBYL held", str(s.get("total_sibyl", "-"))))
+                print(a.kv("Wallet", s.get("wallet", "—")))
+                print(a.kv("$SIBYL held", str(s.get("total_sibyl", "—"))))
             print()
             print(a.dim("  local tier cache cleared. your next write will sync the new tier."))
             return 0
@@ -490,9 +530,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(a.kv("Credentials", str(cred_path)))
     print(a.kv("Account", short(creds.get("account_id"))))
     print(a.kv("Tier", (creds.get("tier") or "free").upper(), value_color="accent"))
-    print(a.kv("Wallet", creds.get("wallet") or "-"))
-    print(a.kv("Email", creds.get("email") or "-"))
-    print(a.kv("Issued", creds.get("issued_at") or "-"))
+    print(a.kv("Wallet", creds.get("wallet") or "—"))
+    print(a.kv("Email", creds.get("email") or "—"))
+    print(a.kv("Issued", creds.get("issued_at") or "—"))
 
     db_path = Path(args.db).expanduser()
     if db_path.exists():
@@ -510,7 +550,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         cache = json.loads(tier_cache.read_text(encoding="utf-8"))
         print(a.kv("Tier cache", f"{cache.get('tier','?')} (checked {cache.get('checked_at','?')[:19]})"))
     else:
-        print(a.kv("Tier cache", "-"))
+        print(a.kv("Tier cache", "—"))
 
     # Server view (only if account_id + session_token are present)
     if creds.get("account_id") and creds.get("session_token"):
@@ -524,14 +564,14 @@ def cmd_status(args: argparse.Namespace) -> int:
                 timeout=10.0,
             )
             print(a.kv("Tier", (resp.get("tier") or "free").upper(), value_color="accent"))
-            print(a.kv("Source", resp.get("source") or "-"))
+            print(a.kv("Source", resp.get("source") or "—"))
             print(a.kv("Cap bytes", "unlimited" if resp.get("cap_bytes") is None else f"{resp['cap_bytes']:,}"))
             if resp.get("expires_at"):
                 print(a.kv("Expires", resp["expires_at"]))
             if resp.get("staker"):
                 s = resp["staker"]
-                print(a.kv("$SIBYL held", str(s.get("total_sibyl", "-"))))
-                print(a.kv("Threshold", str(s.get("threshold_sibyl", "-"))))
+                print(a.kv("$SIBYL held", str(s.get("total_sibyl", "—"))))
+                print(a.kv("Threshold", str(s.get("threshold_sibyl", "—"))))
                 print(a.kv("Qualified", "yes" if s.get("qualified") else "no",
                            value_color="ok" if s.get("qualified") else "soft"))
             # Detect server/local drift
@@ -558,7 +598,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     who muscle-memory it get a real result.
 
     When account.sibyllabs.org ships, this will flip to
-    `webbrowser.open(...)` with no UX disruption: same command, real
+    `webbrowser.open(...)` with no UX disruption — same command, real
     web dashboard."""
     DASHBOARD_BASE = os.environ.get("SIBYL_DASHBOARD_BASE")
     if DASHBOARD_BASE:
@@ -583,7 +623,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 
 def _mask_email(e: str | None) -> str:
     if not e or "@" not in e:
-        return "-"
+        return "—"
     user, _, domain = e.partition("@")
     if "." not in domain:
         return f"{user[0]}***@{domain[0]}***"
@@ -593,7 +633,7 @@ def _mask_email(e: str | None) -> str:
 
 def _mask_wallet(w: str | None) -> str:
     if not w or not w.startswith("0x") or len(w) < 12:
-        return w or "-"
+        return w or "—"
     return f"{w[:6]}…{w[-4:]}"
 
 
@@ -616,8 +656,8 @@ def cmd_whoami(args: argparse.Namespace) -> int:
 
     print()
     print(f"  {a.color('account', a.INK_FAINT)}  {a.bold(short(acct))}  {a.dim(a.GLYPH_DOT)}  {a.gradient_gold(tier)}")
-    print(f"  {a.color('wallet ', a.INK_FAINT)}  {a.color(wallet or '-', a.INK)}")
-    print(f"  {a.color('email  ', a.INK_FAINT)}  {a.color(email or '-', a.INK)}")
+    print(f"  {a.color('wallet ', a.INK_FAINT)}  {a.color(wallet or '—', a.INK)}")
+    print(f"  {a.color('email  ', a.INK_FAINT)}  {a.color(email or '—', a.INK)}")
     os_label = _detect_os_family() or "unknown"
     device_line = f"sibyl-memory-cli/{_client_version()} {os_label}"
     print(f"  {a.color('device ', a.INK_FAINT)}  {a.dim(device_line)}")
@@ -667,7 +707,7 @@ def cmd_devices(args: argparse.Namespace) -> int:
             print(red(f"no device at index {idx}. Run `sibyl devices` to see indexes."))
             return 1
         if target.get("is_this_device"):
-            print(red("refusing to revoke your own device: that would lock you out. Run `sibyl logout` instead, then `sibyl init` on a fresh activation."))
+            print(red("refusing to revoke your own device — that would lock you out. Run `sibyl logout` instead, then `sibyl init` on a fresh activation."))
             return 1
         try:
             revoke_resp = http_request(
@@ -713,7 +753,7 @@ def cmd_devices(args: argparse.Namespace) -> int:
         is_this = d.get("is_this_device")
         marker = a.ok("▶") if is_this else " "
         label = d.get("device_label") or "(unlabeled)"
-        installed = d.get("install_method") or "-"
+        installed = d.get("install_method") or "—"
         last_seen = d.get("last_seen_at", "")[:19].replace("T", " ")
         idx_chip = a.chip(str(i), palette="jade" if is_this else "mute")
         label_color = a.gradient_gold(label) if is_this else a.color(label, a.INK)
@@ -727,7 +767,7 @@ def cmd_devices(args: argparse.Namespace) -> int:
 # ---- `sibyl logout` ----------------------------------------------------
 
 def cmd_logout(args: argparse.Namespace) -> int:
-    """Delete credentials.json + tier_cache.json. memory.db stays: that's your data."""
+    """Delete credentials.json + tier_cache.json. memory.db stays — that's your data."""
     cred_path = Path(args.credentials).expanduser()
     tier_cache = Path(args.tier_cache).expanduser()
 
@@ -757,7 +797,7 @@ def cmd_logout(args: argparse.Namespace) -> int:
 # ---- `sibyl health` ----------------------------------------------------
 
 def cmd_health(args: argparse.Namespace) -> int:
-    """SibylMemoryProvider.health(): minimal self-check."""
+    """SibylMemoryProvider.health() — minimal self-check."""
     try:
         from sibyl_memory_hermes import SibylMemoryProvider
     except ImportError:
@@ -783,6 +823,162 @@ def cmd_health(args: argparse.Namespace) -> int:
         print(a.kv(k, val, value_color="ok" if v is True else ("soft" if v else "warn")))
     print()
     return 0 if ok_state else 1
+
+
+# ---- `sibyl update` ----------------------------------------------------
+
+# Three user-facing packages we offer to upgrade. `mcp` is opt-in and not
+# bundled by default — skip it here so we don't tell users to "update"
+# something they may not have installed. Add it back when an `--include-mcp`
+# flag is shipped.
+UPDATE_PACKAGES = ("sibyl-memory-cli", "sibyl-memory-hermes", "sibyl-memory-client")
+
+
+def _installed_version(pkg: str) -> str | None:
+    """Return the locally-installed version of a package, or None if not installed."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version as _v
+        try:
+            return _v(pkg)
+        except PackageNotFoundError:
+            return None
+    except Exception:
+        return None
+
+
+def _pypi_latest(pkg: str, timeout: float = 4.0) -> str | None:
+    """Hit PyPI's JSON endpoint for the latest published version. Best-effort."""
+    url = f"https://pypi.org/pypi/{pkg}/json"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": f"sibyl-memory-cli/{_client_version()}"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        return (data.get("info") or {}).get("version")
+    except Exception:
+        return None
+
+
+def _ver_tuple(v: str) -> tuple:
+    """Lenient version tuple for comparison. Splits on '.', tolerates non-numeric tails."""
+    out = []
+    for part in (v or "").split("."):
+        digits = ""
+        for ch in part:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        out.append(int(digits) if digits else 0)
+    return tuple(out)
+
+
+def _detect_install_method() -> str:
+    """Best-guess of how the CLI was installed — pipx / venv / system-pip / pep668-blocked."""
+    exe = sys.executable
+    if "/pipx/" in exe or "/.local/pipx/" in exe:
+        return "pipx"
+    if exe and ("venv" in exe.lower() or "virtualenv" in exe.lower() or os.environ.get("VIRTUAL_ENV")):
+        return "venv"
+    # Look for PEP 668 marker file
+    for parent in Path(exe).resolve().parents:
+        marker = parent / "lib" / "EXTERNALLY-MANAGED"
+        if marker.exists():
+            return "pep668"
+        marker2 = parent / "EXTERNALLY-MANAGED"
+        if marker2.exists():
+            return "pep668"
+        if str(parent) in ("/", "/home", "/usr"):
+            break
+    return "system"
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    """Check installed package versions against PyPI, optionally apply upgrade."""
+    rows = []
+    any_outdated = False
+    for pkg in UPDATE_PACKAGES:
+        installed = _installed_version(pkg)
+        latest = _pypi_latest(pkg)
+        outdated = False
+        if installed and latest:
+            outdated = _ver_tuple(installed) < _ver_tuple(latest)
+        rows.append({"pkg": pkg, "installed": installed, "latest": latest, "outdated": outdated})
+        if outdated:
+            any_outdated = True
+
+    if args.json:
+        print(json.dumps({"packages": rows, "any_outdated": any_outdated}, indent=2))
+        return 0 if not any_outdated else 2
+
+    # ASCII output — keep it small and readable, follow `sibyl status` style.
+    print()
+    if any_outdated:
+        print(a.err_line("Updates available."))
+    else:
+        # Distinguish "all current" from "could not reach PyPI"
+        any_unreachable = any(r["latest"] is None for r in rows)
+        if any_unreachable:
+            print(a.dim("Could not reach PyPI for one or more packages — showing what we know."))
+        else:
+            print(a.success_line("All packages current."))
+    print()
+
+    name_w = max(len(r["pkg"]) for r in rows)
+    for r in rows:
+        installed = r["installed"] or "(not installed)"
+        latest = r["latest"] or "(unreachable)"
+        if r["outdated"]:
+            line = f"  {yellow(r['pkg'].ljust(name_w))}  {installed}  →  {green(latest)}"
+        elif r["installed"] is None:
+            line = f"  {a.dim(r['pkg'].ljust(name_w))}  {a.dim(installed)}"
+        else:
+            line = f"  {r['pkg'].ljust(name_w)}  {a.dim(installed)}"
+        print(line)
+    print()
+
+    if not any_outdated:
+        return 0
+
+    pip_cmd_pkgs = " ".join(r["pkg"] for r in rows if r["outdated"])
+    method = _detect_install_method()
+
+    if args.apply:
+        # Best-effort in-process pip invocation
+        import subprocess
+        pip_args = [sys.executable, "-m", "pip", "install", "-U", *pip_cmd_pkgs.split()]
+        if method == "pep668":
+            pip_args.append("--break-system-packages")
+        if method == "pipx":
+            # pipx is a separate tool; we can't drive it via `pip install`.
+            print(a.err_line("Detected pipx install. Run instead:"))
+            print(f"    pipx upgrade {' '.join(r['pkg'] for r in rows if r['outdated'])}")
+            return 2
+        print(a.dim("Running: ") + " ".join(pip_args))
+        try:
+            rc = subprocess.call(pip_args)
+        except FileNotFoundError:
+            print(a.err_line("pip not found at " + sys.executable + " -m pip"))
+            return 2
+        if rc == 0:
+            print()
+            print(a.success_line("Upgrade complete. Re-run `sibyl update` to confirm."))
+        return rc
+
+    # Default: print the command, do not execute
+    print(a.dim("To upgrade, run:"))
+    if method == "pipx":
+        print(f"    pipx upgrade {pip_cmd_pkgs}")
+    elif method == "pep668":
+        print(f"    pip install --break-system-packages -U {pip_cmd_pkgs}")
+        print()
+        print(a.dim("  (Your Python flags itself as externally-managed under PEP 668.)"))
+        print(a.dim("  (Cleanest: install inside a venv. See https://beta.sibyllabs.org for the recommended path.)"))
+    else:
+        print(f"    pip install -U {pip_cmd_pkgs}")
+    print()
+    print(a.dim("Or let sibyl run it:") + "  sibyl update --apply")
+    print()
+    return 2  # exit 2 signals "outdated" without being a hard error
 
 
 # ---- Dispatch ----------------------------------------------------------
@@ -830,6 +1026,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_h = sub.add_parser("health", help="Run the provider self-check")
     p_h.set_defaults(func=cmd_health)
+
+    p_update = sub.add_parser(
+        "update",
+        help="Check for newer sibyl-memory-* releases on PyPI (use --apply to upgrade)",
+    )
+    p_update.add_argument("--apply", action="store_true", help="Run pip install -U for the outdated packages")
+    p_update.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_update.set_defaults(func=cmd_update)
 
     # v0.1.4: one-command auto-detect-and-wire setup for any agent stack
     from .setup import cmd_setup
