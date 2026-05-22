@@ -4,7 +4,143 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
-## [0.3.2] - 2026-05-20
+## [0.3.6] — 2026-05-22
+
+New `sibyl update` subcommand. Closes the loop on the only meaningful
+remote-push question the beta cohort raised: "can you push updates to me?"
+We cannot remote-execute `pip install` on your machine — that's your venv,
+your permissions. We can notify (server-side, via heartbeat response,
+landing in a later cli release) and we can hand you a one-keystroke
+upgrade. This release ships the lever.
+
+### Added
+
+- `sibyl update` — checks installed versions of `sibyl-memory-cli`,
+  `sibyl-memory-hermes`, and `sibyl-memory-client` against PyPI. Prints
+  a small diff table and the exact pip command to run. Pure stdlib;
+  3 PyPI calls, ~500ms total.
+- `sibyl update --apply` — runs `pip install -U` for the outdated
+  packages in-place via `sys.executable -m pip`. Detects the install
+  method (system pip / venv / pipx / PEP 668 externally-managed) and
+  picks the right invocation. pipx installs are flagged with the
+  correct `pipx upgrade` command instead of trying pip.
+- `sibyl update --json` — machine-readable output for scripting.
+
+### Notes
+
+- Exit code 0 = all current. Exit code 2 = updates available (so this
+  can be wired into shell prompts or CI). Exit code other values =
+  hard error.
+- The MCP package (`sibyl-memory-mcp`) is intentionally not in the
+  default set — many users don't have it installed. Add via a future
+  `--include-mcp` flag if the beta surfaces demand.
+- Sources the version via `importlib.metadata.version()` and never
+  hardcodes a number, so it survives package rename or any odd install
+  layout. Matches the existing `_client_version()` helper pattern.
+
+### Catch-up
+
+This release also closes a source-drift gap: the monorepo on
+`Sibyl-Labs/Sibyl-Memory` was at v0.3.2 while PyPI was at v0.3.5
+because the v0.3.3-v0.3.5 cli iterations were committed only to the
+legacy `/sibyl/packages/sibyl-memory-cli/` working copy. The v0.3.6
+commit lands all of v0.3.3 (banner branding), v0.3.4 (timeout matched
+constants — superseded), and v0.3.5 (structural pairing-TTL read from
+server) inside the canonical monorepo, alongside the new `update`
+command. Yank v0.3.4 from PyPI as hygiene; v0.3.6 is the recommended
+upgrade target.
+
+## [0.3.5] — 2026-05-21
+
+Permanent fix for the silent-success activation foot-gun. 0.3.4 raised the
+CLI poll to 30min and the server pairing TTL to 30min so the two windows
+matched. Operator pushed back: matching constants is a temporary fix that
+re-opens the moment either side moves. The structural fix is one source of
+truth.
+
+### Changed
+
+- The CLI no longer carries its own activation deadline. The `/session-init`
+  response already includes `pairing_ttl_seconds` (it always did — the CLI
+  was just throwing it away). The CLI now captures that value and uses it
+  as the poll deadline.
+- `INIT_TIMEOUT_SEC` removed. Replaced by `INIT_TIMEOUT_FALLBACK_SEC`,
+  used only when `/session-init` fails entirely or the response is missing
+  the field. Drift between CLI and server is now impossible by
+  construction.
+
+### Why this is permanent
+
+If the server-side TTL ever changes again, every CLI install in the wild
+adopts the new value on the next `sibyl init` automatically. No CLI
+re-publish required. No `bumped constant on one side` failure mode. The
+server is the single source of truth; the CLI defers.
+
+## [0.3.4] — 2026-05-21
+
+Silent-success activation foot-gun. Multi-user reports of "email auth doesn't
+work, no error message." Root cause: CLI `INIT_TIMEOUT_SEC` was 10min while
+the server-side `PAIRING_TTL_SECONDS` was 15min. Users who took 10-15min to
+find the pairing code in their inbox would hit the gap: server accepted the
+bind, browser showed the success modal, but the local CLI had already exited
+and `credentials.json` was never written. No error surfaced anywhere — the
+plugin just failed to load on the next run.
+
+### Changed
+
+- `INIT_TIMEOUT_SEC` raised from `10 * 60` to `30 * 60` (cli.py:61). Matches
+  the server's new 30min pairing-code TTL — the two windows now never
+  disagree.
+- `UPGRADE_TIMEOUT_SEC` raised to `30 * 60` for the same alignment reason on
+  the upgrade flow.
+- Activation-timeout terminal message now explicitly calls out the
+  silent-success failure mode and tells the user to run
+  `sibyl init --force`. Earlier message just said "Re-run sibyl init."
+
+### Companion changes (same session)
+
+- `api-sibyllabs/api/plugin/session-init.js`: `PAIRING_TTL_SECONDS` 15min →
+  30min.
+- `api-sibyllabs/api/plugin/email-bind.js`: error message for expired code
+  updated from "15 min limit" to "30 min limit" + `sibyl init --force`.
+- `sibyllabs/plugin/activate.html`: success modal gains a callout that
+  prompts the user to run `sibyl init --force` if their terminal already
+  showed the timeout message before they bound.
+
+## [0.3.3] — 2026-05-20
+
+Auth subdomain migration. Operator directive: "make sure the temp links are
+being generated at install.sibyllabs.com/plugin/auth or something like this,
+and not sibyllabs.org/install." Surfaced as a trust + phishing-resistance ask
+for the URL that appears in the user's terminal at activation time.
+
+### Changed
+
+- `ACTIVATE_BASE` default changed from `https://sibyllabs.org/plugin/activate`
+  to `https://auth.sibyllabs.org`. Activation URL shape moved from
+  query-string (`?session=<uuid>`) to bare path (`/<uuid>`). The terminal
+  output now reads `Opening https://auth.sibyllabs.org/<short-uuid>` —
+  shorter, line-wraps less on narrow terminals, easier to verify visually.
+- The Vercel rewrite on `auth.sibyllabs.org` serves the same `/plugin/activate`
+  page but preserves the user-visible URL, so the wallet popup's "X wants you
+  to sign in" header matches the URL bar. Phishing-conscious wallets (Rabby,
+  MetaMask in security mode) skip the domain-mismatch warning.
+- Companion api-sibyllabs change (same session): `bind.js` SIWE
+  `expectedDomains` allowlist now includes `auth.sibyllabs.org` alongside
+  `sibyllabs.org` and `sibylcap.com`.
+
+### Backward compatibility
+
+The legacy `https://sibyllabs.org/plugin/activate?session=<uuid>` URL still
+resolves and works identically. Anyone on cli 0.3.2 or earlier keeps a
+functioning activation flow until they upgrade. The new URL works on cli
+0.3.3+ automatically with no env-var changes needed.
+
+Override via `SIBYL_ACTIVATE_BASE` env var still works for staging /
+self-hosted setups. The CLI auto-detects path-vs-query URL shape from the
+base hostname (sibyllabs.org subdomain → path; everything else → query).
+
+## [0.3.2] — 2026-05-20
 
 Branding pass on the banner. Operator directive: "beneath the large
 SIBYL title it needs to say underneath the memory you can hold in
@@ -24,9 +160,9 @@ Preview captures at https://sibylcap.com/hud-2026-05-20 (scene 09
 isolates the banner; scenes 01 + 05 show it inline with the rest of
 the activation and install ceremonies).
 
-## [0.3.1] - 2026-05-20
+## [0.3.1] — 2026-05-20
 
-Operator-directed tuning: "typical app patterns: heavy menus on
+Operator-directed tuning: "typical app patterns — heavy menus on
 install window and initial setup, light on dashboards etc." v0.3.0
 applied the full section_header treatment uniformly across every
 subcommand. v0.3.1 lightens the daily-use dashboards and keeps the
@@ -35,22 +171,22 @@ ceremony reserved for activation moments.
 ### Changed
 
 - `sibyl status`, `sibyl whoami`, `sibyl devices`, `sibyl logout`,
-  `sibyl health`: dropped the section_header opener. Same convention
+  `sibyl health` — dropped the section_header opener. Same convention
   as `git status`, `ls -la`, `gh auth status`, `pg_isready`,
   `redis-cli ping`: utilitarian dashboards present data, not chrome.
   Eyebrow labels + kv rows + status lines remain.
 
 ### Unchanged
 
-- `sibyl init`: keeps the full SIBYL gradient banner + section
+- `sibyl init` — keeps the full SIBYL gradient banner + section
   headers + numbered next-steps. This IS the install moment; it earns
   the ceremony.
-- `sibyl upgrade`: keeps section header + KV. Mid-weight: tier-flip
+- `sibyl upgrade` — keeps section header + KV. Mid-weight: tier-flip
   moment is install-ish but not first-run.
-- `_aesthetic.py` library: unchanged. Applied differently across
+- `_aesthetic.py` library — unchanged. Applied differently across
   commands per the heavy/light convention.
 
-## [0.3.0] - 2026-05-20
+## [0.3.0] — 2026-05-20
 
 Visual identity pass across every subcommand. The `sibyl init` brand
 moment (the SIBYL ASCII wordmark with pale-gold → deep-ochre vertical
@@ -60,7 +196,7 @@ to the whole surface.
 
 ### Added
 
-- New `_aesthetic.py` module: shared visual library for the entire CLI.
+- New `_aesthetic.py` module — shared visual library for the entire CLI.
   Brand palette derived from the rule 46 creme paper face (PAPER, INK,
   ACCENT, JADE, PULSE, RULE, etc.). 24-bit truecolor → 256-color → plain
   text degradation cascade. Letter-spaced eyebrows, gradient titles,
@@ -100,31 +236,31 @@ to the whole surface.
   consistency (COLORTERM=truecolor, TERM_PROGRAM whitelist, TERM
   pattern match for kitty/alacritty/256color).
 
-## [0.2.0] - 2026-05-19
+## [0.2.0] — 2026-05-19
 
-Auth-redesign wave 2: account-surface CLI commands. Adds `sibyl whoami`
+Auth-redesign wave 2 — account-surface CLI commands. Adds `sibyl whoami`
 for a one-line account summary (masked by default, `--full` opt-in) and
 `sibyl devices` for listing active bearer tokens with per-device revoke.
 
 ### Added
 
-- `sibyl whoami`: one-line summary: short account_id, tier, masked email
+- `sibyl whoami` — one-line summary: short account_id, tier, masked email
   (`a***@e***.tld`), masked wallet (`0xabcd…1234`), this device label.
   `--full` flag shows unmasked email + wallet for ops scenarios.
-- `sibyl devices`: list active (non-revoked) bearer tokens for the
+- `sibyl devices` — list active (non-revoked) bearer tokens for the
   account in issued_at DESC order. Marks current device with `▶` and
   shows revoke command for each other device.
-- `sibyl devices revoke <index>`. POST `/api/plugin/devices` with the
+- `sibyl devices revoke <index>` — POST `/api/plugin/devices` with the
   bearer_id at that index. Refuses to revoke the calling device.
 
 ### Server companion (deployed)
 
-- `GET  /api/plugin/devices?account_id=<uuid>`: lists bearer_tokens.
-- `POST /api/plugin/devices { bearer_id }`: revokes the bearer.
+- `GET  /api/plugin/devices?account_id=<uuid>` — lists bearer_tokens.
+- `POST /api/plugin/devices { bearer_id }` — revokes the bearer.
 - Both auth via `Authorization: Bearer <session_token>`; caller must
   own the account.
 
-## [0.1.4] - 2026-05-18
+## [0.1.4] — 2026-05-18
 
 Maximum-efficiency onboarding release. New `sibyl setup` command auto-detects
 agent frameworks on the user's machine and wires SIBYL as the memory provider
@@ -134,14 +270,14 @@ sibyl-memory-hermes` + `sibyl-memory-hermes install-plugin` + manual
 
 ### Added
 
-- **`sibyl setup`**: new subcommand. Auto-detects Hermes (`$HERMES_HOME` or
+- **`sibyl setup`** — new subcommand. Auto-detects Hermes (`$HERMES_HOME` or
   `~/.hermes/` or `hermes` on PATH) and Claude Code (`~/.claude/settings.json`
   or `claude` on PATH). Prompts per stack with explicit confirmation:
   - Fresh add: `Set SIBYL as default memory provider in Hermes? [Y/n]` (default Y)
   - Overwrite existing: `Hermes currently uses 'mem0' as memory provider. Overwrite with SIBYL? [y/N]` (default N, never destroys user state without explicit y)
   - Already wired: noop with green status
   - Multi-framework: `Wire which? [h]ermes, [c]laude, [a]ll, [n]one (default: all)`
-- **`sibyl setup hermes`** / **`sibyl setup claude-code`**: explicit targeting
+- **`sibyl setup hermes`** / **`sibyl setup claude-code`** — explicit targeting
   for power users (skips detection, wires only the named stack).
 - **Flags**: `--yes` (accept all defaults, still respects destructive-default-N
   unless `--force` is also passed), `--force` (overwrite existing non-SIBYL
@@ -179,7 +315,7 @@ sibyl-memory-hermes` + `sibyl-memory-hermes install-plugin` + manual
 
 
 
-## [0.1.3] - 2026-05-18
+## [0.1.3] — 2026-05-18
 
 KAPPA external-tester remediation release. Family-wide alignment with the
 v0.4.0 client + v0.3.2 hermes (KAPPA-attributed fixes: exception export
@@ -199,7 +335,7 @@ code changes in this release.
 
 ---
 
-## [0.1.2] - 2026-05-18
+## [0.1.2] — 2026-05-18
 
 Audit-remediation release. v0.3.0 plugin-family pre-ship audit (2026-05-18T05:05Z)
 surfaced 10 critical findings; this release lands the CLI-side fixes.
@@ -208,17 +344,17 @@ cross-tier search), `sibyl-memory-hermes` v0.3.1, `sibyl-memory-mcp` v0.1.1.
 
 ### Fixed
 
-- **C3**. `__version__` no longer hardcoded. Now sourced from
+- **C3** — `__version__` no longer hardcoded. Now sourced from
   `importlib.metadata.version("sibyl-memory-cli")` with `+source` fallback.
   Same pattern as sibyl-memory-hermes v0.3.0+. Wheel and `__init__.py`
   can't drift.
-- **C3**. HTTP User-Agent header now built from the runtime
+- **C3** — HTTP User-Agent header now built from the runtime
   `_client_version()` helper instead of the hardcoded `"sibyl-memory-cli/0.1.0"`.
   Server telemetry will see real versions, not the stale literal.
-- **C3**. `/api/plugin/session-init` payload's `client_version` field
+- **C3** — `/api/plugin/session-init` payload's `client_version` field
   similarly switched from `__import__("sibyl_memory_cli").__version__` to
   the helper. Telemetry will accurately reflect 0.1.2+.
-- **C4**: post-activation message rewritten. Removed the fictional
+- **C4** — post-activation message rewritten. Removed the fictional
   `from hermes_agent import Agent; agent = Agent(memory=SibylMemoryProvider())`
   quickstart (the API never existed in any Hermes release). Replaced with:
   the real Hermes install flow (`sibyl-memory-hermes install-plugin` +
@@ -227,12 +363,12 @@ cross-tier search), `sibyl-memory-hermes` v0.3.1, `sibyl-memory-mcp` v0.1.1.
 
 ### Security
 
-- **SEC-2**. `write_credentials_atomic` now creates files at mode 0o600
+- **SEC-2** — `write_credentials_atomic` now creates files at mode 0o600
   set by the kernel at file-creation time via `os.open(O_WRONLY|O_CREAT|
   O_EXCL|O_NOFOLLOW, 0o600)`. Previously used `write_text()` then
   `os.chmod(0o600)`, leaving a world-readable window between syscalls every
   credential save. No race.
-- **SEC-1** (CLI-side mitigation): the URL parameter handed to the
+- **SEC-1** (CLI-side mitigation) — the URL parameter handed to the
   browser is now treated as an opaque pairing-session identifier, not as
   the long-lived bearer. After activation completes, the CLI prefers a
   server-issued `bearer_token` field from `/check` (post-fix server flow);
@@ -241,21 +377,21 @@ cross-tier search), `sibyl-memory-hermes` v0.3.1, `sibyl-memory-mcp` v0.1.1.
   release prepares the CLI to consume it when the server-side lands.
   Internal variable renamed `session_token` → `session_id` in `cmd_init`
   to reflect the corrected meaning.
-- **SEC-11**. `read_credentials` refuses to follow symlinks.
+- **SEC-11** — `read_credentials` refuses to follow symlinks.
 
 ### Dependencies
 
 - `sibyl-memory-client>=0.3.3` (was `>=0.3.0`)
-- `sibyl-memory-hermes>=0.3.1` (was `>=0.2.0`): picks up the fictional-API
+- `sibyl-memory-hermes>=0.3.1` (was `>=0.2.0`) — picks up the fictional-API
   removal in the hermes package; earlier versions are structurally broken.
 
-## [0.1.1] - 2026-05-17
+## [0.1.1] — 2026-05-17
 
 ### Added
 
 - **SIBYL wordmark banner** at the top of `sibyl init`. ANSI Shadow boxchars,
   24-bit truecolor vertical gradient flowing cream/white at the top through
-  warm gold to deep ochre at the bottom: aligned with the lab visual identity
+  warm gold to deep ochre at the bottom — aligned with the lab visual identity
   per the operator's brand-discipline rule (creme palette, `--accent #8a6a2a`).
   Plus a tagline: "memory you can hold in your hand".
 
@@ -263,16 +399,16 @@ cross-tier search), `sibyl-memory-hermes` v0.3.1, `sibyl-memory-mcp` v0.1.1.
 
 - New module `sibyl_memory_cli._banner` with `render_banner()` and
   `print_banner()` helpers. Truecolor support is detected via `COLORTERM`,
-  `TERM_PROGRAM`, and `TERM`: modern terminals (iTerm2, Alacritty, Kitty,
+  `TERM_PROGRAM`, and `TERM` — modern terminals (iTerm2, Alacritty, Kitty,
   wezterm, Ghostty, Windows Terminal, VS Code, Tabby) light up automatically.
 - Gracefully degrades to plain text (still readable, no escape junk) when
   `NO_COLOR` is set, when stdout is not a TTY, or when `TERM=dumb`.
-- Wired into `cmd_init` only. `status` / `health` / `upgrade` stay banner-free
+- Wired into `cmd_init` only — `status` / `health` / `upgrade` stay banner-free
   so they don't add noise to scripted invocations.
 - Banner palette is encoded as 6 RGB tuples (one per row) in the module
-  rather than computed at runtime: easier to tune and audit.
+  rather than computed at runtime — easier to tune and audit.
 
-## [0.1.0] - 2026-05-16
+## [0.1.0] — 2026-05-16
 
 ### Changed (same-day revision before publish): terminal pairing code
 
@@ -283,7 +419,7 @@ The code itself never leaves the user's machine until they type it
 into the browser's email panel. Replaces the earlier Resend-backed
 email magic-code flow, removing the external dependency entirely.
 
-The wallet (SIWE) path is unchanged: the pairing code only matters
+The wallet (SIWE) path is unchanged — the pairing code only matters
 for the email panel.
 
 
@@ -293,20 +429,20 @@ CLI + upgrade page so the SDK + payment-auth machinery has a front door.
 
 ### Added
 
-- **`sibyl init`**: browser activation. Generates a session UUID,
+- **`sibyl init`** — browser activation. Generates a session UUID,
   opens `sibyllabs.org/plugin/activate?session=...` in the user's
   browser, polls `api.sibyllabs.org/api/plugin/check` every 3s with a
   10-min timeout. On bind, writes `~/.sibyl-memory/credentials.json`
   atomically at mode 0600.
-- **`sibyl upgrade`**: opens `sibyllabs.org/plugin/upgrade?session=...`
+- **`sibyl upgrade`** — opens `sibyllabs.org/plugin/upgrade?session=...`
   with the existing session token. Polls `/api/plugin/access` every 3s
   with a 15-min timeout until `tier` changes from the local value.
   On change: rewrites credentials.json, clears `tier_cache.json` so
   the next write picks up the new entitlement immediately.
-- **`sibyl status`**: shows local credentials, DB size, tier cache
+- **`sibyl status`** — shows local credentials, DB size, tier cache
   state, plus the server's view of tier (subscription / staker /
   free). Flags local↔server tier drift.
-- **`sibyl health`**: wraps `SibylMemoryProvider.health()`. Prints
+- **`sibyl health`** — wraps `SibylMemoryProvider.health()`. Prints
   the JSON diagnostic dict.
 
 ### Design

@@ -1,10 +1,10 @@
-"""sibyl-memory-cli. Command-line interface for the Sibyl Memory Plugin.
+"""sibyl-memory-cli — Command-line interface for the Sibyl Memory Plugin.
 
 Entry point: `sibyl` (installed via [project.scripts] in pyproject).
 
 Commands:
-    sibyl init          activate the plugin: opens browser SIWE flow, writes ~/.sibyl-memory/credentials.json
-    sibyl upgrade       open the upgrade flow: stake $SIBYL or subscribe in USDC
+    sibyl init          activate the plugin — opens browser SIWE flow, writes ~/.sibyl-memory/credentials.json
+    sibyl upgrade       open the upgrade flow — stake $SIBYL or subscribe in USDC
     sibyl status        show current tier, DB size, expiry, account
     sibyl health        provider self-check (mirrors SibylMemoryProvider.health())
 
