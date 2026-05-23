@@ -3,11 +3,12 @@
 Maximum-efficiency onboarding command. Single-command path for the user:
 
     pip install sibyl-memory-cli
-    sibyl setup          # auto-detects Hermes + Claude Code, prompts per stack, wires
+    sibyl setup          # auto-detects Hermes + Claude Code + Codex, prompts per stack, wires
 
-Two wirers in v0.1.4:
+Three wirers in v0.3.7:
   - HermesWirer:     install-plugin + edit $HERMES_HOME/config.yaml (memory.provider)
-  - ClaudeCodeWirer: edit ~/.claude/settings.json (mcpServers.sibyl-memory)
+  - ClaudeCodeWirer: edit ~/.claude.json (mcpServers.sibyl-memory)
+  - CodexWirer:      edit ~/.codex/config.toml ([mcp_servers.sibyl_memory])
 
 Each wirer follows the same protocol:
   is_present()       -> bool          (filesystem + PATH detect)
@@ -26,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -229,9 +231,15 @@ class ClaudeCodeWirer:
     SIBYL_MCP_BLOCK = {"command": "sibyl-memory-mcp"}
 
     def __init__(self, *, settings_path: Optional[Union[str, Path]] = None):
+        # v0.3.7 (2026-05-22): default flipped from ~/.claude/settings.json to
+        # ~/.claude.json. Recent Claude Code reads MCP server config from the
+        # user-level ~/.claude.json — writing to ~/.claude/settings.json was a
+        # silent-failure path (wirer reported success but MCP server didn't
+        # appear in Claude Code). Override with --claude-settings if your
+        # install uses a non-standard location.
         self.settings_path = (
             Path(settings_path).expanduser() if settings_path
-            else Path.home() / ".claude" / "settings.json"
+            else Path.home() / ".claude.json"
         )
 
     def is_present(self) -> bool:
@@ -334,12 +342,165 @@ class ClaudeCodeWirer:
 
 
 # ----------------------------------------------------------------------
+# CodexWirer — edits ~/.codex/config.toml
+# ----------------------------------------------------------------------
+
+class CodexWirer:
+    """Auto-wire Codex CLI's MCP server registry at ~/.codex/config.toml.
+
+    Codex reads server defs from a TOML table named `[mcp_servers.<name>]`.
+    We use `[mcp_servers.sibyl_memory]` (snake_case is TOML-idiomatic; the
+    Claude Code side uses `sibyl-memory` because JSON keys allow hyphens
+    and Anthropic docs use that form).
+
+    Idempotency is text-based rather than full TOML round-trip, so we
+    preserve operator hand-edits and comments in the rest of the file
+    instead of reformatting on every run. The cost: we won't catch
+    pathological TOML edge cases (e.g., comments mid-key). For the
+    canonical Codex config layout this is fine.
+    """
+    name = "codex"
+    display_name = "Codex CLI"
+    initial = "x"  # 'c' is taken by Claude Code; 'x' from codeX
+
+    SIBYL_TOML_BLOCK = '[mcp_servers.sibyl_memory]\ncommand = "sibyl-memory-mcp"\n'
+    BLOCK_HEADER_RE = re.compile(
+        r'^\s*\[\s*mcp_servers\s*\.\s*sibyl_memory\s*\]\s*$', re.MULTILINE
+    )
+    NEXT_TABLE_RE = re.compile(r'^\s*\[', re.MULTILINE)
+    SIBYL_COMMAND_RE = re.compile(
+        r'^\s*command\s*=\s*"sibyl-memory-mcp"\s*$', re.MULTILINE
+    )
+
+    def __init__(self, *, config_path: Optional[Union[str, Path]] = None):
+        self.config_path = (
+            Path(config_path).expanduser() if config_path
+            else Path.home() / ".codex" / "config.toml"
+        )
+
+    def is_present(self) -> bool:
+        if self.config_path.exists():
+            return True
+        if shutil.which("codex"):
+            return True
+        return False
+
+    def _read(self) -> str:
+        if not self.config_path.exists():
+            return ""
+        try:
+            return self.config_path.read_text(encoding="utf-8")
+        except Exception:
+            return ""
+
+    def _extract_block(self, content: str) -> Optional[str]:
+        m = self.BLOCK_HEADER_RE.search(content)
+        if not m:
+            return None
+        # Find next [...] table header after our match (start-of-line "[").
+        next_tbl = self.NEXT_TABLE_RE.search(content, m.end())
+        end = next_tbl.start() if next_tbl else len(content)
+        return content[m.start():end]
+
+    def current_state(self) -> dict:
+        content = self._read()
+        block = self._extract_block(content)
+        sibyl_block_present = block is not None
+        wired_with_sibyl = bool(block and self.SIBYL_COMMAND_RE.search(block))
+        return {
+            "config_path": str(self.config_path),
+            "config_exists": self.config_path.exists(),
+            "sibyl_block_present": sibyl_block_present,
+            "wired_with_sibyl": wired_with_sibyl,
+        }
+
+    def wire(self, *, force: bool = False, dry_run: bool = False,
+             prompt_fn: Optional[Callable[..., str]] = None) -> WireOutcome:
+        state = self.current_state()
+
+        if state["wired_with_sibyl"]:
+            return WireOutcome(
+                self.name, "already",
+                f"Codex CLI already has [mcp_servers.sibyl_memory] block in {self.config_path}",
+            )
+
+        if state["sibyl_block_present"] and not force:
+            if prompt_fn is None:
+                return WireOutcome(
+                    self.name, "skipped",
+                    "Existing [mcp_servers.sibyl_memory] differs. Use --force to overwrite.",
+                )
+            ans = prompt_fn(
+                "Codex has [mcp_servers.sibyl_memory] but command differs. Update?",
+                default="N",
+            )
+            if ans != "y":
+                return WireOutcome(self.name, "skipped", "TOML block update declined.")
+
+        if dry_run:
+            verb = "replace" if state["sibyl_block_present"] else "append"
+            return WireOutcome(
+                self.name, "dry-run",
+                f"Would {verb} [mcp_servers.sibyl_memory] in {self.config_path}",
+            )
+
+        backup = self._backup_config()
+        try:
+            self._write_config_with_sibyl(replace_existing=state["sibyl_block_present"])
+        except Exception as e:
+            return WireOutcome(
+                self.name, "error",
+                f"config write failed: {type(e).__name__}: {e}",
+                backup_path=backup,
+            )
+        return WireOutcome(
+            self.name, "wired",
+            f"Added [mcp_servers.sibyl_memory] to {self.config_path}",
+            backup_path=backup,
+        )
+
+    def _backup_config(self) -> Optional[Path]:
+        if not self.config_path.exists():
+            return None
+        backup = self.config_path.with_suffix(".toml.bak")
+        shutil.copy2(self.config_path, backup)
+        return backup
+
+    def _write_config_with_sibyl(self, *, replace_existing: bool) -> None:
+        content = self._read()
+
+        if replace_existing:
+            existing = self._extract_block(content) or ""
+            # Rstrip the existing block to a single newline before splice so
+            # we don't accumulate blank lines on repeat replaces.
+            stripped = existing.rstrip("\n")
+            new_content = content.replace(stripped, self.SIBYL_TOML_BLOCK.rstrip("\n"), 1)
+            # Ensure file ends with a newline
+            if not new_content.endswith("\n"):
+                new_content += "\n"
+        else:
+            # Append: one blank line of separator if file is non-empty
+            if not content:
+                new_content = self.SIBYL_TOML_BLOCK
+            else:
+                # Normalize trailing whitespace to exactly "\n\n"
+                trimmed = content.rstrip("\n") + "\n\n"
+                new_content = trimmed + self.SIBYL_TOML_BLOCK
+
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.config_path.with_suffix(".toml.tmp")
+        tmp.write_text(new_content, encoding="utf-8")
+        os.replace(tmp, self.config_path)
+
+
+# ----------------------------------------------------------------------
 # Registry + dispatch
 # ----------------------------------------------------------------------
 
 ALL_WIRERS: dict = {
     "hermes": HermesWirer,
     "claude-code": ClaudeCodeWirer,
+    "codex": CodexWirer,
 }
 
 
@@ -366,6 +527,8 @@ def _wirer_kwargs(args: argparse.Namespace, name: str) -> dict:
         kw["hermes_home"] = args.hermes_home
     if name == "claude-code" and getattr(args, "claude_settings", None):
         kw["settings_path"] = args.claude_settings
+    if name == "codex" and getattr(args, "codex_config", None):
+        kw["config_path"] = args.codex_config
     return kw
 
 
@@ -402,12 +565,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
         print(dim("Looked for:"))
         for name, w in wirers.items():
             st = w.current_state()
-            loc = st.get("hermes_home") or st.get("settings_path")
+            loc = st.get("hermes_home") or st.get("settings_path") or st.get("config_path")
             print(f"  {w.display_name}: {loc}")
         print()
         print(dim("To override detection, point setup at a custom path:"))
         print(f"  {cyan('sibyl setup --hermes-home /custom/path')}")
-        print(f"  {cyan('sibyl setup --claude-settings /custom/settings.json')}")
+        print(f"  {cyan('sibyl setup --claude-settings /custom/.claude.json')}")
+        print(f"  {cyan('sibyl setup --codex-config /custom/config.toml')}")
         print()
         return 0
 
@@ -415,7 +579,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print(dim("Detected:"))
     for name, w in detected.items():
         st = w.current_state()
-        loc = st.get("hermes_home") or st.get("settings_path")
+        loc = st.get("hermes_home") or st.get("settings_path") or st.get("config_path")
         print(f"  {w.display_name} at {loc}")
     print()
 
@@ -449,11 +613,14 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
         # Pre-prompt for fresh adds (interactive only). Already-wired and
         # existing-other-provider are handled inside wire() itself.
+        # State keys per wirer: hermes → memory_provider; claude-code →
+        # sibyl_mcp; codex → sibyl_block_present.
         if (
             not args.yes
             and not st.get("wired_with_sibyl")
             and not st.get("memory_provider")
             and not st.get("sibyl_mcp")
+            and not st.get("sibyl_block_present")
         ):
             if name == "hermes":
                 q = f"Set SIBYL as default memory provider in {wirer.display_name}?"

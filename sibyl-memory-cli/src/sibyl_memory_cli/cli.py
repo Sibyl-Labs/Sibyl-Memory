@@ -1042,7 +1042,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Auto-detect Hermes / Claude Code and wire SIBYL as the memory provider",
     )
     p_setup.add_argument(
-        "target", nargs="?", choices=list(["hermes", "claude-code"]),
+        "target", nargs="?", choices=list(["hermes", "claude-code", "codex"]),
         help="Wire just this framework (default: detect all)",
     )
     p_setup.add_argument(
@@ -1063,7 +1063,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_setup.add_argument(
         "--claude-settings", default=None,
-        help="Override ~/.claude/settings.json autodetection",
+        help="Override ~/.claude.json autodetection",
+    )
+    p_setup.add_argument(
+        "--codex-config", default=None,
+        help="Override ~/.codex/config.toml autodetection",
     )
     p_setup.set_defaults(func=cmd_setup)
 

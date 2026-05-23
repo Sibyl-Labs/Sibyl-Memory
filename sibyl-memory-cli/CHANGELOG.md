@@ -4,6 +4,54 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.7] — 2026-05-22
+
+Three changes to `sibyl setup`. Beta tester audit caught silent-failure
+risk on Claude Code wiring and a missing Codex auto-wire path.
+
+### Changed
+
+- **`ClaudeCodeWirer` default settings_path: `~/.claude/settings.json`
+  → `~/.claude.json`.** This was a silent-failure path. The wirer
+  reported success but Claude Code reads MCP server config from
+  `~/.claude.json` (the user-level config that holds `numStartups`,
+  `userID`, `mcpServers`, etc.), not the older `~/.claude/settings.json`
+  surface. Pre-0.3.7 testers who ran `sibyl setup claude-code` and
+  didn't see the SIBYL MCP server appear in Claude Code hit this bug.
+  Use `--claude-settings` to override when needed.
+
+### Added
+
+- **`CodexWirer`** — auto-wires Codex CLI by editing
+  `~/.codex/config.toml`. Adds a `[mcp_servers.sibyl_memory]` table
+  with `command = "sibyl-memory-mcp"`. Idempotent (re-running on an
+  already-wired config returns `already`). Refuses to overwrite an
+  existing `sibyl_memory` block with a different command unless
+  `--force` is passed (matches the Hermes / Claude Code wirer pattern).
+  Atomic write via `.toml.tmp` rename + `.toml.bak` backup.
+- **`sibyl setup codex`** target — registered in `ALL_WIRERS` and
+  in the parser `choices` list. Bare `sibyl setup` (no target) now
+  also auto-detects and prompts for Codex when `codex` is on PATH
+  or `~/.codex/config.toml` exists.
+- **`--codex-config PATH`** override flag on `sibyl setup` for users
+  with a non-standard Codex config location.
+
+### Notes
+
+- TOML idempotency check is text-based (regex on the table header +
+  the canonical `command = "sibyl-memory-mcp"` line) rather than full
+  TOML parse-and-rewrite. Trade-off: preserves operator hand-edits
+  and comments in the rest of the file, at the cost of not catching
+  pathological TOML edge cases (e.g., the table header split across
+  lines). For the canonical Codex config layout this works cleanly.
+- `requires-python` stays at `>=3.10`. No new dependency added —
+  TOML reads use plain text scan rather than `tomllib` (3.11+ only).
+- The Hermes README + the beta install page on beta.sibyllabs.org
+  both document `claude mcp add sibyl-memory -- sibyl-memory-mcp` as
+  the canonical Claude Code wire path. `sibyl setup claude-code`
+  is now equally valid (writes to the same `~/.claude.json` file
+  that `claude mcp add` writes to).
+
 ## [0.3.6] — 2026-05-22
 
 New `sibyl update` subcommand. Closes the loop on the only meaningful
