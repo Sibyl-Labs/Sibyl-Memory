@@ -4,99 +4,46 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
-## [0.3.7] — 2026-05-22
+## [0.3.8] — 2026-05-24
 
-Three changes to `sibyl setup`. Beta tester audit caught silent-failure
-risk on Claude Code wiring and a missing Codex auto-wire path.
+Fix: `sibyl setup claude-code` wired the MCP config but never ensured the
+`sibyl-memory-mcp` binary existed, causing ENOENT on every Claude Code
+reconnect. Same defect in the Codex wirer path.
 
-### Changed
+### Fixed
 
-- **`ClaudeCodeWirer` default settings_path: `~/.claude/settings.json`
-  → `~/.claude.json`.** This was a silent-failure path. The wirer
-  reported success but Claude Code reads MCP server config from
-  `~/.claude.json` (the user-level config that holds `numStartups`,
-  `userID`, `mcpServers`, etc.), not the older `~/.claude/settings.json`
-  surface. Pre-0.3.7 testers who ran `sibyl setup claude-code` and
-  didn't see the SIBYL MCP server appear in Claude Code hit this bug.
-  Use `--claude-settings` to override when needed.
-
-### Added
-
-- **`CodexWirer`** — auto-wires Codex CLI by editing
-  `~/.codex/config.toml`. Adds a `[mcp_servers.sibyl_memory]` table
-  with `command = "sibyl-memory-mcp"`. Idempotent (re-running on an
-  already-wired config returns `already`). Refuses to overwrite an
-  existing `sibyl_memory` block with a different command unless
-  `--force` is passed (matches the Hermes / Claude Code wirer pattern).
-  Atomic write via `.toml.tmp` rename + `.toml.bak` backup.
-- **`sibyl setup codex`** target — registered in `ALL_WIRERS` and
-  in the parser `choices` list. Bare `sibyl setup` (no target) now
-  also auto-detects and prompts for Codex when `codex` is on PATH
-  or `~/.codex/config.toml` exists.
-- **`--codex-config PATH`** override flag on `sibyl setup` for users
-  with a non-standard Codex config location.
-
-### Notes
-
-- TOML idempotency check is text-based (regex on the table header +
-  the canonical `command = "sibyl-memory-mcp"` line) rather than full
-  TOML parse-and-rewrite. Trade-off: preserves operator hand-edits
-  and comments in the rest of the file, at the cost of not catching
-  pathological TOML edge cases (e.g., the table header split across
-  lines). For the canonical Codex config layout this works cleanly.
-- `requires-python` stays at `>=3.10`. No new dependency added —
-  TOML reads use plain text scan rather than `tomllib` (3.11+ only).
-- The Hermes README + the beta install page on beta.sibyllabs.org
-  both document `claude mcp add sibyl-memory -- sibyl-memory-mcp` as
-  the canonical Claude Code wire path. `sibyl setup claude-code`
-  is now equally valid (writes to the same `~/.claude.json` file
-  that `claude mcp add` writes to).
-
-## [0.3.6] — 2026-05-22
-
-New `sibyl update` subcommand. Closes the loop on the only meaningful
-remote-push question the beta cohort raised: "can you push updates to me?"
-We cannot remote-execute `pip install` on your machine — that's your venv,
-your permissions. We can notify (server-side, via heartbeat response,
-landing in a later cli release) and we can hand you a one-keystroke
-upgrade. This release ships the lever.
+- `ClaudeCodeWirer.wire()` now calls `shutil.which("sibyl-memory-mcp")`
+  before writing config. If the binary is absent, it auto-installs
+  `sibyl-memory-mcp` via `pip install` (mirroring `HermesWirer._install_plugin`).
+  If auto-install fails, the outcome downgrades to `error` with the exact
+  `pip install sibyl-memory-mcp` command instead of false success.
+- `current_state()` now includes `mcp_binary_found`. The `wired_with_sibyl`
+  flag is only True when both the config block matches AND the binary is on
+  PATH. Previously, re-running `sibyl setup` reported "already wired" even
+  when the binary was missing, hiding the problem on every retry.
+- Config-present-but-binary-missing is now a distinct path in `wire()`:
+  it installs the binary without re-writing the config block, then reports
+  `wired` (not `already`).
 
 ### Added
 
-- `sibyl update` — checks installed versions of `sibyl-memory-cli`,
-  `sibyl-memory-hermes`, and `sibyl-memory-client` against PyPI. Prints
-  a small diff table and the exact pip command to run. Pure stdlib;
-  3 PyPI calls, ~500ms total.
-- `sibyl update --apply` — runs `pip install -U` for the outdated
-  packages in-place via `sys.executable -m pip`. Detects the install
-  method (system pip / venv / pipx / PEP 668 externally-managed) and
-  picks the right invocation. pipx installs are flagged with the
-  correct `pipx upgrade` command instead of trying pip.
-- `sibyl update --json` — machine-readable output for scripting.
+- **Post-wire MCP verification.** After wiring (or confirming "already"),
+  `cmd_setup` spawns `sibyl-memory-mcp` briefly and confirms it doesn't
+  crash on startup (catches ImportError, missing deps, bad credentials).
+  Reports `✓ MCP server verified` on success or `✗ Server crashed on
+  startup (exit N): <stderr>` on failure, with a non-zero exit code so
+  CI and scripts can detect the problem.
+- Claude Code reconnect instructions print after verification: tells
+  the user to type `/mcp` and reconnect `sibyl-memory`, or restart.
+- `[mcp]` optional extra in pyproject.toml: `pip install "sibyl-memory-cli[mcp]"`
+  now pulls in `sibyl-memory-mcp>=0.1.2` transitively.
 
-### Notes
+### Root cause
 
-- Exit code 0 = all current. Exit code 2 = updates available (so this
-  can be wired into shell prompts or CI). Exit code other values =
-  hard error.
-- The MCP package (`sibyl-memory-mcp`) is intentionally not in the
-  default set — many users don't have it installed. Add via a future
-  `--include-mcp` flag if the beta surfaces demand.
-- Sources the version via `importlib.metadata.version()` and never
-  hardcodes a number, so it survives package rename or any odd install
-  layout. Matches the existing `_client_version()` helper pattern.
-
-### Catch-up
-
-This release also closes a source-drift gap: the monorepo on
-`Sibyl-Labs/Sibyl-Memory` was at v0.3.2 while PyPI was at v0.3.5
-because the v0.3.3-v0.3.5 cli iterations were committed only to the
-legacy `/sibyl/packages/sibyl-memory-cli/` working copy. The v0.3.6
-commit lands all of v0.3.3 (banner branding), v0.3.4 (timeout matched
-constants — superseded), and v0.3.5 (structural pairing-TTL read from
-server) inside the canonical monorepo, alongside the new `update`
-command. Yank v0.3.4 from PyPI as hygiene; v0.3.6 is the recommended
-upgrade target.
+`sibyl-memory-mcp` ships in a separate opt-in PyPI package. `sibyl setup`
+wrote a config entry pointing at the binary without checking it existed.
+The Hermes wirer had self-heal (`_install_plugin()`); the Claude Code and
+Codex wirers did not.
 
 ## [0.3.5] — 2026-05-21
 
