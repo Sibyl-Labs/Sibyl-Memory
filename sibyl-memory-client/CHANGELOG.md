@@ -40,11 +40,11 @@ natural-language query against the plugin's search returned 0 hits).
 
 ## [0.4.1] - 2026-05-19
 
-Auth-redesign wave 1 step 15: forward-compat with the server's v6 bearer
+Auth-redesign wave 1 step 15: forward-compat with the server's bearer
 model. `/api/plugin/check-write` accepts `Authorization: Bearer <token>`
 headers in addition to the existing `session_token` body field. This
 release sends both: body field for older servers, header for the new
-protocol. Server-side schema v6 populated `bearer_tokens` at bind time,
+protocol. The server populates device credentials at bind time,
 so legacy `session_token`-as-bearer credentials still resolve.
 
 ### Changed
@@ -54,7 +54,7 @@ so legacy `session_token`-as-bearer credentials still resolve.
   Token source priority: `payload["bearer_token"]` (server-issued in
   credentials.json schema_version >= 3) → `payload["session_token"]`
   (v1 backward compat). No behavior change against current production
-  server. Companion: api-sibyllabs accepts both paths since v6 schema.
+  server. Companion: api-sibyllabs accepts both paths.
 
 ## [0.4.0] - 2026-05-18
 

@@ -12,7 +12,7 @@ Design (v0.3.0):
        POST /api/plugin/check-write with current_size + proposed_delta. The
        server is the authoritative source for tier: credentials.json
        tampering is detected here because the server looks up the real tier
-       from sibyl_plugin.accounts.
+       from the server-side account database.
     4. Server response is cached for 7 days. After that, the next write at the
        cap forces a refresh. Users who go offline keep working under the
        cached result; if their cached tier says paid, they keep their grant
@@ -208,8 +208,8 @@ def _default_check_write_fn(
             _ua_ver = "0.0.0+source"
     except Exception:
         _ua_ver = "0.0.0+source"
-    # v0.4.1 (auth-redesign wave 1 step 15): forward-compat with the v6
-    # bearer model. If the payload carries a bearer_token (new server protocol)
+    # v0.4.1 (auth-redesign wave 1 step 15): forward-compat with the
+    # server bearer model. If the payload carries a bearer_token (new server protocol)
     # OR session_token (v1 backward compat where bearer == session), send it
     # as `Authorization: Bearer <token>` in addition to the body field. Server
     # accepts either path; this aligns the SDK to the new protocol without

@@ -235,22 +235,22 @@ to the whole surface.
 
 Auth-redesign wave 2 — account-surface CLI commands. Adds `sibyl whoami`
 for a one-line account summary (masked by default, `--full` opt-in) and
-`sibyl devices` for listing active bearer tokens with per-device revoke.
+`sibyl devices` for listing active devices with per-device revoke.
 
 ### Added
 
 - `sibyl whoami` — one-line summary: short account_id, tier, masked email
   (`a***@e***.tld`), masked wallet (`0xabcd…1234`), this device label.
   `--full` flag shows unmasked email + wallet for ops scenarios.
-- `sibyl devices` — list active (non-revoked) bearer tokens for the
-  account in issued_at DESC order. Marks current device with `▶` and
+- `sibyl devices` — list active devices for the
+  account in most-recent-first order. Marks current device with `▶` and
   shows revoke command for each other device.
 - `sibyl devices revoke <index>` — POST `/api/plugin/devices` with the
   bearer_id at that index. Refuses to revoke the calling device.
 
 ### Server companion (deployed)
 
-- `GET  /api/plugin/devices?account_id=<uuid>` — lists bearer_tokens.
+- `GET  /api/plugin/devices?account_id=<uuid>` — lists active devices.
 - `POST /api/plugin/devices { bearer_id }` — revokes the bearer.
 - Both auth via `Authorization: Bearer <session_token>`; caller must
   own the account.

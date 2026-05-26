@@ -51,8 +51,8 @@ $ sibyl upgrade
 ```
 
 In the browser:
-- **Stake**: connect your wallet (browser or Coinbase Smart Wallet), sign to bind, and the page checks your `$SIBYL` balance on Base. If you hold the threshold (default 100,000 $SIBYL liquid+staked, configurable), the local cap lifts.
-- **Subscribe**: pick monthly ($29) / quarterly ($79) / annual ($290) USDC, sign the transfer, the server records the subscription. Tier flips immediately.
+- **Stake**: connect your wallet, sign to bind, and the page checks your `$SIBYL` balance on Base. If you hold the qualifying amount, the local cap lifts.
+- **Subscribe**: pick a plan (monthly / quarterly / annual) in USDC, sign the transfer, and your tier flips immediately.
 
 On either path, the CLI sees the tier change, rewrites `credentials.json`, and clears `tier_cache.json` so your next write picks up the new entitlement without delay.
 
@@ -75,7 +75,6 @@ $ sibyl status
     Source            free
     Cap bytes         2,097,152
     $SIBYL held       0
-    Threshold         100,000
     Qualified         no
 ```
 
