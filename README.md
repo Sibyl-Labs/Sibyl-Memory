@@ -29,11 +29,11 @@
 
 ## What this is
 
-Five PyPI packages, one schema family, one architecture.
+Four PyPI packages, one schema family, one architecture.
 
 `sibyl-memory-client` is a local-first agentic memory SDK. SQLite-backed, five-tier hierarchical schema, FTS5 search, multi-tenant by design. No vector database. No embedding model. No external retrieval service. The memory lives on the agent's machine; the substrate is a single file on disk.
 
-The other four packages ride on top: `sibyl-memory-cli` for activation and tier management, `sibyl-memory-hermes` for Hermes Agent integration, `sibyl-memory-mcp` for any MCP-compatible client (Claude Code, Codex, Cursor, Continue), and `sibyl-plugin-schema` for the activation database that backs account, subscription, and staker-tier state on the server side.
+The other three packages ride on top: `sibyl-memory-cli` for activation and tier management, `sibyl-memory-hermes` for Hermes Agent integration, and `sibyl-memory-mcp` for any MCP-compatible client (Claude Code, Codex, Cursor, Continue).
 
 The architecture was benchmarked publicly on [LongMemEval Oracle](https://blog.sibylcap.com/longmemeval-v2) (ICLR 2025, University of Michigan, 500 questions) and placed **#2 overall at 95.6%**, tied with Chronos (PwC), beating Mastra, MemMachine, Hindsight, Mem0, Supermemory, Zep, and the Oracle baseline. It is the only file-based system in the top tier: running on a single 4 vCPU / 16 GB box, no vector infrastructure, no embedding fees.
 
@@ -49,7 +49,6 @@ This is the entire stack as it ships to production agents today.
 | [`sibyl-memory-cli`](./sibyl-memory-cli) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-cli)](https://pypi.org/project/sibyl-memory-cli/) | Command-line interface. `sibyl init` activates, `sibyl upgrade` runs the staker / subscription flow, `sibyl status` shows current tier and DB stats, `sibyl whoami`, `sibyl devices`. |
 | [`sibyl-memory-hermes`](./sibyl-memory-hermes) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-hermes)](https://pypi.org/project/sibyl-memory-hermes/) | Bundled memory payload for Hermes Agent v0.13+ (and any other Python orchestration that wants direct SDK access). |
 | [`sibyl-memory-mcp`](./sibyl-memory-mcp) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-mcp)](https://pypi.org/project/sibyl-memory-mcp/) | MCP server. Wraps the local SQLite + FTS5 memory engine and exposes it to MCP-compatible agents (Claude Code, Codex, Cursor, Continue, anything that speaks MCP). |
-| [`sibyl-plugin-schema`](./sibyl-plugin-schema) | (internal) | SQL migrations for the activation / account / subscription database. Not on PyPI: kept here as immutable record. |
 
 ---
 
@@ -60,7 +59,7 @@ pip install sibyl-memory-cli
 sibyl init
 ```
 
-`sibyl init` opens a browser to activate your account at https://sibyllabs.org/plugin/activate, binds your wallet (SIWE), email (six-digit terminal pairing code), or any wallet via USDC-send on Base, and writes credentials to `~/.sibyl-memory/credentials.json`. Free tier is the default; staker and subscription tiers unlock self-learning, the memory linter, and remove the local cap.
+`sibyl init` opens a browser to activate your account, binds your wallet or email, and writes credentials to `~/.sibyl-memory/credentials.json`. Free tier is the default; staker and subscription tiers unlock self-learning, the memory linter, and remove the local cap.
 
 For direct SDK use:
 
@@ -138,7 +137,7 @@ Built by [SIBYL](https://x.com/sibylcap), the autonomous agent operating at [Sib
 
 The agent has been operating in production since February 2026, ships code daily, holds an on-chain identity on Base (ERC-8004 agent ID 20880), runs an autonomous trading engine, an on-chain messaging protocol, an x402 payment rail, a token-gated chat demo, an advisory dashboard, and this memory product family. Everything verifiable on-chain.
 
-Memory architecture is the proven core. Sibyl Labs LLC owns the IP, signs contracts, and holds the legal wrapper around the agent's work. The work itself is shipped by the agent, in sessions, through the operator (`@tradingtulips`). The PyPI releases, the schema migrations, the CLI banner above: all of it is autonomous agent output.
+Memory architecture is the proven core. Sibyl Labs LLC owns the IP, signs contracts, and holds the legal wrapper around the agent's work. The work itself is shipped by the agent, in sessions, through the operator (`@tradingtulips`). The PyPI releases, the CLI, the SDK, the CLI banner above: all of it is autonomous agent output.
 
 The on-chain record is the resume. This repository is one chapter of it.
 

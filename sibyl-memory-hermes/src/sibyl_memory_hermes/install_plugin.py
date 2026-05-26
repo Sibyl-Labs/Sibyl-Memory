@@ -173,7 +173,7 @@ def install(hermes_home: Path, force: bool, dry_run: bool) -> int:
     # Step 2: bind account
     print(f"  {a.chip('2', palette='accent')}  {a.bold('Bind your account')}  {a.dim('(optional · lifts the 2 MB free-tier cap)')}")
     print(f"      {a.color('sibyl init', a.INK)}")
-    print(a.dim("      three paths: desktop wallet · email + code · USDC-send from mobile"))
+    print(a.dim("      three paths: desktop wallet · email + code · mobile wallet"))
     print(a.dim("      defer if you want: the plugin runs on a local default tenant without it"))
     print()
 
