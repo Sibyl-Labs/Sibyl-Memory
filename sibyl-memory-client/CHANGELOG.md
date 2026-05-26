@@ -4,6 +4,22 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.3] - 2026-05-26
+
+### Fixed
+
+- **Cross-tier timestamp precision mismatch.** `_utc_now_iso()` produced
+  6-digit microsecond timestamps (`45.525358Z`) while every SQL DEFAULT
+  used SQLite's 3-digit milliseconds (`45.525Z`). The width difference
+  broke lexicographic sorting across tiers: `'Z'` (0x5A) > `'3'` (0x33)
+  at position 24, so a journal event written 0.358 ms after an entity
+  update would sort *before* it in any `ORDER BY ts` merge. Now truncated
+  to 3-digit milliseconds to match SQLite output. Affects journal_events,
+  revenue_events, error_events, learning_runs.completed_at, and
+  skill_proposals.reviewed_at. Existing rows retain their original
+  precision (cosmetic, sort-correct within their own tier). Reported by
+  external tester smoke test on sibyl-memory-mcp 0.1.2.
+
 ## [0.4.2] - 2026-05-22
 
 `_sanitize_fts5_query` default mode flipped from phrase-match to
