@@ -40,13 +40,15 @@ _DB_SIDECAR_SUFFIXES = ("-wal", "-shm")
 
 
 def _utc_now_iso() -> str:
-    """Return current UTC time in ISO 8601 microsecond-precision format.
+    """Return current UTC time in ISO 8601 millisecond-precision format.
 
-    Higher precision than the schema's millisecond default (`%f` in
-    SQLite's strftime) reduces ts collisions when multiple writes land in
-    the same millisecond. Microsecond-precision strings sort correctly
-    lexically since the format is fixed-width."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    Matches the 3-digit precision of SQLite's ``strftime('%f')`` so that
+    timestamps produced by Python and by SQL DEFAULTs sort identically in
+    lexicographic comparisons.  Prior versions emitted 6-digit microseconds
+    which broke cross-tier ``ORDER BY ts`` merges ('Z' > '3' at position 24).
+    Fixed in 0.4.3."""
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
 def new_id() -> str:

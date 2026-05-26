@@ -47,13 +47,15 @@ Most agent-memory products store everything on someone else's servers, treat eve
 | Frozen things, kept but out of the way | ARCHIVE | `archive_entity(kind, name)` |
 | Search across everything | FTS5 | `search_entities(query)` |
 
-## What's in v0.2.x
+## What's in v0.4.x
 
 - The full five-tier memory model and the API surface above.
+- Cross-tier FTS5 search across entities, state, reference, and journal tiers.
 - Multi-tenant isolation: one machine can hold separate memory for separate identities.
 - Self-learning module (paid-tier): the agent watches your patterns and proposes reusable skills.
 - Memory linter (paid-tier): a health check on the local database.
 - Tier gating: free-tier callers get clear errors pointing at the upgrade page; paid-tier callers get full access.
+- Uniform millisecond timestamp precision across all tiers (v0.4.3).
 
 ## Tier model
 
