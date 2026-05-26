@@ -42,3 +42,6 @@ Thumbs.db
 *.sqlite
 *.sqlite3
 ~/.sibyl-memory/
+
+# Private schema (never publish to public repo)
+sibyl-plugin-schema/
