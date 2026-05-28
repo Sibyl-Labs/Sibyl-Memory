@@ -4,6 +4,33 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.4] - 2026-05-28
+
+Beta-tester bug-report remediation (chainriffs Discord + KAPPA rounds 3/4).
+
+### Fixed
+
+- **FTS5 search: uppercase operator keywords poisoned recall.** A
+  natural-language query containing `AND` / `OR` / `NOT` / `NEAR`
+  (e.g. `"auth AND db"`, `"cache NEAR eviction"`) had each token
+  phrase-quoted into a *required literal* term, so a matched row had to
+  literally contain the word "AND"/"NEAR" — recall silently collapsed to
+  ~0 hits. These keywords are now dropped during tokenization so the
+  remaining terms AND together (the natural intent). A query that is
+  *only* operator keywords keeps them as literals so searching for the
+  word "and" still resolves. (`_drop_fts5_operator_tokens`.)
+
+### Security
+
+- **Identifier validation: path-traversal + metacharacter defense-in-depth**
+  (KAPPA #3 PARTIAL). `validate_identifier` now rejects the `..` traversal
+  marker and the shell/redirection/quote metacharacters `< > | ; " \``. SQL
+  was already parameterized; this guards downstream non-parameterized
+  consumers (filesystem export, CLI display, logs). Apostrophe is
+  deliberately allowed (legit in name-shaped keys). Bare `/` and `\` remain
+  allowed per the v0.4.0 contract — rejecting raw separators is a contract
+  change flagged for team decision.
+
 ## [0.4.3] - 2026-05-26
 
 ### Fixed

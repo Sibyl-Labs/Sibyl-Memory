@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from sibyl_memory_client import MemoryClient
+from sibyl_memory_client import DEFAULT_TENANT, MemoryClient
 from sibyl_memory_client.exceptions import (
     CapExceededError,
     NotFoundError,
@@ -129,12 +129,22 @@ def _open_client() -> MemoryClient:
 
 
 def _build_client() -> MemoryClient:
-    """Construct a fresh MemoryClient. Called only on cache miss."""
+    """Construct a fresh MemoryClient. Called only on cache miss.
+
+    v0.1.3 (sylvain1550 / KAPPA first-use bug): when credentials.json is
+    absent, ``creds`` is ``{}`` and ``creds.get("tenant_id")`` is ``None``.
+    Passing ``tenant_id=None`` *explicitly* overrode the SDK's DEFAULT_TENANT
+    default, so every write hit the ``entities.tenant_id NOT NULL`` constraint
+    and failed with an opaque ``SQLite error: IntegrityError`` -- while reads
+    and tool discovery still worked, making a broken install look healthy.
+    Fall back to DEFAULT_TENANT so pre-activation free local mode writes
+    succeed, matching sibyl-memory-hermes' provider behavior.
+    """
     creds = _load_credentials()
     DEFAULT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     return MemoryClient.local(
         str(DEFAULT_DB_PATH),
-        tenant_id=creds.get("tenant_id"),
+        tenant_id=creds.get("tenant_id") or DEFAULT_TENANT,
         account_id=creds.get("account_id"),
         session_token=creds.get("session_token"),
         tier=creds.get("tier", "free"),

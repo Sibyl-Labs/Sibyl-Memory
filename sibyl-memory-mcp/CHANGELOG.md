@@ -4,6 +4,29 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.1.3] - 2026-05-28
+
+Beta-tester bug-report remediation (sylvain1550 Discord + QA note).
+
+### Fixed
+
+- **First-use writes failed with an opaque `SQLite IntegrityError`
+  pre-activation.** With no `credentials.json`, `_build_client()` passed
+  `tenant_id=None` *explicitly*, overriding the SDK's `DEFAULT_TENANT`
+  default. Every write then violated the `entities.tenant_id NOT NULL`
+  constraint while reads + tool discovery still worked — so a broken
+  install looked healthy. Now falls back to `DEFAULT_TENANT`, matching
+  `sibyl-memory-hermes`' provider behavior. Free local pre-activation
+  writes succeed. (Regression test: `tests/test_first_use_tenant.py`.)
+- **`__version__` drift.** The hardcoded `"0.1.0"` had drifted from the
+  `0.1.2` published wheel. Now single-sourced from installed metadata via
+  `importlib.metadata` (mirrors `sibyl-memory-client`), so it can never
+  drift again.
+
+### Changed
+
+- Pin bumped to `sibyl-memory-client>=0.4.4` (FTS5 + identifier fixes).
+
 ## [0.1.2] - 2026-05-18
 
 KAPPA external-tester remediation release. v0.1.1 was functionally broken
