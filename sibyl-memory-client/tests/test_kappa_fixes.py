@@ -281,3 +281,70 @@ def test_search_entities_phrase_match_semantics(tmp_path):
     # "*" is wrapped as a literal phrase
     hits = client.search_entities("*")
     assert hits == []
+
+
+# ----------------------------------------------------------------------
+# v0.4.4: entity-name path-traversal + metacharacter defense-in-depth
+# (KAPPA #3 PARTIAL — path-traversal shape + SQL-keyword shape were ACCEPTED)
+# ----------------------------------------------------------------------
+
+def test_validate_identifier_rejects_path_traversal():
+    from sibyl_memory_client.client import validate_identifier
+    from sibyl_memory_client.exceptions import ValidationError
+    # ".." traversal marker is rejected; bare "/" stays allowed per the v0.4.0
+    # contract (test_validate_identifier_accepts_reasonable covers "with/slash").
+    for bad in ("../../etc/passwd", "..\\..\\windows", "foo/..", ".."):
+        with pytest.raises(ValidationError, match="forbidden path sequence"):
+            validate_identifier(bad, field_name="name")
+
+
+def test_validate_identifier_rejects_sql_and_shell_metacharacters():
+    from sibyl_memory_client.client import validate_identifier
+    from sibyl_memory_client.exceptions import ValidationError
+    # KAPPA's SQL-keyword shape ("'; DROP TABLE entities;--") is caught by ';'
+    for bad in ("'; DROP TABLE entities;--", "a;b", 'a"b', "a`b", "a|b", "a<b", "a>b"):
+        with pytest.raises(ValidationError, match="forbidden character"):
+            validate_identifier(bad, field_name="name")
+
+
+def test_validate_identifier_allows_apostrophe_and_normal_names():
+    """Apostrophe is deliberately allowed so name-shaped keys survive; plain
+    identifiers, dashes, underscores, dots-without-traversal pass."""
+    from sibyl_memory_client.client import validate_identifier
+    for ok in ("o'brien", "acme-deal", "alice", "project_atlas", "v0.4.4", "L-S-ratio"):
+        assert validate_identifier(ok, field_name="name") == ok
+
+
+# ----------------------------------------------------------------------
+# v0.4.4: FTS5 operator-keyword drop
+# (chainriffs Discord + KAPPA #4 — uppercase AND/OR/NOT/NEAR became required
+# literal tokens, silently collapsing recall to ~0 hits)
+# ----------------------------------------------------------------------
+
+def test_sanitizer_drops_operator_keywords_default_mode():
+    from sibyl_memory_client.client import _sanitize_fts5_query
+    # operator words must NOT survive as quoted literal tokens
+    assert _sanitize_fts5_query("auth AND db") == '"auth" "db"'
+    assert _sanitize_fts5_query("cache NEAR eviction") == '"cache" "eviction"'
+    assert _sanitize_fts5_query("foo OR bar NOT baz") == '"foo" "bar" "baz"'
+
+
+def test_sanitizer_keeps_operator_only_query_as_literal():
+    """If the query is ONLY operator keywords, keep them so a genuine search
+    for the literal word 'and' still resolves (no empty-query surprise)."""
+    from sibyl_memory_client.client import _sanitize_fts5_query
+    assert _sanitize_fts5_query("AND") == '"AND"'
+    assert _sanitize_fts5_query("AND OR NOT") == '"AND" "OR" "NOT"'
+
+
+def test_search_with_operator_words_returns_hits_end_to_end(tmp_path):
+    """The actual reported failure: a natural-language query containing an
+    uppercase operator word used to return 0 hits. It must now match."""
+    from sibyl_memory_client import MemoryClient
+    client = MemoryClient.local(tmp_path / "memory.db")
+    client.set_entity("debug", "authnote",
+                      {"text": "auth uses JWT and a db connection for cache eviction"})
+    # Pre-fix: "AND"/"NEAR" became required literal tokens -> 0 hits.
+    assert len(client.search("auth AND db")) >= 1
+    assert len(client.search("cache NEAR eviction")) >= 1
+    assert len(client.search_entities("auth AND db")) >= 1

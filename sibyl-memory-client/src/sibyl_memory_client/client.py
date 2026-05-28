@@ -34,6 +34,22 @@ _IDENT_MAX_LENGTH = 1024
 # design: identifiers are short single-line strings, not arbitrary payloads.
 _IDENT_FORBIDDEN_CODE_POINTS = frozenset(range(0, 0x20)) | {0x7F}
 
+# v0.4.4 (KAPPA #3 defense-in-depth): SQL is parameterized so injection is
+# closed at the DB, but identifiers flow into consumers that do NOT parameterize
+# -- filesystem export (a `name` becomes a path component), CLI display, log
+# lines, future per-entity backends. Reject path-traversal shapes and the
+# shell/redirection/quote metacharacters that have no place in a short flat key.
+# Apostrophe is deliberately ALLOWED (legit in name-shaped keys like "o'brien");
+# double-quote is rejected because it is also the FTS5 phrase delimiter.
+#
+# NOTE: we reject the traversal MARKER ".." (catches KAPPA's "../../etc/passwd"
+# and "..\\..\\windows") but NOT bare "/" or "\\" -- the v0.4.0 contract
+# explicitly permits slash-containing keys ("with/slash"). Rejecting raw path
+# separators for export-safety would be a public-contract change; flagged for
+# the team rather than taken unilaterally.
+_IDENT_FORBIDDEN_SUBSTRINGS = ("..",)
+_IDENT_FORBIDDEN_CHARS = frozenset('<>|;"`')
+
 
 def validate_identifier(value: Any, *, field_name: str) -> str:
     """Validate a user-supplied identifier (entity name, state key, etc.).
@@ -72,6 +88,25 @@ def validate_identifier(value: Any, *, field_name: str) -> str:
                     f"Remove control characters / null bytes / tabs / newlines."
                 ),
             )
+    # v0.4.4: path-traversal + dangerous metacharacter defense-in-depth.
+    for bad in _IDENT_FORBIDDEN_SUBSTRINGS:
+        if bad in value:
+            raise ValidationError(
+                f"{field_name} contains a forbidden path sequence ({bad!r})",
+                recovery=(
+                    "Identifiers are flat keys, not paths. Remove '/', '\\', "
+                    "and '..' sequences."
+                ),
+            )
+    bad_chars = sorted(_IDENT_FORBIDDEN_CHARS & set(value))
+    if bad_chars:
+        raise ValidationError(
+            f"{field_name} contains forbidden character(s): {' '.join(bad_chars)}",
+            recovery=(
+                "Remove shell / redirection / quote metacharacters "
+                "( < > | ; \" ` ) from the identifier. Apostrophe is allowed."
+            ),
+        )
     return value
 
 
@@ -146,6 +181,23 @@ _FTS5_COLUMN_TOKENS = frozenset({"name", "category", "body", "tenant_id",
                                   "payload", "ts", "rowid"})
 
 
+# v0.4.4 (chainriffs Discord report + KAPPA #4): bare uppercase FTS5 operator
+# keywords typed inside a natural-language query ("auth AND db", "cache NEAR
+# eviction") were being phrase-quoted into REQUIRED LITERAL tokens, so a matched
+# row had to literally contain the word "AND" / "NEAR" -- recall silently
+# collapsed to ~0 hits. Users mean these as connectors, not search terms. Drop
+# them during tokenization so the remaining terms AND together (FTS5's implicit
+# space-join), which is the natural intent. If a query is ONLY operator keywords,
+# keep them as literals so a genuine search for the word "and" still resolves.
+_FTS5_OPERATOR_KEYWORDS = frozenset({"AND", "OR", "NOT", "NEAR"})
+
+
+def _drop_fts5_operator_tokens(tokens: list[str]) -> list[str]:
+    """Drop standalone FTS5 operator keywords; keep all tokens if that empties it."""
+    kept = [t for t in tokens if t.upper() not in _FTS5_OPERATOR_KEYWORDS]
+    return kept or tokens
+
+
 def _sanitize_fts5_query(raw: str, *, prefix: bool = False, as_phrase: bool = False) -> str:
     """Wrap a user query as a safe FTS5 MATCH expression.
 
@@ -196,6 +248,7 @@ def _sanitize_fts5_query(raw: str, *, prefix: bool = False, as_phrase: bool = Fa
         tokens = [t for t in cleaned.split() if t]
         if not tokens:
             return ""
+        tokens = _drop_fts5_operator_tokens(tokens)
         if len(tokens) == 1:
             return f"{tokens[0]}*"
         # Multiple tokens: all earlier tokens are literal, the last gets `*`.
@@ -217,6 +270,7 @@ def _sanitize_fts5_query(raw: str, *, prefix: bool = False, as_phrase: bool = Fa
         # query still has SOME defensible shape rather than empty.
         escaped = s.replace('"', '""')
         return f'"{escaped}"'
+    tokens = _drop_fts5_operator_tokens(tokens)
     return " ".join(f'"{t}"' for t in tokens)
 
 # The default tenant for single-user local installs.
