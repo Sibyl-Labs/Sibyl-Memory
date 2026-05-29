@@ -109,6 +109,7 @@ provider = SibylMemoryProvider(
 - All five tiers (HOT/WARM/COLD/REFERENCE/ARCHIVE)
 - FTS5 full-text search across entities + state + reference + journal
 - Multi-tenant isolation
+- Per-profile memory isolation: each Hermes profile gets its own DB automatically (`<HERMES_HOME>/sibyl/profiles/<name>/memory.db`), so specialist agents don't share or leak memory
 
 Paid tiers (Stake, Sync, Lifetime, Enterprise) unlock self-learning, the memory check-up, no cap, and (in build) cross-device encrypted sync. See [docs.sibyllabs.org/memory/tiers](https://docs.sibyllabs.org/memory/tiers).
 
