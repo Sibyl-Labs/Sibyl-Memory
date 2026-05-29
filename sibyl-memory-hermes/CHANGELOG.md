@@ -4,6 +4,26 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.6] - 2026-05-29
+
+Per-profile memory isolation for multi-profile Hermes setups.
+
+### Fixed
+
+- **Multiple Hermes profiles collapsed into one memory store.** The adapter
+  keyed its SQLite DB only off `HERMES_HOME` (`<HERMES_HOME>/sibyl/memory.db`).
+  Hermes' `get_hermes_home()` falls back to `~/.hermes` whenever `HERMES_HOME`
+  is unset (and warns this causes cross-profile corruption), so profiles not
+  each launched with a distinct `HERMES_HOME` all wrote to the same DB: only
+  the default profile's data was effectively visible and specialist profiles
+  lost their own history across sessions. `initialize()` now resolves the
+  active profile (via the `agent_identity` kwarg, then the on-disk
+  `active_profile` file Hermes itself uses, then `"default"`) and gives each
+  non-default profile its own DB at
+  `<HERMES_HOME>/sibyl/profiles/<name>/memory.db`. The default profile keeps
+  the legacy path, so existing single-profile installs need no migration.
+  Reported by a beta tester running an orchestrator plus specialist profiles.
+
 ## [0.3.5] - 2026-05-22
 
 Plugin default-UX fixes surfaced by the LongMemEval 50-Q benchmark on

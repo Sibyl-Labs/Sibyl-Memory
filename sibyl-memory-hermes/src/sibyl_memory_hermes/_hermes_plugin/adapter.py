@@ -215,6 +215,8 @@ class SibylAdapter(MemoryProvider):
         self._session_id: str = ""
         self._hermes_home: Path | None = None
         self._agent_context: str = "primary"
+        self._profile: str = "default"
+        self._db_path: Path | None = None
         self._sync_thread: threading.Thread | None = None
         self._sync_lock = threading.Lock()
         self._shutting_down = False  # P-C2 fix: skip slow paths during shutdown
@@ -240,11 +242,24 @@ class SibylAdapter(MemoryProvider):
         hermes_home_raw = kwargs.get("hermes_home") or str(_hermes_home())
         self._hermes_home = Path(hermes_home_raw)
         self._agent_context = kwargs.get("agent_context", "primary") or "primary"
+        self._profile = self._resolve_profile(kwargs)
         self._shutting_down = False
 
-        db_dir = self._hermes_home / "sibyl"
+        # Per-profile DB so multiple Hermes profiles that share one HERMES_HOME
+        # do not collapse into a single store. Hermes' get_hermes_home() falls
+        # back to ~/.hermes whenever HERMES_HOME is unset (and warns it causes
+        # cross-profile corruption), so keying the DB off hermes_home alone is
+        # not enough: we also fold in the resolved profile. The default profile
+        # keeps the legacy path so existing single-profile installs need no
+        # migration; non-default profiles get an isolated DB under profiles/<name>/.
+        sibyl_dir = self._hermes_home / "sibyl"
+        if self._profile and self._profile != "default":
+            db_dir = sibyl_dir / "profiles" / self._safe_profile(self._profile)
+        else:
+            db_dir = sibyl_dir
         db_dir.mkdir(parents=True, exist_ok=True)
         db_path = db_dir / "memory.db"
+        self._db_path = db_path
 
         # autoload_credentials=True picks up ~/.sibyl-memory/credentials.json
         # (created by `sibyl init`). require_credentials=False so we degrade
@@ -254,7 +269,44 @@ class SibylAdapter(MemoryProvider):
             autoload_credentials=True,
             require_credentials=False,
         )
-        logger.info("Sibyl memory initialized: db=%s session=%s", db_path, session_id)
+        logger.info("Sibyl memory initialized: db=%s session=%s profile=%s",
+                    db_path, session_id, self._profile)
+
+    @staticmethod
+    def _safe_profile(name: str) -> str:
+        """Filesystem-safe profile directory name (no traversal, no separators)."""
+        import re as _re
+        safe = _re.sub(r"[^A-Za-z0-9._-]", "_", name).strip("._-")
+        return safe or "default"
+
+    def _resolve_profile(self, kwargs: dict[str, Any]) -> str:
+        """Resolve the active Hermes profile for per-profile DB scoping.
+
+        Priority:
+          1. ``agent_identity`` kwarg — the ABC-sanctioned per-profile hook.
+          2. The on-disk ``active_profile`` file Hermes itself uses (checked
+             under the active HERMES_HOME first, then ~/.hermes). This is the
+             reliable signal when the spawner did not propagate HERMES_HOME,
+             which is exactly the case that otherwise collapses every profile
+             into the default DB.
+          3. ``"default"``.
+        """
+        ident = (kwargs.get("agent_identity") or "").strip()
+        if ident:
+            return ident
+        candidates = []
+        if self._hermes_home is not None:
+            candidates.append(self._hermes_home / "active_profile")
+        candidates.append(Path.home() / ".hermes" / "active_profile")
+        for f in candidates:
+            try:
+                if f.exists():
+                    val = f.read_text().strip()
+                    if val:
+                        return val
+            except OSError:
+                pass
+        return "default"
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
         return [REMEMBER_SCHEMA, RECALL_SCHEMA, SEARCH_SCHEMA, LIST_SCHEMA]
