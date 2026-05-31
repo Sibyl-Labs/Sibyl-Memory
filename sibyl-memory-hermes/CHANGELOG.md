@@ -4,6 +4,24 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.7] - 2026-05-30
+
+Coerce-on-Adapter: pairs with the client 0.4.5 structured-body contract.
+
+### Changed
+
+- `remember()` and `set_state()` coerce a primitive body to `{"value": body}` before the client write (new `_coerce_body`). The client (>=0.4.5) hard-enforces dict/list bodies; the adapter keeps the agent-facing surface forgiving so a `sibyl_remember(..., body="a fact")` call never fails. dict/list bodies pass through untouched; on recall the payload is under the `"value"` key.
+- Requires `sibyl-memory-client>=0.4.5`.
+
+Regression coverage: `tests/test_coa_coercion_2026_05_30.py` (12 tests). 52/52 suite green.
+
+### Changed (Terminal B — multi-record retrieval, tester Run15)
+
+- The `sibyl_search` agent tool now routes through `provider.search_multi_record`
+  (new) → `multi_record_search` (client 0.4.5), so workflow queries spanning
+  several linked records surface them all instead of only the strongest single
+  match. `provider.search()` (the SDK primitive) and `prefetch()` are unchanged.
+
 ## [0.3.6] - 2026-05-29
 
 Per-profile memory isolation for multi-profile Hermes setups.

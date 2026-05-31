@@ -4,6 +4,34 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.5] - 2026-05-30
+
+Adversarial QA remediation (Acer stress-test suite): two findings + a review hardening.
+
+### Fixed
+
+- **FTS5 corruption containment (high).** A poisoned/desynced external-content FTS5 index threw an uncontained `StorageError` out of `search()` / `search_entities()`, crashing the caller. Search now self-heals the index (`'rebuild'` from the intact base table) and retries once; contains to `[]` if unhealable (e.g. contentless journal FTS). A single poisoned row can no longer crash a search. New `_fts_query` helper routes every FTS query site; `_heal_fts` performs the rebuild.
+- **Primitive entity/state bodies rejected (contract).** `set_entity` / `set_state` declared `body: dict | list` but silently accepted JSON primitives, so a bare string/number persisted and broke downstream consumers that assume structured bodies. They now raise `ValidationError`. `reference_documents` free-text `str` bodies are unaffected.
+
+### Changed
+
+- Corruption containment keys on the exception *class*, not a message substring (corruption surfaces under varied messages: "vtable constructor failed", "database disk image is malformed", ...). `ProgrammingError` is re-raised so a genuine code/binding bug is never masked as empty results.
+
+Regression coverage: `tests/test_acer_stress_2026_05_30.py` (7 tests). 96/96 suite green.
+
+### Added (Terminal B — multi-record retrieval, tester Run15)
+
+- **`multi_record.py` — `multi_record_search(client, query, ...)`.** Two-stage
+  retrieve-then-verify search for workflow / linked-record queries (whose answer
+  spans several related records). Per-token recall, then verify gates: abstain on
+  zero-support terms, drop purely-preparatory records on terminal-state queries,
+  require a rare/selective term match, IDF-coverage rank. Drop-in for a single
+  `search()` call (same hit shape); `recall()` unchanged. Fixes the tester Run15
+  multi-record-miss class (bench 10/10 vs 4/10 single-pass). Uses only the public
+  `MemoryClient` surface. NOTE: gate constants are bench-tuned on a 24-record
+  reconstruction, not yet generalized — validate at scale or gate behind a flag
+  before publish.
+
 ## [0.4.4] - 2026-05-28
 
 Beta-tester bug-report remediation (chainriffs Discord + KAPPA rounds 3/4).

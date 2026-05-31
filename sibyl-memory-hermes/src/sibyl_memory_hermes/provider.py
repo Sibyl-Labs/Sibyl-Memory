@@ -53,6 +53,23 @@ from .credentials import (
 )
 
 
+def _coerce_body(body: Any) -> Any:
+    """Coerce a primitive body into a structured container (Coerce-on-Adapter).
+
+    sibyl-memory-client enforces dict/list entity + state bodies. An agent
+    calling ``sibyl_remember(..., body="a fact")`` or passing a bare
+    number/bool/None is a natural mistake; the adapter wraps primitives as
+    ``{"value": body}`` rather than letting the client reject the write.
+    dict/list bodies pass through untouched. On recall the payload comes back
+    under the ``"value"`` key. This keeps the storage contract structured
+    (downstream tools can assume a container) while keeping the agent-facing
+    surface forgiving.
+    """
+    if isinstance(body, (dict, list)):
+        return body
+    return {"value": body}
+
+
 class SibylMemoryProvider:
     """Hermes Agent memory provider backed by sibyl-memory-client.
 
@@ -228,8 +245,12 @@ class SibylMemoryProvider:
         *,
         status: str | None = None,
     ) -> dict[str, Any]:
-        """Upsert an entity. Single source of truth per (tenant, category, name)."""
-        return self._client.set_entity(category, name, body, status=status)
+        """Upsert an entity. Single source of truth per (tenant, category, name).
+
+        Primitive bodies are coerced to ``{"value": body}`` (Coerce-on-Adapter)
+        so the client's dict/list contract never rejects an agent's write.
+        """
+        return self._client.set_entity(category, name, _coerce_body(body), status=status)
 
     def recall(self, category: str, name: str) -> dict[str, Any] | None:
         """Look up a single entity by (category, name).
@@ -308,16 +329,17 @@ class SibylMemoryProvider:
     # State documents (HOT tier)
     # ------------------------------------------------------------------
     def set_state(self, key: str, body: dict[str, Any] | list[Any]) -> None:
-        """Set a state-tier document. ``body`` must be a dict or list
-        (JSON-serializable container). To store a primitive, wrap in a
-        single-value dict, e.g. ``set_state("seq", {"value": 42})``.
+        """Set a state-tier document. ``body`` should be a dict or list
+        (JSON-serializable container). A primitive is coerced to
+        ``{"value": body}`` (Coerce-on-Adapter), e.g. ``set_state("seq", 42)``
+        stores ``{"value": 42}``.
 
         Raises:
             ValidationError: body not JSON-serializable
             CapExceededError: write would push past the free-tier cap
             StorageError: backend failure
         """
-        self._client.set_state(key, body)
+        self._client.set_state(key, _coerce_body(body))
 
     def get_state(self, key: str) -> dict[str, Any] | None:
         """Read a state-tier document.
@@ -405,6 +427,18 @@ class SibylMemoryProvider:
             StorageError: backend failure
         """
         return self._client.search(query, limit=limit, prefix=prefix, tiers=tiers)
+
+    def search_multi_record(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Two-stage retrieve-then-verify search for workflow / linked-record
+        queries (whose answer spans several related records, e.g. feedback + bug +
+        journal). Surfaces all the linked records instead of only the single
+        strongest keyword match (tester Run15 fix).
+
+        Same hit shape as ``search()``. For exact single-entity lookups use
+        ``recall()``. Backed by ``sibyl_memory_client.multi_record``.
+        """
+        from sibyl_memory_client.multi_record import multi_record_search
+        return multi_record_search(self._client, query, limit=limit)
 
     # ------------------------------------------------------------------
     # Diagnostics
