@@ -4,6 +4,25 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.1.4] - 2026-05-30
+
+Coerce-on-Adapter: pairs with the client 0.4.5 structured-body contract.
+
+### Changed
+
+- `memory_remember` / `memory_set_state` coerce a primitive body to `{"value": body}` (new `_coerce_body`), mirroring the hermes adapter. The `body` parameter is widened from `dict` to `Any` so primitives reach the coercion instead of being rejected by FastMCP's pydantic validation at the protocol layer. dict/list bodies pass through untouched.
+- Requires `sibyl-memory-client>=0.4.5`.
+
+Regression coverage: `tests/test_coa_coercion_2026_05_30.py` (12 tests, real `call_tool` path). 14/14 suite green.
+
+### Changed (Terminal B — multi-record retrieval, tester Run15)
+
+- **`memory_search` now routes through `multi_record_search`** (new in
+  `sibyl-memory-client` 0.4.5) instead of a single `client.search()` pass.
+  Workflow queries whose answer spans several linked records now surface them all
+  instead of returning only the single strongest match. Same result shape. The
+  client pin is already `>=0.4.5`, which ships `multi_record.py`.
+
 ## [0.1.3] - 2026-05-28
 
 Beta-tester bug-report remediation (sylvain1550 Discord + QA note).

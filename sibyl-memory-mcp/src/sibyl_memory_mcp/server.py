@@ -186,6 +186,21 @@ def _err(e: Exception) -> dict[str, Any]:
     return payload
 
 
+def _coerce_body(body: Any) -> Any:
+    """Coerce a primitive body into a container (Coerce-on-Adapter).
+
+    sibyl-memory-client enforces dict/list entity + state bodies. An MCP
+    client (Claude Code / Codex / Cursor) calling memory_remember with a
+    bare string/number/bool/None is a natural mistake; the server wraps it as
+    ``{"value": body}`` rather than surfacing a VALIDATION_ERROR. dict/list
+    bodies pass through untouched. Mirrors the hermes adapter's coercion so
+    every adapter surface presents the same forgiving contract.
+    """
+    if isinstance(body, (dict, list)):
+        return body
+    return {"value": body}
+
+
 # ----------------------------------------------------------------------
 # Server build
 # ----------------------------------------------------------------------
@@ -195,7 +210,7 @@ def build_server() -> FastMCP:
     mcp = FastMCP("sibyl-memory")
 
     @mcp.tool()
-    def memory_remember(category: str, name: str, body: dict[str, Any]) -> dict[str, Any]:
+    def memory_remember(category: str, name: str, body: Any) -> dict[str, Any]:
         """Store an entity in long-term memory.
 
         Use for facts, project state, person profiles, anything the agent
@@ -205,11 +220,13 @@ def build_server() -> FastMCP:
         Args:
             category: Logical grouping (e.g. "people", "projects", "facts").
             name: Unique-within-category identifier (e.g. "alice", "acme-deal").
-            body: Arbitrary JSON-serializable object. Becomes the entity body.
+            body: The entity body. A dict or list is stored as-is; a primitive
+                (str/int/float/bool/None) is wrapped as {"value": <primitive>}
+                so the client's structured-body contract is always satisfied.
         """
         try:
             client = _open_client()
-            client.set_entity(category, name, body)
+            client.set_entity(category, name, _coerce_body(body))
             return {"ok": True, "category": category, "name": name}
         except Exception as e:
             return _err(e)
@@ -248,7 +265,11 @@ def build_server() -> FastMCP:
         """
         try:
             client = _open_client()
-            results = client.search(query, limit=min(max(limit, 1), 50))
+            # Run15 multi-record fix (Terminal B): route workflow search through
+            # retrieve-then-verify so queries spanning several linked records surface
+            # them all. Drop-in (same hit shape). See sibyl_memory_client/multi_record.py.
+            from sibyl_memory_client.multi_record import multi_record_search
+            results = multi_record_search(client, query, limit=min(max(limit, 1), 50))
             return {"ok": True, "query": query, "count": len(results), "results": results}
         except Exception as e:
             return _err(e)
@@ -291,16 +312,19 @@ def build_server() -> FastMCP:
             return _err(e)
 
     @mcp.tool()
-    def memory_set_state(key: str, body: dict[str, Any] | list[Any]) -> dict[str, Any]:
+    def memory_set_state(key: str, body: Any) -> dict[str, Any]:
         """Write a HOT-tier state document.
 
         Use for ephemeral working state the agent updates frequently -
         current focus, in-flight task list, working draft. Faster than
         entity writes; one row per key, overwritten on each set.
+
+        body: dict/list stored as-is; a primitive is wrapped as
+        {"value": <primitive>} (Coerce-on-Adapter).
         """
         try:
             client = _open_client()
-            client.set_state(key, body)
+            client.set_state(key, _coerce_body(body))
             return {"ok": True, "key": key}
         except Exception as e:
             return _err(e)

@@ -482,7 +482,10 @@ class SibylAdapter(MemoryProvider):
                 if not query:
                     return tool_error("query is required")
                 limit = int(args.get("limit") or _DEFAULT_SEARCH_LIMIT)
-                hits = self._sibyl.search(query, limit=limit)
+                # Run15 multi-record fix (Terminal B): workflow queries spanning
+                # several linked records surface them all (retrieve-then-verify).
+                # See provider.search_multi_record / sibyl_memory_client.multi_record.
+                hits = self._sibyl.search_multi_record(query, limit=limit)
                 return json.dumps({"results": hits}, default=str)
 
             if tool_name == "sibyl_list":

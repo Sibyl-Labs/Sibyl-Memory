@@ -166,6 +166,73 @@ def _classify_fts5_error(err: sqlite3.OperationalError) -> Exception | None:
     )
 
 
+# External-content FTS5 indexes can be rebuilt from their base table via the
+# 'rebuild' command. journal_events_fts is contentless and cannot — corruption
+# there is contained (tier skipped), not self-healed. Names are a fixed
+# allowlist, never user input, so interpolation below is injection-safe.
+_EXTERNAL_CONTENT_FTS = frozenset({
+    "entities_fts", "state_documents_fts", "reference_documents_fts",
+})
+
+
+def _heal_fts(conn: sqlite3.Connection, fts_table: str) -> bool:
+    """Rebuild a corrupted external-content FTS5 index from its base table.
+
+    Returns True only if the rebuild ran without error. A poisoned/desynced
+    external-content index (sqlite3.DatabaseError: "database disk image is
+    malformed") is reconstructed from the intact base table; the base data is
+    never touched. Contentless or unknown tables return False (uncontainable
+    by rebuild).
+    """
+    if fts_table not in _EXTERNAL_CONTENT_FTS:
+        return False
+    try:
+        conn.execute(f"INSERT INTO {fts_table}({fts_table}) VALUES('rebuild')")
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def _fts_query(
+    conn: sqlite3.Connection,
+    sql: str,
+    params: tuple,
+    fts_table: str,
+) -> list:
+    """Run one FTS5 MATCH query with classification + corruption containment.
+
+    OperationalError → classified (schema-missing → []; query-syntax →
+    ValidationError; other → StorageError), preserving the v0.4.0 KAPPA
+    behavior. A broader DatabaseError (index corruption) is contained:
+    self-heal the external-content index once and retry; if the retry still
+    fails — or the table is contentless — return [] so a single poisoned row
+    can never crash the caller's search.
+
+    Corruption surfaces under varied messages depending on failure mode
+    ("vtable constructor failed", "database disk image is malformed", "file
+    is not a database"), so containment keys on the exception CLASS, not a
+    message substring. ProgrammingError is re-raised: it signals a code or
+    binding bug in our own SQL and must never be masked as empty results.
+    """
+    try:
+        return conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError as e:
+        exc = _classify_fts5_error(e)
+        if exc is None:
+            return []
+        raise exc from e
+    except sqlite3.ProgrammingError:
+        raise
+    except sqlite3.DatabaseError:
+        if _heal_fts(conn, fts_table):
+            try:
+                return conn.execute(sql, params).fetchall()
+            except sqlite3.DatabaseError:
+                return []
+        return []
+
+
 # ----------------------------------------------------------------------
 # FTS5 query sanitization
 # ----------------------------------------------------------------------
@@ -286,6 +353,26 @@ def _check_json(payload: Any, field: str = "body") -> str:
             f"{field} is not JSON-serializable: {e}",
             recovery=f"Pass a dict, list, or JSON primitive as {field}.",
         ) from e
+
+
+def _require_container(body: Any, field: str = "body") -> None:
+    """Enforce the structured-body contract for entity + state writes.
+
+    set_entity/set_state declare ``body: dict | list``. A bare primitive
+    (str/int/float/bool/None) is valid JSON, so without this guard it would
+    persist silently and break downstream tools that assume a structured
+    container. reference_documents intentionally takes a free-text str body
+    and does NOT go through here.
+    """
+    if not isinstance(body, (dict, list)):
+        raise ValidationError(
+            f"{field} must be a dict or list, got {type(body).__name__}",
+            recovery=(
+                f"Wrap the value in a container, e.g. {{'value': ...}} or "
+                f"[...]. Primitive {field} values are rejected because "
+                "downstream consumers assume structured entity/state bodies."
+            ),
+        )
 
 
 class MemoryClient:
@@ -440,6 +527,7 @@ class MemoryClient:
         ValidationError on rejection."""
         validate_identifier(category, field_name="category")
         validate_identifier(name, field_name="name")
+        _require_container(body)
         body_json = _check_json(body)
         # Cap gate: rough byte estimate (FTS5 + indexes add overhead)
         self._cap_gate.check(proposed_delta_bytes=len(body_json) + len(name) + len(category) + 200)
@@ -515,6 +603,7 @@ class MemoryClient:
         control characters, length <= 1024). Raises ValidationError on
         rejection."""
         validate_identifier(key, field_name="key")
+        _require_container(body)
         body_json = _check_json(body)
         self._cap_gate.check(proposed_delta_bytes=len(body_json) + len(key) + 150)
         with self._storage.transaction() as conn:
@@ -803,26 +892,20 @@ class MemoryClient:
         match_q = _sanitize_fts5_query(query, prefix=prefix)
         if not match_q:
             return []
-        # external-content FTS5: join by rowid back to base table
+        # external-content FTS5: join by rowid back to base table.
+        # _fts_query handles classification (v0.4.0 KAPPA) + corruption
+        # containment (poisoned-index DatabaseError self-heals or returns []).
         with self._storage.connection() as conn:
-            try:
-                rows = conn.execute(
-                    "SELECT e.id, e.tenant_id, e.category, e.name, e.status, e.body, e.created_at, e.updated_at "
-                    "FROM entities_fts f "
-                    "JOIN entities e ON e.rowid = f.rowid "
-                    "WHERE entities_fts MATCH ? AND f.tenant_id = ? "
-                    "ORDER BY rank LIMIT ?",
-                    (match_q, self._tenant_id, limit),
-                ).fetchall()
-            except sqlite3.OperationalError as e:
-                # v0.4.0 (KAPPA YELLOW finding): classify the error instead
-                # of silently returning []. Schema-missing → empty (defense
-                # against partial init). FTS5 syntax → ValidationError.
-                # Real backend → StorageError. Re-raise via classifier.
-                exc = _classify_fts5_error(e)
-                if exc is None:
-                    return []
-                raise exc from e
+            rows = _fts_query(
+                conn,
+                "SELECT e.id, e.tenant_id, e.category, e.name, e.status, e.body, e.created_at, e.updated_at "
+                "FROM entities_fts f "
+                "JOIN entities e ON e.rowid = f.rowid "
+                "WHERE entities_fts MATCH ? AND f.tenant_id = ? "
+                "ORDER BY rank LIMIT ?",
+                (match_q, self._tenant_id, limit),
+                "entities_fts",
+            )
         return [self._row_to_entity(r) for r in rows]
 
     def search(self, query: str, *, limit: int = 20, prefix: bool = False,
@@ -863,101 +946,91 @@ class MemoryClient:
             # FTS5 syntax / real backend errors raise: the query is bad for
             # ALL tiers, no point continuing through the union.
             if "entity" in allowed:
-                try:
-                    for r in conn.execute(
-                        "SELECT 'entity' AS tier, e.name AS key, e.category, e.body, "
-                        "       e.updated_at AS ts, "
-                        "       snippet(entities_fts, 2, '[', ']', '...', 12) AS snip, "
-                        "       rank "
-                        "FROM entities_fts f JOIN entities e ON e.rowid = f.rowid "
-                        "WHERE entities_fts MATCH ? AND f.tenant_id = ? "
-                        "ORDER BY rank LIMIT ?",
-                        (match_q, self._tenant_id, limit),
-                    ).fetchall():
-                        hits.append({
-                            "tier": "entity", "key": r["key"],
-                            "category": r["category"],
-                            "body": loads(r["body"]), "snippet": r["snip"],
-                            "rank": r["rank"], "ts": r["ts"],
-                        })
-                except sqlite3.OperationalError as e:
-                    exc = _classify_fts5_error(e)
-                    if exc is not None:
-                        raise exc from e
+                for r in _fts_query(
+                    conn,
+                    "SELECT 'entity' AS tier, e.name AS key, e.category, e.body, "
+                    "       e.updated_at AS ts, "
+                    "       snippet(entities_fts, 2, '[', ']', '...', 12) AS snip, "
+                    "       rank "
+                    "FROM entities_fts f JOIN entities e ON e.rowid = f.rowid "
+                    "WHERE entities_fts MATCH ? AND f.tenant_id = ? "
+                    "ORDER BY rank LIMIT ?",
+                    (match_q, self._tenant_id, limit),
+                    "entities_fts",
+                ):
+                    hits.append({
+                        "tier": "entity", "key": r["key"],
+                        "category": r["category"],
+                        "body": loads(r["body"]), "snippet": r["snip"],
+                        "rank": r["rank"], "ts": r["ts"],
+                    })
             if "state" in allowed:
-                try:
-                    for r in conn.execute(
-                        "SELECT 'state' AS tier, s.document_key AS key, s.body, "
-                        "       s.updated_at AS ts, "
-                        "       snippet(state_documents_fts, 1, '[', ']', '...', 12) AS snip, "
-                        "       rank "
-                        "FROM state_documents_fts f JOIN state_documents s "
-                        "  ON s.rowid = f.rowid "
-                        "WHERE state_documents_fts MATCH ? AND f.tenant_id = ? "
-                        "ORDER BY rank LIMIT ?",
-                        (match_q, self._tenant_id, limit),
-                    ).fetchall():
-                        hits.append({
-                            "tier": "state", "key": r["key"], "category": None,
-                            "body": loads(r["body"]), "snippet": r["snip"],
-                            "rank": r["rank"], "ts": r["ts"],
-                        })
-                except sqlite3.OperationalError as e:
-                    exc = _classify_fts5_error(e)
-                    if exc is not None:
-                        raise exc from e
+                for r in _fts_query(
+                    conn,
+                    "SELECT 'state' AS tier, s.document_key AS key, s.body, "
+                    "       s.updated_at AS ts, "
+                    "       snippet(state_documents_fts, 1, '[', ']', '...', 12) AS snip, "
+                    "       rank "
+                    "FROM state_documents_fts f JOIN state_documents s "
+                    "  ON s.rowid = f.rowid "
+                    "WHERE state_documents_fts MATCH ? AND f.tenant_id = ? "
+                    "ORDER BY rank LIMIT ?",
+                    (match_q, self._tenant_id, limit),
+                    "state_documents_fts",
+                ):
+                    hits.append({
+                        "tier": "state", "key": r["key"], "category": None,
+                        "body": loads(r["body"]), "snippet": r["snip"],
+                        "rank": r["rank"], "ts": r["ts"],
+                    })
             if "reference" in allowed:
-                try:
-                    for r in conn.execute(
-                        "SELECT 'reference' AS tier, d.doc_key AS key, d.body, "
-                        "       d.updated_at AS ts, "
-                        "       snippet(reference_documents_fts, 1, '[', ']', '...', 12) AS snip, "
-                        "       rank "
-                        "FROM reference_documents_fts f JOIN reference_documents d "
-                        "  ON d.rowid = f.rowid "
-                        "WHERE reference_documents_fts MATCH ? AND f.tenant_id = ? "
-                        "ORDER BY rank LIMIT ?",
-                        (match_q, self._tenant_id, limit),
-                    ).fetchall():
-                        hits.append({
-                            "tier": "reference", "key": r["key"], "category": None,
-                            "body": r["body"], "snippet": r["snip"],
-                            "rank": r["rank"], "ts": r["ts"],
-                        })
-                except sqlite3.OperationalError as e:
-                    exc = _classify_fts5_error(e)
-                    if exc is not None:
-                        raise exc from e
+                for r in _fts_query(
+                    conn,
+                    "SELECT 'reference' AS tier, d.doc_key AS key, d.body, "
+                    "       d.updated_at AS ts, "
+                    "       snippet(reference_documents_fts, 1, '[', ']', '...', 12) AS snip, "
+                    "       rank "
+                    "FROM reference_documents_fts f JOIN reference_documents d "
+                    "  ON d.rowid = f.rowid "
+                    "WHERE reference_documents_fts MATCH ? AND f.tenant_id = ? "
+                    "ORDER BY rank LIMIT ?",
+                    (match_q, self._tenant_id, limit),
+                    "reference_documents_fts",
+                ):
+                    hits.append({
+                        "tier": "reference", "key": r["key"], "category": None,
+                        "body": r["body"], "snippet": r["snip"],
+                        "rank": r["rank"], "ts": r["ts"],
+                    })
             if "journal" in allowed:
-                try:
-                    # Journal FTS5 is standalone: fetch the event_id from
-                    # the FTS5 table directly, then join to journal_events
-                    # by id (TEXT PK) for the typed body fields.
-                    for r in conn.execute(
-                        "SELECT 'journal' AS tier, j.id AS key, j.ts, "
-                        "       j.evaluated, j.acted, j.forward, j.extra, "
-                        "       snippet(journal_events_fts, 1, '[', ']', '...', 12) AS snip, "
-                        "       f.rank AS rank "
-                        "FROM journal_events_fts f JOIN journal_events j "
-                        "  ON j.id = f.event_id "
-                        "WHERE journal_events_fts MATCH ? AND f.tenant_id = ? "
-                        "ORDER BY f.rank LIMIT ?",
-                        (match_q, self._tenant_id, limit),
-                    ).fetchall():
-                        hits.append({
-                            "tier": "journal", "key": r["key"], "category": None,
-                            "body": {
-                                "evaluated": loads(r["evaluated"]),
-                                "acted": loads(r["acted"]),
-                                "forward": loads(r["forward"]),
-                                "extra": loads(r["extra"]),
-                            },
-                            "snippet": r["snip"], "rank": r["rank"], "ts": r["ts"],
-                        })
-                except sqlite3.OperationalError as e:
-                    exc = _classify_fts5_error(e)
-                    if exc is not None:
-                        raise exc from e
+                # Journal FTS5 is standalone/contentless: fetch event_id from
+                # the FTS5 table, then join to journal_events by id (TEXT PK)
+                # for typed body fields. Contentless tables can't 'rebuild',
+                # so _fts_query contains corruption by returning [] (tier
+                # skipped) rather than crashing the whole search.
+                for r in _fts_query(
+                    conn,
+                    "SELECT 'journal' AS tier, j.id AS key, j.ts, "
+                    "       j.evaluated, j.acted, j.forward, j.extra, "
+                    "       snippet(journal_events_fts, 1, '[', ']', '...', 12) AS snip, "
+                    "       f.rank AS rank "
+                    "FROM journal_events_fts f JOIN journal_events j "
+                    "  ON j.id = f.event_id "
+                    "WHERE journal_events_fts MATCH ? AND f.tenant_id = ? "
+                    "ORDER BY f.rank LIMIT ?",
+                    (match_q, self._tenant_id, limit),
+                    "journal_events_fts",
+                ):
+                    hits.append({
+                        "tier": "journal", "key": r["key"], "category": None,
+                        "body": {
+                            "evaluated": loads(r["evaluated"]),
+                            "acted": loads(r["acted"]),
+                            "forward": loads(r["forward"]),
+                            "extra": loads(r["extra"]),
+                        },
+                        "snippet": r["snip"], "rank": r["rank"], "ts": r["ts"],
+                    })
         # Sort by rank (lower = better in FTS5) and apply global limit
         hits.sort(key=lambda h: h["rank"])
         return hits[:limit]
