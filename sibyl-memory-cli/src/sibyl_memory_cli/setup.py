@@ -27,10 +27,25 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
+
+
+def _run(cmd: list[str], *, timeout: float = 20.0) -> tuple[int, str, str]:
+    """Run a command, return (rc, stdout, stderr). rc=127 if not found, 124 on timeout.
+    Centralized so tests can monkeypatch one place."""
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, (p.stdout or ""), (p.stderr or "")
+    except FileNotFoundError:
+        return 127, "", "command not found"
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out"
+    except Exception as e:  # never let a wirer crash the whole flow
+        return 1, "", f"{type(e).__name__}: {e}"
 
 # Color helpers re-imported from cli module via late binding to avoid circular dep.
 # When called via `sibyl setup` they resolve through the cli module's tty detection.
@@ -229,6 +244,7 @@ class ClaudeCodeWirer:
     SIBYL_MCP_BLOCK = {"command": "sibyl-memory-mcp"}
     MCP_BINARY = "sibyl-memory-mcp"
     MCP_PACKAGE = "sibyl-memory-mcp"
+    MCP_NAME = "sibyl-memory"   # the server name as Claude Code knows it
 
     def __init__(self, *, settings_path: Optional[Union[str, Path]] = None):
         self.settings_path = (
@@ -245,6 +261,21 @@ class ClaudeCodeWirer:
 
     def _mcp_binary_found(self) -> bool:
         return shutil.which(self.MCP_BINARY) is not None
+
+    @staticmethod
+    def _claude_cli() -> Optional[str]:
+        """Path to the `claude` binary, or None. The CLI is the reliable wiring +
+        discovery surface — writing ~/.claude/settings.json (the old behavior) is NOT
+        where Claude Code discovers MCP servers, which caused the registration bug."""
+        return shutil.which("claude")
+
+    def _registered_via_cli(self) -> Optional[bool]:
+        """True/False if `claude mcp get <name>` reports the server; None if no CLI.
+        This is the source-of-truth detection once the `claude` CLI exists."""
+        if not self._claude_cli():
+            return None
+        rc, _o, _e = _run(["claude", "mcp", "get", self.MCP_NAME], timeout=15)
+        return rc == 0
 
     def _ensure_mcp_binary(self, *, prompt_fn: Optional[Callable[..., str]] = None) -> bool:
         """Check for sibyl-memory-mcp binary; auto-install if missing.
@@ -318,17 +349,59 @@ class ClaudeCodeWirer:
             except Exception:
                 pass
         mcp_binary = self._mcp_binary_found()
+        cli_registered = self._registered_via_cli()  # None when no `claude` CLI
+        # Source of truth: when the claude CLI exists, trust `claude mcp get` (where
+        # Claude Code actually discovers servers). Otherwise fall back to settings.json.
+        if cli_registered is None:
+            wired = bool(sibyl_block == self.SIBYL_MCP_BLOCK and mcp_binary)
+        else:
+            wired = bool(cli_registered and mcp_binary)
         return {
             "settings_path": str(self.settings_path),
             "settings_exists": settings_exists,
             "mcp_servers_count": len(mcp_servers),
             "sibyl_mcp": sibyl_block,
             "mcp_binary_found": mcp_binary,
-            "wired_with_sibyl": sibyl_block == self.SIBYL_MCP_BLOCK and mcp_binary,
+            "claude_cli": self._claude_cli() is not None,
+            "cli_registered": cli_registered,
+            "wired_with_sibyl": wired,
         }
+
+    def _wire_via_cli(self, *, force: bool, dry_run: bool) -> WireOutcome:
+        """Register through `claude mcp add --scope user` — the reliable path that
+        writes where Claude Code actually discovers servers (fixes the settings.json
+        registration/discovery bug). `--scope user` makes it global across projects."""
+        if not dry_run and not self._ensure_mcp_binary():
+            return WireOutcome(self.name, "error",
+                f"'{self.MCP_BINARY}' not on PATH. Install it: pip install {self.MCP_PACKAGE}")
+        if self._registered_via_cli():
+            if not force:
+                return WireOutcome(self.name, "already",
+                    "Claude Code already has the sibyl-memory MCP server (claude mcp).")
+            if not dry_run:
+                _run(["claude", "mcp", "remove", "-s", "user", self.MCP_NAME], timeout=15)
+        # Register the RESOLVED absolute path, not the bare name: a user-scope server
+        # is launched from Claude Code's own PATH, which may not include a venv's bin.
+        # Bare-name registration shows "✗ Failed to connect" for venv installs; the
+        # absolute path connects regardless of how PATH is set when claude launches it.
+        binpath = shutil.which(self.MCP_BINARY) or self.MCP_BINARY
+        cmd = ["claude", "mcp", "add", "--scope", "user", self.MCP_NAME, "--", binpath]
+        if dry_run:
+            return WireOutcome(self.name, "dry-run", "Would run: " + " ".join(cmd))
+        rc, out, err = _run(cmd, timeout=30)
+        if rc != 0:
+            return WireOutcome(self.name, "error",
+                f"`claude mcp add` failed (exit {rc}): {(err or out).strip()[:200]}")
+        return WireOutcome(self.name, "wired",
+            "Registered sibyl-memory with Claude Code via `claude mcp add --scope user`.")
 
     def wire(self, *, force: bool = False, dry_run: bool = False,
              prompt_fn: Optional[Callable[..., str]] = None) -> WireOutcome:
+        # Preferred path: if the `claude` CLI exists, register through it (reliable
+        # discovery). The settings.json logic below is the no-CLI fallback only.
+        if self._claude_cli():
+            return self._wire_via_cli(force=force, dry_run=dry_run)
+
         state = self.current_state()
 
         # Config block matches but binary is missing: fix the binary, not short-circuit
@@ -427,12 +500,141 @@ class ClaudeCodeWirer:
 
 
 # ----------------------------------------------------------------------
+# CodexWirer  — Codex discovers MCP servers from ~/.codex/config.toml, so editing
+# that file IS the reliable method (unlike Claude's settings.json). Append the
+# [mcp_servers.sibyl_memory] table if absent. Atomic, .bak backup, idempotent.
+# ----------------------------------------------------------------------
+
+class CodexWirer:
+    name = "codex"
+    display_name = "OpenAI Codex"
+    initial = "x"
+
+    MCP_BINARY = "sibyl-memory-mcp"
+    MCP_PACKAGE = "sibyl-memory-mcp"
+    HEADER = "[mcp_servers.sibyl_memory]"
+    # Fallback/canonical shape. The real block is built at wire time by
+    # _block_text() using the RESOLVED absolute path — codex spawns the server
+    # from its own captured environment, not the interactive shell, so a bare
+    # command name can fail to resolve. `codex mcp add -- <path>` itself writes
+    # the absolute path; we match that.
+    BLOCK = '\n[mcp_servers.sibyl_memory]\ncommand = "sibyl-memory-mcp"\n'
+
+    def __init__(self, *, config_path: Optional[Union[str, Path]] = None):
+        self.config_path = (
+            Path(config_path).expanduser() if config_path
+            else Path.home() / ".codex" / "config.toml"
+        )
+
+    def is_present(self) -> bool:
+        return self.config_path.exists() or shutil.which("codex") is not None
+
+    def _mcp_binary_found(self) -> bool:
+        return shutil.which(self.MCP_BINARY) is not None
+
+    def _mcp_command(self) -> str:
+        """Resolved absolute path to the MCP binary, falling back to the bare
+        name if it cannot be resolved (mirrors the Claude wirer fix)."""
+        return shutil.which(self.MCP_BINARY) or self.MCP_BINARY
+
+    @staticmethod
+    def _toml_escape(s: str) -> str:
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+
+    def _block_text(self) -> str:
+        cmd = self._toml_escape(self._mcp_command())
+        return f'\n[mcp_servers.sibyl_memory]\ncommand = "{cmd}"\n'
+
+    def _ensure_mcp_binary(self) -> bool:
+        if self._mcp_binary_found():
+            return True
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", self.MCP_PACKAGE, "--quiet"],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        return self._mcp_binary_found()
+
+    def current_state(self) -> dict:
+        exists = self.config_path.exists()
+        wired = False
+        if exists:
+            try:
+                wired = self.HEADER in self.config_path.read_text(encoding="utf-8")
+            except Exception:
+                pass
+        return {
+            "config_path": str(self.config_path),
+            "config_exists": exists,
+            "mcp_binary_found": self._mcp_binary_found(),
+            "wired_with_sibyl": wired,
+        }
+
+    def instructions(self) -> list[str]:
+        """Manual steps the guided flow prints if it can't (or won't) auto-edit."""
+        cmd = self._mcp_command()
+        return [
+            "Open a new terminal.",
+            f"Add this to {self.config_path} (create the file if needed):",
+            "    [mcp_servers.sibyl_memory]",
+            f'    command = "{cmd}"',
+            "Restart Codex, then come back here.",
+        ]
+
+    def verify_mcp_starts(self) -> tuple:
+        # reuse the same stdio smoke-test the Claude wirer uses
+        return ClaudeCodeWirer.verify_mcp_starts(self)  # type: ignore[arg-type]
+
+    def wire(self, *, force: bool = False, dry_run: bool = False,
+             prompt_fn: Optional[Callable[..., str]] = None) -> WireOutcome:
+        state = self.current_state()
+        if state["wired_with_sibyl"] and not force:
+            return WireOutcome(self.name, "already",
+                f"Codex already has the sibyl-memory MCP server in {self.config_path}")
+        if dry_run:
+            verb = "create + add" if not state["config_exists"] else "append"
+            return WireOutcome(self.name, "dry-run",
+                f"Would {verb} [mcp_servers.sibyl_memory] in {self.config_path}")
+        if not self._ensure_mcp_binary():
+            return WireOutcome(self.name, "error",
+                f"'{self.MCP_BINARY}' not on PATH. Install it: pip install {self.MCP_PACKAGE}")
+        backup = self._backup_config()
+        try:
+            self._append_block()
+        except Exception as e:
+            return WireOutcome(self.name, "error",
+                f"config write failed: {type(e).__name__}: {e}", backup_path=backup)
+        return WireOutcome(self.name, "wired",
+            f"Added [mcp_servers.sibyl_memory] to {self.config_path}", backup_path=backup)
+
+    def _backup_config(self) -> Optional[Path]:
+        if not self.config_path.exists():
+            return None
+        backup = self.config_path.with_suffix(".toml.bak")
+        shutil.copy2(self.config_path, backup)
+        return backup
+
+    def _append_block(self) -> None:
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = ""
+        if self.config_path.exists():
+            existing = self.config_path.read_text(encoding="utf-8")
+            if self.HEADER in existing:          # idempotent guard
+                return
+        new_text = existing.rstrip("\n") + ("\n" if existing.strip() else "") + self._block_text()
+        tmp = self.config_path.with_suffix(".toml.tmp")
+        tmp.write_text(new_text, encoding="utf-8")
+        os.replace(tmp, self.config_path)
+
+
+# ----------------------------------------------------------------------
 # Registry + dispatch
 # ----------------------------------------------------------------------
 
 ALL_WIRERS: dict = {
     "hermes": HermesWirer,
     "claude-code": ClaudeCodeWirer,
+    "codex": CodexWirer,
 }
 
 

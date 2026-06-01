@@ -4,6 +4,53 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.9] — 2026-05-31
+
+Guided migration plus first-class Codex support and the real fix for Claude
+Code MCP discovery.
+
+### Added
+
+- **`sibyl migrate` — guided onboarding.** One command takes a user from
+  "memory scattered across CLAUDE.md / AGENTS.md / config files" to "memory in
+  Sibyl." It (1) backs up every existing memory/agent file FIRST to a
+  timestamped, byte-verified folder with a collision-free layout (a home file
+  and a same-named project file never clobber each other), (2) auto-wires Sibyl
+  into every detected harness, (3) hands the semantic extraction to the user's
+  OWN agent — the agent reads only from the backup and writes via the
+  `sibyl-memory` MCP tool, so Sibyl Labs never sees the user's files or memory
+  (local/private by construction), (4) verifies what actually landed in the DB,
+  and (5) optionally trims the originals — only on an explicit confirm and only
+  because a verified backup exists. New `migrate.py` module + orchestrator.
+- **Codex is now a first-class wiring target.** New `CodexWirer` edits
+  `~/.codex/config.toml` (`[mcp_servers.sibyl_memory]`) atomically with a `.bak`
+  backup and an idempotent guard, writing the RESOLVED absolute binary path
+  (matching codex's own `codex mcp add` behavior). `sibyl setup codex` now
+  works — previously the parser offered `codex` but `ALL_WIRERS` lacked it, so
+  it errored.
+
+### Fixed
+
+- **Claude Code MCP registration.** Wiring now goes through
+  `claude mcp add --scope user` — where Claude Code actually discovers MCP
+  servers — instead of writing `~/.claude/settings.json`, which Claude Code does
+  NOT read for MCP discovery. This was the root cause of "configured but never
+  connects." Detection now uses `claude mcp get`; the settings.json path remains
+  a fallback only for environments without the `claude` CLI.
+- **Absolute-path registration (both Claude and Codex).** User-scope / config
+  servers are launched from the harness's own environment, not the interactive
+  shell, so a bare `sibyl-memory-mcp` could fail to resolve (Claude showed
+  "✗ Failed to connect"; Codex would not spawn). Both wirers now register the
+  resolved absolute path.
+
+### Tested
+
+- 82 tests including adversarial inputs and a 60-iteration fuzz of the migration
+  flow. Live MCP connection verified end-to-end against Claude Code
+  (`--scope user` → ✓ Connected) and Codex (initialize handshake + ListTools),
+  and a real headless agent extraction wrote structured entities into an
+  isolated DB.
+
 ## [0.3.8] — 2026-05-24
 
 Fix: `sibyl setup claude-code` wired the MCP config but never ensured the
@@ -235,22 +282,22 @@ to the whole surface.
 
 Auth-redesign wave 2 — account-surface CLI commands. Adds `sibyl whoami`
 for a one-line account summary (masked by default, `--full` opt-in) and
-`sibyl devices` for listing active devices with per-device revoke.
+`sibyl devices` for listing active bearer tokens with per-device revoke.
 
 ### Added
 
 - `sibyl whoami` — one-line summary: short account_id, tier, masked email
   (`a***@e***.tld`), masked wallet (`0xabcd…1234`), this device label.
   `--full` flag shows unmasked email + wallet for ops scenarios.
-- `sibyl devices` — list active devices for the
-  account in most-recent-first order. Marks current device with `▶` and
+- `sibyl devices` — list active (non-revoked) bearer tokens for the
+  account in issued_at DESC order. Marks current device with `▶` and
   shows revoke command for each other device.
 - `sibyl devices revoke <index>` — POST `/api/plugin/devices` with the
   bearer_id at that index. Refuses to revoke the calling device.
 
 ### Server companion (deployed)
 
-- `GET  /api/plugin/devices?account_id=<uuid>` — lists active devices.
+- `GET  /api/plugin/devices?account_id=<uuid>` — lists bearer_tokens.
 - `POST /api/plugin/devices { bearer_id }` — revokes the bearer.
 - Both auth via `Authorization: Bearer <session_token>`; caller must
   own the account.
