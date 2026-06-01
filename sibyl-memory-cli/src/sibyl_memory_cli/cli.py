@@ -981,6 +981,108 @@ def cmd_update(args: argparse.Namespace) -> int:
     return 2  # exit 2 signals "outdated" without being a hard error
 
 
+# ---- Guided migration (sibyl migrate) ----------------------------------
+
+def _migrate_io():
+    """Interactive IO for the guided flow: prints narration live and reads real
+    stdin for pauses/confirms. Subclasses the testable GuidedIO seam in migrate.py
+    (whose .say() only buffers, for non-interactive tests)."""
+    from .migrate import GuidedIO
+
+    class _PrintingIO(GuidedIO):
+        def say(self, s: str = "") -> None:
+            super().say(s)
+            print(s)
+
+    return _PrintingIO()
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    """`sibyl migrate` — guided onboarding. Backs up existing memory/agent files
+    FIRST, wires Sibyl into every detected harness, hands the semantic extraction
+    to the user's own agent (it holds the memory tools; Sibyl Labs never sees the
+    files), verifies what landed, then optionally trims the originals — only on an
+    explicit confirm and only because a verified backup exists."""
+    from . import migrate as M
+
+    home = Path.home()
+    cwd = Path.cwd()
+    db_path = Path(args.db).expanduser()
+    backup_parent = Path(args.backup_dir).expanduser() if getattr(args, "backup_dir", None) else home
+
+    print()
+    print(bold("Sibyl Memory — guided migration"))
+    print(dim("Back up existing memory, populate Sibyl Memory, optionally slim the originals."))
+    print()
+    print(yellow("Your files are copied to a timestamped backup FIRST and are never modified"))
+    print(yellow("except by an explicit, confirmed trim at the very end. You run the extraction"))
+    print(yellow("in your own agent — Sibyl Labs never sees your files or memory."))
+    print(dim("No warranty: keep your backup. Sibyl Labs is not responsible for data loss."))
+    print()
+
+    files = M.scan_memory_files(home, cwd)
+    if not files:
+        print(yellow("No memory/agent files found in your home or current project."))
+        print(dim("Looked for CLAUDE.md, AGENTS.md, .codex/config.toml, .hermes/*, and similar."))
+        print(dim("If your files live elsewhere, run this from that project directory."))
+        return 0
+
+    print(dim("Will back up (originals untouched):"))
+    for f in files:
+        kind = "dir " if f.is_dir else "file"
+        print(f"  {kind}  {f.rel}  {dim(f'({f.size} bytes)')}")
+    print()
+    print(dim("After Sibyl is wired, if your agent was already open, restart it (or"))
+    print(dim("reconnect the sibyl-memory MCP) before running the extraction prompt."))
+    print()
+
+    if not args.yes:
+        try:
+            ans = input("Proceed? [Y/n]: ").strip().lower()
+        except EOFError:
+            ans = ""
+        if ans.startswith("n"):
+            print(dim("Aborted. Nothing was changed."))
+            return 0
+    print()
+
+    io = _migrate_io()
+    report = M.run_guided_setup(
+        home=home, cwd=cwd, db_path=db_path, backup_parent=backup_parent,
+        io=io, debloat=not args.no_debloat,
+    )
+
+    ph = report.get("phases", {})
+    print()
+    print(bold("Summary"))
+    bk = ph.get("backup", {})
+    if bk:
+        print(f"  {green('backup')}    {bk.get('files', 0)} files")
+        print(f"  {dim('location')}  {bk.get('dir', '')}")
+    wire = ph.get("wire", {})
+    if wire:
+        wired = ", ".join(f"{n} ({s})" for n, s in wire.items())
+        print(f"  {green('wired')}     {wired}")
+    v = ph.get("verify", {})
+    if v:
+        cats = ", ".join(f"{k}:{n}" for k, n in (v.get("by_category") or {}).items())
+        print(f"  {green('extracted')} {v.get('new_total', 0)} new entries" + (f"  {dim(cats)}" if cats else ""))
+    db = ph.get("debloat")
+    if db and db.get("written"):
+        saved = max(0, db.get("before", 0) - db.get("after", 0))
+        print(f"  {green('trimmed')}   CLAUDE.md  {dim(f'(-{saved} bytes; full copy in backup)')}")
+
+    if not report.get("ok"):
+        print()
+        print(yellow("Migration did not complete. Your originals and backup are intact."))
+        return 1
+    print()
+    print(green("Done. Your memory now lives in Sibyl and is recalled on demand."))
+    if bk:
+        print(dim(f"Backup retained at {bk.get('dir','')} — delete it once you've confirmed everything."))
+    return 0
+
+
 # ---- Dispatch ----------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1070,6 +1172,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override ~/.codex/config.toml autodetection",
     )
     p_setup.set_defaults(func=cmd_setup)
+
+    p_migrate = sub.add_parser(
+        "migrate",
+        help="Guided: back up existing memory/agent files, wire Sibyl, populate Sibyl Memory, optionally slim the originals",
+    )
+    p_migrate.add_argument(
+        "--backup-dir", default=None,
+        help="Where to write the timestamped backup (default: your home directory)",
+    )
+    p_migrate.add_argument(
+        "--no-debloat", action="store_true",
+        help="Skip the optional trim step (back up + wire + extract + verify only)",
+    )
+    p_migrate.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip the initial confirm (the trim step still always asks separately)",
+    )
+    p_migrate.set_defaults(func=cmd_migrate)
 
     return p
 

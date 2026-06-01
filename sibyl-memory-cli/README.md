@@ -12,10 +12,43 @@ This pulls in `sibyl-memory-client` (the local SDK) and `sibyl-memory-hermes` (t
 
 ```
 sibyl init                  Open the browser activation page. Writes ~/.sibyl-memory/credentials.json.
+sibyl migrate               Guided onboarding: back up your existing memory/agent files, wire Sibyl
+                            into every detected harness, populate Sibyl Memory from the backup, and
+                            optionally slim the originals. Backup-first, never destructive.
+sibyl setup [target]        Wire Sibyl as the memory provider for Hermes, Claude Code, and/or Codex.
+                            target is one of: hermes | claude-code | codex (default: detect all).
 sibyl upgrade               Open the upgrade page. Stake $SIBYL or subscribe in USDC.
 sibyl status                Show local credentials, DB size, and the server's view of your tier.
 sibyl health                Run the SibylMemoryProvider self-check (schema version, DB path, tenant).
 ```
+
+## Migrate (guided onboarding)
+
+```bash
+$ sibyl migrate
+```
+
+`sibyl migrate` moves your accumulated agent memory into Sibyl without risking
+your existing files:
+
+1. **Back up first.** Every memory/agent file it finds (`CLAUDE.md`,
+   `AGENTS.md`, `.codex/config.toml`, `.hermes/*`, and similar) is copied to a
+   timestamped backup folder and byte-verified before anything else happens.
+2. **Wire Sibyl** into every detected harness — Claude Code (via
+   `claude mcp add --scope user`), Codex (via `~/.codex/config.toml`), Hermes.
+3. **Extract** — it prints a prompt you run in your own agent. The agent reads
+   only from the backup and writes structured memory through the `sibyl-memory`
+   tool. The extraction runs locally on your machine; Sibyl Labs never sees your
+   files or memory.
+4. **Verify** the new entries that landed in your local DB.
+5. **Optionally trim** the originals — only if you confirm, and only because a
+   verified backup exists. Your full pre-migration files are always preserved.
+
+Flags: `--backup-dir PATH` (default: home), `--no-debloat` (skip the trim
+step), `--yes` (skip the initial confirm; the trim step still asks separately).
+
+> No warranty. Keep your backup until you've confirmed everything migrated.
+> Sibyl Labs is not responsible for data loss.
 
 ## Activation
 
@@ -51,8 +84,8 @@ $ sibyl upgrade
 ```
 
 In the browser:
-- **Stake**: connect your wallet, sign to bind, and the page checks your `$SIBYL` balance on Base. If you hold the qualifying amount, the local cap lifts.
-- **Subscribe**: pick a plan (monthly / quarterly / annual) in USDC, sign the transfer, and your tier flips immediately.
+- **Stake**: connect your wallet (browser or Coinbase Smart Wallet), sign to bind, and the page checks your `$SIBYL` balance on Base. If you hold the threshold (default 100,000 $SIBYL liquid+staked, configurable), the local cap lifts.
+- **Subscribe**: pick monthly ($29) / quarterly ($79) / annual ($290) USDC, sign the transfer, the server records the subscription. Tier flips immediately.
 
 On either path, the CLI sees the tier change, rewrites `credentials.json`, and clears `tier_cache.json` so your next write picks up the new entitlement without delay.
 
@@ -75,6 +108,7 @@ $ sibyl status
     Source            free
     Cap bytes         2,097,152
     $SIBYL held       0
+    Threshold         100,000
     Qualified         no
 ```
 
