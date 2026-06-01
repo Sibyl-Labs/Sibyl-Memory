@@ -889,6 +889,7 @@ class MemoryClient:
 
         Raises: StorageError on backend failure; empty list on empty / invalid query.
         """
+        limit = max(0, limit)  # negative limit must not broaden: SQLite LIMIT -1 = unbounded
         match_q = _sanitize_fts5_query(query, prefix=prefix)
         if not match_q:
             return []
@@ -934,6 +935,7 @@ class MemoryClient:
 
         Raises: StorageError on backend failure.
         """
+        limit = max(0, limit)  # negative limit must not broaden: SQLite LIMIT -1 = unbounded
         match_q = _sanitize_fts5_query(query, prefix=prefix)
         if not match_q:
             return []

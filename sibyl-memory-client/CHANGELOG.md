@@ -4,6 +4,16 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.6] - 2026-06-01
+
+### Fixed
+
+- **A negative `limit` could broaden search instead of narrowing it.**
+  `search()` and `search_entities()` passed `limit` straight into SQLite
+  `LIMIT ?`, where `LIMIT -1` means unbounded, so `limit=-1` returned more
+  rows rather than fewer. Both methods now clamp `limit` with `max(0, limit)`
+  so an invalid negative limit can never broaden results.
+
 ## [0.4.5] - 2026-05-30
 
 Adversarial QA remediation (Acer stress-test suite): two findings + a review hardening.

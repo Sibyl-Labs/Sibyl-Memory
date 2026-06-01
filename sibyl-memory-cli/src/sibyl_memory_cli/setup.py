@@ -206,7 +206,7 @@ class HermesWirer:
 
     def _install_plugin(self) -> None:
         from sibyl_memory_hermes.install_plugin import install
-        install(hermes_home=str(self.hermes_home))
+        install(hermes_home=Path(self.hermes_home), force=False, dry_run=False)
 
     def _backup_config(self) -> Optional[Path]:
         if not self.config_path.exists():

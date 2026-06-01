@@ -4,6 +4,17 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.10] — 2026-06-01
+
+### Fixed
+
+- **`sibyl setup hermes` raised a TypeError on every first-run wiring.**
+  `HermesWirer._install_plugin()` called `install()` with only `hermes_home`
+  (as a `str`), but `sibyl_memory_hermes.install_plugin.install()` requires
+  `(hermes_home: Path, force: bool, dry_run: bool)` with no defaults, so it
+  raised `TypeError` before the plugin could install. Now calls
+  `install(hermes_home=Path(self.hermes_home), force=False, dry_run=False)`.
+
 ## [0.3.9] — 2026-05-31
 
 Guided migration plus first-class Codex support and the real fix for Claude
