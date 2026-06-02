@@ -392,8 +392,17 @@ class ClaudeCodeWirer:
         if rc != 0:
             return WireOutcome(self.name, "error",
                 f"`claude mcp add` failed (exit {rc}): {(err or out).strip()[:200]}")
+        # Post-wire verification (bug, cryptoxdylan 2026-06-01): a 0 exit from
+        # `claude mcp add` has been observed to not guarantee discovery. Confirm the
+        # server actually shows in `claude mcp get`, and surface concrete remediation
+        # instead of reporting a false success that leaves the MCP absent from /mcp.
+        if self._registered_via_cli() is False:
+            return WireOutcome(self.name, "error",
+                "ran `claude mcp add` (exit 0) but the server is not in `claude mcp list`. "
+                "restart Claude Code, then run `claude mcp list`; if still absent, run "
+                f"`claude mcp add --scope user {self.MCP_NAME} -- {binpath}` manually.")
         return WireOutcome(self.name, "wired",
-            "Registered sibyl-memory with Claude Code via `claude mcp add --scope user`.")
+            "Registered sibyl-memory with Claude Code via `claude mcp add --scope user` (verified in `claude mcp list`).")
 
     def wire(self, *, force: bool = False, dry_run: bool = False,
              prompt_fn: Optional[Callable[..., str]] = None) -> WireOutcome:

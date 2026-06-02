@@ -16,13 +16,20 @@ def _with_cli(monkeypatch):
 
 def _mock_run(monkeypatch, *, get_rc=1, add_rc=0, add_err="boom"):
     calls = []
+    state = {"added": False}
     def fake(cmd, *, timeout=20.0):
         calls.append(cmd)
         if cmd[:3] == ["claude", "mcp", "get"]:
-            return (get_rc, "", "")
+            # Model real CLI state: once a successful `add` has run the server is
+            # registered, so the post-wire verification `get` succeeds. Before that
+            # it returns get_rc (1 = not yet registered).
+            return (0, "", "") if state["added"] else (get_rc, "", "")
         if cmd[:3] == ["claude", "mcp", "add"]:
+            if add_rc == 0:
+                state["added"] = True
             return (add_rc, "", "" if add_rc == 0 else add_err)
         if cmd[:3] == ["claude", "mcp", "remove"]:
+            state["added"] = False
             return (0, "", "")
         return (0, "", "")
     monkeypatch.setattr(S, "_run", fake)
