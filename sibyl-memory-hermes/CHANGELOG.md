@@ -4,6 +4,17 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.8] - 2026-06-01
+
+### Fixed
+
+- **`prefetch()` output is now fenced as untrusted data (prompt-injection hardening).**
+  `prefetch()` returns stored memory bodies, which can contain prompt-injection
+  payloads. The block is now wrapped in an explicit `[UNTRUSTED MEMORY CONTEXT
+  BEGIN] ... [UNTRUSTED MEMORY CONTEXT END]` fence telling the host agent to treat
+  it as reference data, never as instructions. The closing fence survives length
+  trimming. (security; beta report dor_alpha)
+
 ## [0.3.7] - 2026-05-30
 
 Coerce-on-Adapter: pairs with the client 0.4.5 structured-body contract.

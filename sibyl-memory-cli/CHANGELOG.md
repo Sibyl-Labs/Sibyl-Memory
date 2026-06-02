@@ -4,6 +4,21 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.11] — 2026-06-01
+
+### Fixed
+
+- **`sibyl init` left a pre-existing `~/.sibyl-memory` world-readable.**
+  `mkdir(mode=0o700)` is a no-op when the directory already exists, so a dir
+  created earlier at 0755 kept loose permissions on the credentials directory.
+  `os.chmod(~/.sibyl-memory, 0o700)` is now applied explicitly after mkdir.
+  (security; beta report dor_alpha)
+- **Claude Code MCP registration could report false success.**
+  `claude mcp add --scope user` returning exit 0 did not guarantee the server
+  showed up in `claude mcp list`. The wirer now verifies via `claude mcp get`
+  after adding; if the server is absent it returns an error with concrete
+  remediation instead of a false "wired". (beta report cryptoxdylan)
+
 ## [0.3.10] — 2026-06-01
 
 ### Fixed

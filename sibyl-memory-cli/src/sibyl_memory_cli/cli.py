@@ -163,6 +163,13 @@ def write_credentials_atomic(creds: dict, path: Path = DEFAULT_CRED_PATH) -> Pat
     """
     path = path.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # mkdir's mode is ignored when the dir already exists (bug, dor_alpha 2026-06-01):
+    # a pre-existing 0755 ~/.sibyl-memory left credentials world-readable. Tighten
+    # explicitly to cover the pre-existing-directory case.
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
     data = json.dumps(creds, indent=2).encode("utf-8")
     tmp = path.with_suffix(path.suffix + ".tmp")
     # Clean any leftover .tmp from a crashed prior write so O_EXCL can succeed.
