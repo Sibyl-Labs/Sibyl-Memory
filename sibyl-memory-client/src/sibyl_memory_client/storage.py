@@ -75,7 +75,30 @@ class Storage:
     """SQLite connection wrapper with schema bootstrap + transaction helpers."""
 
     def __init__(self, db_path: str | Path):
-        self.db_path = Path(db_path).expanduser().resolve()
+        raw = Path(db_path).expanduser()
+        # SEC-12: reject a symlinked or hardlinked database file before opening.
+        # Path.resolve() follows symlinks, and Path.is_symlink() is False for
+        # hardlinks, so without this guard a symlinked path or a hardlinked
+        # memory.db (st_nlink > 1) could redirect one profile's writes into
+        # another profile's database at the SQLite layer (WAL checkpoints into
+        # the shared inode on close). We check the final path component AS GIVEN
+        # (pre-resolve) so a symlinked *parent* dir — a legitimate containerized
+        # / relocated-home setup — is NOT rejected; only the db file itself.
+        if raw.is_symlink():
+            raise StorageError(
+                "Refusing to open a symlinked database file.",
+                recovery="Remove the symlink at the database path and point at a real file.",
+            )
+        if raw.exists():
+            try:
+                if raw.stat().st_nlink > 1:
+                    raise StorageError(
+                        "Refusing to open a hardlinked database file (shared inode).",
+                        recovery="Use a database file that is not hardlinked to another file.",
+                    )
+            except OSError:
+                pass
+        self.db_path = raw.resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         # Per-instance thread-local cache (avoids leaking connections across
         # Storage instances pointing at different files).

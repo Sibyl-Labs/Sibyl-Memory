@@ -315,14 +315,23 @@ class CapGate:
         cached = self._cache.load()
         if cached and cached.is_fresh and cached.account_id == self.account_id:
             if cached.cap_bytes is None:
-                # Cached as paid (uncapped) within grace window: allow
-                return
-            # Cached as free with a cap. Enforce locally.
-            new_size = self._db_size_fn() + proposed_delta_bytes
-            if new_size <= cached.cap_bytes:
-                return
-            # Over the cached cap. Try to refresh (user may have upgraded).
-            return self._refresh_and_check(proposed_delta_bytes)
+                # Cached as paid (uncapped) within grace window: allow — but
+                # ONLY for a real account. A free/pre-activation user has
+                # account_id=None; a forged tier_cache.json with
+                # account_id:null + cap_bytes:null matches that null state and
+                # would otherwise spoof an uncapped account (SEC-13). A
+                # legitimately uncapped tier always carries a real account_id.
+                if self.account_id is not None:
+                    return
+                # Forged/null-account uncapped claim: distrust the cache and
+                # fall through to the credentials-hint + server path below.
+            else:
+                # Cached as free with a cap. Enforce locally.
+                new_size = self._db_size_fn() + proposed_delta_bytes
+                if new_size <= cached.cap_bytes:
+                    return
+                # Over the cached cap. Try to refresh (user may have upgraded).
+                return self._refresh_and_check(proposed_delta_bytes)
 
         # No fresh cache. Use the credentials.json hint as a fast path
         # for the "obviously under cap" case to avoid a server call for

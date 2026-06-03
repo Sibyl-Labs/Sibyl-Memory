@@ -4,6 +4,25 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.1.5] - 2026-06-02
+
+### Security
+
+- **Argument-validation secret-leak guard (SEC-14).** When a caller passed a
+  type-invalid argument value (e.g. `limit="sk-live-..."`), the MCP SDK's
+  `Tool.run` wrapped the pydantic `ValidationError` as a `ToolError` whose
+  message echoed the raw `input_value` back to the wire as an error result, so a
+  secret fat-fingered into a typed argument would be reflected to the caller. The
+  server now wraps the lowlevel `CallToolRequest` handler (the real dispatch
+  path — reassigning `mcp.call_tool` is dead code because FastMCP binds it at
+  construction) and replaces any argument-validation error message with a
+  generic one that does not echo the value. Bumped `sibyl-memory-client>=0.4.7`
+  to pull the cap-bypass + DB link-guard fixes through.
+
+Regression coverage: `tests/test_arg_validation_leak_2026_06_02.py` exercises the
+real lowlevel `request_handlers[CallToolRequest]` path and asserts no `input_value`
+leak.
+
 ## [0.1.4] - 2026-05-30
 
 Coerce-on-Adapter: pairs with the client 0.4.5 structured-body contract.
