@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -199,6 +200,70 @@ def _coerce_body(body: Any) -> Any:
     if isinstance(body, (dict, list)):
         return body
     return {"value": body}
+
+
+# ----------------------------------------------------------------------
+# Argument-validation leak guard (SEC-14)
+# ----------------------------------------------------------------------
+
+# The MCP SDK's Tool.run wraps a pydantic ValidationError as
+#   ToolError("Error executing tool <name>: <... input_value='<raw value>' ...>")
+# and that message reaches the wire as an isError result. If a caller fat-fingers
+# a secret into a typed argument (e.g. limit="sk-live-..."), the secret is echoed
+# back. This signature is the pydantic-on-arguments fingerprint (the arg model is
+# named "<func>Arguments").
+_VALIDATION_LEAK = re.compile(r"validation error.*Arguments", re.IGNORECASE | re.DOTALL)
+_GENERIC_ARG_ERROR = (
+    "Error executing tool: one or more arguments failed validation "
+    "(wrong type or format). The offending value is not echoed back for safety."
+)
+
+
+def _scrub_call_tool_result(server_result: Any) -> Any:
+    """Redact pydantic argument-validation detail from an error tool result.
+
+    No-op for normal (non-error) results and for errors that are not the
+    argument-validation kind.
+    """
+    try:
+        ctr = getattr(server_result, "root", None)
+        if ctr is None or not getattr(ctr, "isError", False):
+            return server_result
+        for block in (getattr(ctr, "content", None) or []):
+            text = getattr(block, "text", None)
+            if text and _VALIDATION_LEAK.search(text):
+                block.text = _GENERIC_ARG_ERROR
+    except Exception:
+        # Never let the guard itself break tool dispatch.
+        pass
+    return server_result
+
+
+def _install_validation_leak_guard(mcp: FastMCP) -> None:
+    """Wrap the lowlevel CallToolRequest dispatch to scrub argument-validation
+    leakage (SEC-14).
+
+    We wrap ``mcp._mcp_server.request_handlers[CallToolRequest]`` — the handler
+    actually invoked on every stdio/SSE call — NOT ``mcp.call_tool``. FastMCP
+    binds ``self.call_tool`` into the lowlevel server at construction time, so
+    reassigning the instance attribute afterwards is dead code on the real wire
+    path; only wrapping the registered handler is effective.
+    """
+    try:
+        from mcp.types import CallToolRequest
+        low = mcp._mcp_server
+        orig = low.request_handlers.get(CallToolRequest)
+        if orig is None:
+            return
+
+        async def _guarded(req: Any) -> Any:
+            return _scrub_call_tool_result(await orig(req))
+
+        low.request_handlers[CallToolRequest] = _guarded
+    except Exception:
+        # If SDK internals shift, fail open (server still runs) rather than
+        # crash on startup. Defense-in-depth on top of typed tool signatures.
+        pass
 
 
 # ----------------------------------------------------------------------
@@ -397,6 +462,7 @@ def build_server() -> FastMCP:
         except Exception as e:
             return _err(e)
 
+    _install_validation_leak_guard(mcp)
     return mcp
 
 

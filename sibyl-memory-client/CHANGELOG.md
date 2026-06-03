@@ -4,6 +4,38 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.7] - 2026-06-02
+
+Bundled bug-fix release from beta/UserSignal reports (sylvain, acerieus, cryptoxdylan), triaged + adversarially verified via bugflow.
+
+### Security
+
+- **Cap-enforcement bypass via a forged tier cache (SEC-13).** A local user could
+  write `~/.sibyl-memory/tier_cache.json` with `account_id: null` and
+  `cap_bytes: null`. For a pre-activation/free user (whose runtime `account_id`
+  is also `None`), this matched the cache fast-path and returned "uncapped",
+  letting an oversized write bypass the free-tier cap entirely offline. The
+  uncapped fast-path now requires a real `account_id`; a null-account uncapped
+  claim is distrusted and falls through to credentials-hint + server
+  enforcement. A legitimately uncapped tier always carries an `account_id`.
+- **Hardlink / symlink DB-path redirect across profiles (SEC-12).**
+  `Storage.__init__` opened the SQLite DB after `Path.resolve()` (which follows
+  symlinks) with no link guard, and `is_symlink()` is `False` for hardlinks. A
+  symlinked db path or a hardlinked `memory.db` (`st_nlink > 1`) could redirect
+  one profile's writes/reads into another profile's database at the SQLite
+  layer. `__init__` now refuses a symlinked (final-component) or hardlinked DB
+  file, raising `StorageError`. The check is on the db file only, not parent
+  dirs, so symlinked / relocated home directories still work.
+
+### Fixed
+
+- **Search quality: journal entries drowned out real results.** On mixed-keyword
+  queries, long journal entries (sharing common terms like "project",
+  "research", "decision") dominated 50-80% of `search()` hits and buried
+  entities / state / reference. The journal tier is now capped at one quarter of
+  the global limit; the structured tiers keep the rest. The global rank-sort +
+  limit still applies.
+
 ## [0.4.6] - 2026-06-01
 
 ### Fixed

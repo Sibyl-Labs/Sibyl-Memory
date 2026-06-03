@@ -1010,6 +1010,14 @@ class MemoryClient:
                 # for typed body fields. Contentless tables can't 'rebuild',
                 # so _fts_query contains corruption by returning [] (tier
                 # skipped) rather than crashing the whole search.
+                #
+                # v0.4.7: cap the journal tier's contribution. Journal entries
+                # are long and share many common terms (Project, Research,
+                # Decision...), so on mixed-keyword queries they were dominating
+                # 50-80% of hits and burying real entities/state/reference. Give
+                # journal at most a quarter of the global limit; the structured
+                # tiers keep the rest. The global rank-sort + limit still applies.
+                journal_limit = max(1, limit // 4) if limit > 0 else 0
                 for r in _fts_query(
                     conn,
                     "SELECT 'journal' AS tier, j.id AS key, j.ts, "
@@ -1020,7 +1028,7 @@ class MemoryClient:
                     "  ON j.id = f.event_id "
                     "WHERE journal_events_fts MATCH ? AND f.tenant_id = ? "
                     "ORDER BY f.rank LIMIT ?",
-                    (match_q, self._tenant_id, limit),
+                    (match_q, self._tenant_id, journal_limit),
                     "journal_events_fts",
                 ):
                     hits.append({
