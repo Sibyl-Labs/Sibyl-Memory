@@ -311,7 +311,7 @@ def build_server() -> FastMCP:
             return _err(e)
 
     @mcp.tool()
-    def memory_search(query: str, limit: int = 10) -> dict[str, Any]:
+    def memory_search(query: str, limit: int = 10, tiers: str | None = None) -> dict[str, Any]:
         """Full-text search across ALL Sibyl tiers (entities + state +
         reference + journal).
 
@@ -327,14 +327,27 @@ def build_server() -> FastMCP:
         Args:
             query: Search terms. User input is sanitized before MATCH.
             limit: Maximum results to return (default 10, max 50).
+            tiers: Optional comma-separated tier filter. Valid values:
+                "entity", "state", "reference", "journal". Example:
+                "entity,state" restricts to those two tiers and bypasses
+                the multi-record linker. Omit or pass null to search all
+                tiers with the multi-record linker active.
         """
         try:
             client = _open_client()
-            # Run15 multi-record fix (Terminal B): route workflow search through
-            # retrieve-then-verify so queries spanning several linked records surface
-            # them all. Drop-in (same hit shape). See sibyl_memory_client/multi_record.py.
-            from sibyl_memory_client.multi_record import multi_record_search
-            results = multi_record_search(client, query, limit=min(max(limit, 1), 50))
+            safe_limit = min(max(limit, 1), 50)
+            if tiers:
+                # Tier-filtered path: bypass multi_record_search (which has no
+                # tiers param) and call client.search() directly. Lets callers
+                # avoid journal-entry domination on generic-keyword queries.
+                tier_tuple = tuple(t.strip() for t in tiers.split(",") if t.strip())
+                results = client.search(query, limit=safe_limit, tiers=tier_tuple or None)
+            else:
+                # Run15 multi-record fix (Terminal B): route workflow search through
+                # retrieve-then-verify so queries spanning several linked records surface
+                # them all. Drop-in (same hit shape). See sibyl_memory_client/multi_record.py.
+                from sibyl_memory_client.multi_record import multi_record_search
+                results = multi_record_search(client, query, limit=safe_limit)
             return {"ok": True, "query": query, "count": len(results), "results": results}
         except Exception as e:
             return _err(e)

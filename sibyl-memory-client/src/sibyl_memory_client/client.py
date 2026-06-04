@@ -315,7 +315,15 @@ def _sanitize_fts5_query(raw: str, *, prefix: bool = False, as_phrase: bool = Fa
         tokens = [t for t in cleaned.split() if t]
         if not tokens:
             return ""
-        tokens = _drop_fts5_operator_tokens(tokens)
+        # In prefix mode, never use the keep-all fallback: appending `*` to a
+        # raw FTS5 operator keyword (OR*, AND*, NOT*) produces an invalid query
+        # that crashes the FTS5 parser (acerieus stress test
+        # LEARNING-SEARCH-PREFIX-OPERATOR-MUTATIONS-STAY-LITERAL, 2026-06-01).
+        # Hard-drop operators with no fallback; an all-operator prefix query
+        # has no safe FTS5 expansion so we return empty (no match).
+        tokens = [t for t in tokens if t.upper() not in _FTS5_OPERATOR_KEYWORDS]
+        if not tokens:
+            return ""
         if len(tokens) == 1:
             return f"{tokens[0]}*"
         # Multiple tokens: all earlier tokens are literal, the last gets `*`.
