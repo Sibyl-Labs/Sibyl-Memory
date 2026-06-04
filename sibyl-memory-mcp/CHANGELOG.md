@@ -4,6 +4,21 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.1.6] - 2026-06-04
+
+### Added
+
+- **`tiers` filter on `memory_search`.** The MCP `memory_search` tool now accepts an
+  optional comma-separated `tiers` argument (`entity`, `state`, `reference`,
+  `journal`). When set, it bypasses the multi-record linker and calls `client.search()`
+  directly with the tier filter, so callers can restrict retrieval to a tier subset.
+  This resolves journal-entry domination of generic-keyword queries at scale
+  (cryptoxdylan, 2026-06-02): journal entries previously accounted for 50-80%+ of hits
+  on shared terms like "Project"/"Research"/"Budget", outranking relevant entities.
+  Omit `tiers` (or pass null) for the existing all-tier multi-record behaviour. Bumped
+  `sibyl-memory-client>=0.4.8` to pull the prefix-mode FTS5 crash fix. Found + verified
+  by bugflow; operator-approved.
+
 ## [0.1.5] - 2026-06-02
 
 ### Security

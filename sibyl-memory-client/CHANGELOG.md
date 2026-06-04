@@ -4,6 +4,21 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.8] - 2026-06-04
+
+### Fixed
+
+- **Prefix-mode FTS5 crash on all-operator queries.** `_sanitize_fts5_query(prefix=True)`
+  routed tokens through `_drop_fts5_operator_tokens`, whose keep-all fallback
+  (`return kept or tokens`) re-introduced raw operator keywords when every token was an
+  operator. The prefix path then appended `*`, producing invalid FTS5 (`OR*`, `AND*`,
+  `NOT*`) that crashed the SQLite FTS5 parser with a syntax error. Prefix mode now
+  hard-drops operator keywords with no fallback and returns an empty match for an
+  all-operator query (no safe expansion exists). Non-prefix phrase mode is unchanged
+  (quoted phrases keep `"OR"` literal and valid). Reported via the acerieus stress suite
+  (LEARNING-SEARCH-PREFIX-OPERATOR-MUTATIONS-STAY-LITERAL, 2026-06-01). Found + verified
+  by bugflow; operator-approved.
+
 ## [0.4.7] - 2026-06-02
 
 Bundled bug-fix release from beta/UserSignal reports (sylvain, acerieus, cryptoxdylan), triaged + adversarially verified via bugflow.

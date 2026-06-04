@@ -348,3 +348,26 @@ def test_search_with_operator_words_returns_hits_end_to_end(tmp_path):
     assert len(client.search("auth AND db")) >= 1
     assert len(client.search("cache NEAR eviction")) >= 1
     assert len(client.search_entities("auth AND db")) >= 1
+
+
+def test_prefix_mode_all_operator_query_returns_empty():
+    """v0.4.8: in prefix mode an all-operator query must NOT keep operator
+    keywords and append `*` (e.g. `OR*`, `AND*`), which is invalid FTS5 and
+    crashed the SQLite parser. It returns empty; a mixed query drops the
+    operators and stars the real trailing token."""
+    from sibyl_memory_client.client import _sanitize_fts5_query
+    assert _sanitize_fts5_query("OR", prefix=True) == ""
+    assert _sanitize_fts5_query("AND OR NOT", prefix=True) == ""
+    assert _sanitize_fts5_query("OR auth", prefix=True) == "auth*"
+    # non-prefix (default) mode is unchanged: operator-only stays literal
+    assert _sanitize_fts5_query("OR") == '"OR"'
+
+
+def test_prefix_search_all_operator_does_not_crash(tmp_path):
+    """End-to-end: a prefix search whose query is only an FTS5 operator used to
+    raise a SQLite syntax error (on `OR*`). It must now run and return a list."""
+    from sibyl_memory_client import MemoryClient
+    client = MemoryClient.local(tmp_path / "memory.db")
+    client.set_entity("debug", "n", {"text": "hello world"})
+    assert isinstance(client.search("OR", prefix=True), list)        # no raise
+    assert isinstance(client.search("AND NOT", prefix=True), list)   # no raise
