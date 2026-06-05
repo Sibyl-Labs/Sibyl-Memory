@@ -1056,7 +1056,7 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     io = _migrate_io()
     report = M.run_guided_setup(
         home=home, cwd=cwd, db_path=db_path, backup_parent=backup_parent,
-        io=io, debloat=not args.no_debloat,
+        io=io, debloat=not args.no_debloat, force=getattr(args, "force", False),
     )
 
     ph = report.get("phases", {})
@@ -1195,6 +1195,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_migrate.add_argument(
         "--yes", "-y", action="store_true",
         help="Skip the initial confirm (the trim step still always asks separately)",
+    )
+    p_migrate.add_argument(
+        "--force", action="store_true",
+        help="Overwrite an existing non-sibyl memory provider when wiring a harness "
+             "(without this, migrate stops at that harness and tells you to re-run with --force)",
     )
     p_migrate.set_defaults(func=cmd_migrate)
 

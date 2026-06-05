@@ -35,9 +35,10 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from sibyl_memory_client import DEFAULT_TENANT, MemoryClient
 from sibyl_memory_client.exceptions import (
     CapExceededError,
@@ -166,8 +167,16 @@ def _build_client() -> MemoryClient:
 # Error mapping
 # ----------------------------------------------------------------------
 
-def _err(e: Exception) -> dict[str, Any]:
-    """Map SDK exception → structured error payload the agent can reason about."""
+def _err(e: Exception) -> NoReturn:
+    """Map an SDK exception to a ToolError so the MCP envelope sets isError=true.
+
+    Previously this returned a plain dict, which FastMCP delivered as a
+    SUCCESSFUL tool result (isError=false) with the error nested inside the
+    payload. An agent keying off the protocol-level isError flag could not
+    detect the failure at all. We now raise ToolError carrying the same
+    structured payload encoded as JSON, so callers both (a) see isError=true
+    and (b) can still parse error/code/recovery/upgrade_url from the message.
+    """
     cls = type(e).__name__
     payload = {"error": cls, "message": str(e)}
     if isinstance(e, CapExceededError):
@@ -184,7 +193,7 @@ def _err(e: Exception) -> dict[str, Any]:
         payload["code"] = "NOT_FOUND"
     elif isinstance(e, ValidationError):
         payload["code"] = "VALIDATION_ERROR"
-    return payload
+    raise ToolError(json.dumps(payload, ensure_ascii=False))
 
 
 def _coerce_body(body: Any) -> Any:

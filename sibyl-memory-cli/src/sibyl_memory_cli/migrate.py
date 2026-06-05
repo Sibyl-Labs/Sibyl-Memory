@@ -330,7 +330,7 @@ class GuidedIO:
 def run_guided_setup(*, home=None, cwd=None, db_path=None, backup_parent=None,
                      io: Optional[GuidedIO] = None, wirers: Optional[dict] = None,
                      extract_fn: Optional[Callable[[Path, Path], None]] = None,
-                     debloat: bool = True, now=None) -> dict:
+                     debloat: bool = True, force: bool = False, now=None) -> dict:
     """The assembled guided flow: backup -> auto-wire each harness (instructions on
     failure) -> extraction handoff -> verify -> confirmed debloat. Returns a structured
     report. `extract_fn(backup_dir, db_path)` performs/simulates extraction; default
@@ -367,7 +367,7 @@ def run_guided_setup(*, home=None, cwd=None, db_path=None, backup_parent=None,
         if w.current_state().get("wired_with_sibyl"):
             wire_report[name] = "already"
             continue
-        outcome = w.wire()
+        outcome = w.wire(force=force)
         wire_report[name] = outcome.status
         if outcome.status not in ("wired", "already"):
             io.say(f"{name}: auto-wire incomplete ({outcome.message}). Do this manually:")

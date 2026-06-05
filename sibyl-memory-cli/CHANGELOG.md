@@ -4,6 +4,19 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.12] — 2026-06-05
+
+### Fixed
+
+- **`sibyl migrate --force` (onboarding dead-end).** When a detected harness
+  already had a non-sibyl memory provider, the wirer refused with
+  "Use --force to overwrite." but `run_guided_setup` called `wire()` with no
+  `force`, and `sibyl migrate` had no `--force` flag to pass, leaving the user
+  with no way forward. Added `--force` to `sibyl migrate`, threaded through
+  `cmd_migrate` → `run_guided_setup(force=)` → `wire(force=force)`, so migration
+  can overwrite an existing provider when the user explicitly opts in.
+  Regression coverage: `tests/test_migrate_force_2026_06_05.py`. (bugflow)
+
 ## [0.3.11] — 2026-06-01
 
 ### Fixed
