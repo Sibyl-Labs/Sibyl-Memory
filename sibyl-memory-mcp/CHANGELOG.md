@@ -4,6 +4,20 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.1.7] - 2026-06-05
+
+### Fixed
+
+- **Tool errors now set the MCP `isError` flag (agent error-detection).**
+  `_err()` previously returned a plain dict, which FastMCP delivered as a
+  *successful* tool result (`isError: false`) with the error nested inside the
+  payload, so an agent keying off the protocol-level `isError` flag could not
+  detect the failure at all. `_err()` now raises `ToolError` carrying the same
+  structured payload encoded as JSON, so callers both (a) see `isError: true`
+  and (b) can still parse `error`/`code`/`recovery`/`upgrade_url` from the
+  message. No tool signatures change; only the error envelope is corrected.
+  Regression coverage: `tests/test_err_toolerror_2026_06_05.py`. (bugflow)
+
 ## [0.1.6] - 2026-06-04
 
 ### Added
