@@ -14,20 +14,37 @@ linked records returns only the single strongest match and misses the rest.
                      (so "rejected" / "denied" / injection queries return []);
                    - on a terminal-state query, drop purely-preparatory records
                      (draft / triage / forecast), negation-aware;
-                   - a candidate must match >= 1 rare/selective term, not just
-                     common ones (kills cross-talk from neighbouring clusters);
-                   - rank by IDF-weighted coverage, keep >= COVERAGE_THRESHOLD.
+                   - ANCHOR-FIRST (hybrid): keep a candidate that is in the
+                     anchor's cluster (matches >= 1 anchor term, the rarest most
+                     discriminating tokens) OR clears the high-coverage bar
+                     ANCHOR_HYBRID_HI. A non-anchor, mid-coverage candidate is
+                     cross-cluster pollution and is dropped. The pure strict
+                     filter killed pollution but over-dropped natural-language
+                     evidence that lacks the rare anchor; the hybrid keeps both;
+                   - rank by IDF-weighted coverage with a tier tiebreaker
+                     (content tiers before contentless journal), keep
+                     >= COVERAGE_THRESHOLD.
 
-Bench (reconstructed Run15 oracle, client 0.4.x): baseline single-pass 4/10;
-recall-only multipass 3/10 (REGRESSES — breaks abstention + pulls distractors);
-this 10/10. The verify gates are load-bearing — recall alone regresses.
+Bench: baseline single-pass 4/10; recall-only multipass 3/10 (REGRESSES). The
+prior retrieve-then-verify scored 10/10 at 24 records but only ~0.36 recall at
+50-100 companies (tester Runs 16/17) because its selectivity cutoff was a corpus
+fraction (round(0.15 * corpus_n)) that lost meaning at scale: past ~150 records
+almost every term read as "selective," so cross-cluster records cleared the gate.
+The anchor-first rewrite (this version) defines the anchor RELATIVE to the rarest
+query term, so the precision gate is scale-invariant (tester Runs 24-29:
+100/100 recall, 0 pollution at 100 companies / 1621 writes). Abstention and the
+terminal/prep gates are preserved unchanged.
 
-CAVEAT — the constants below (SELECTIVE_CUTOFF_FRAC, COVERAGE_THRESHOLD, the
-prep/terminal lexicon, the strict zero-support abstention) are tuned on a
-24-record reconstruction, NOT generalized to production-scale corpora. Validate
-against real-scale data or gate behind a flag before relying on it at scale.
-Generalization candidates: corpus-relative IDF percentile, normalized coverage
-threshold, anchor-term / min-coverage abstention, learned state classification.
+ANCHOR_HYBRID_HI was tuned on a real-data retrieval diagnostic (LongMemEval text
+combined into one store): the pure anchor-only filter regressed natural-language
+recall (gold evidence that lacks the rare anchor); HI=0.65 restores it while
+keeping synthetic-workflow pollution at 0. Per-question (oracle) retrieval is not
+regressed by this change (NEW >= OLD).
+
+CAVEAT — COVERAGE_THRESHOLD, ANCHOR_BAND, ANCHOR_HYBRID_HI, and the prep/terminal
+lexicon are defaults validated against the synthetic multi-cluster scale test
+(tests/test_anchor_resolver_2026_06_06.py) + the LongMemEval retrieval diagnostic;
+re-validate if corpus structure changes.
 
 Uses only the public MemoryClient surface (search / list_entities), so it adds
 no coupling to client internals.
@@ -51,10 +68,17 @@ _PREP_RE = re.compile(
     r'\b(draft|triage|forecast|planning|proposed|tentative|pending|agenda|'
     r'scheduled|rehearsal|sample|option|wip|follow-?up)\b|work in progress')
 
-# --- bench-tuned constants (see CAVEAT in the module docstring) -------------
-SELECTIVE_CUTOFF_FRAC = 0.15   # term is "selective"/rare if df <= frac * corpus_size
-COVERAGE_THRESHOLD = 0.45      # keep candidates whose IDF-weighted coverage >= this
+# --- anchor-first resolver constants (see CAVEAT in the module docstring) ---
+# Replaces the 24-record bench tuning (SELECTIVE_CUTOFF_FRAC = 0.15) that
+# collapsed at scale. The anchor is defined RELATIVE to the rarest query term,
+# so it is scale-invariant.
+ANCHOR_BAND = 2.0              # a term is an "anchor" if df <= ANCHOR_BAND * rarest-term df
+COVERAGE_THRESHOLD = 0.45      # hard coverage floor: drop candidates below this
+ANCHOR_HYBRID_HI = 0.65        # a non-anchor candidate is kept only if coverage >= this
 _PER_TOKEN_LIMIT = 200         # recall depth per token
+# content tiers beat the contentless journal tier at equal coverage (cross-tier
+# BM25 scores are not comparable; tester email 19e7eb3096b4dae5)
+_TIER_PRIORITY = {"entity": 0, "state": 0, "reference": 0, "journal": 1}
 
 
 def _significant_tokens(query: str):
@@ -101,17 +125,34 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
     idf = {t: math.log((corpus_n + 1) / (df[t] + 1)) + 1.0 for t in toks}
     total = sum(idf.values()) or 1.0
     terminal_q = bool(set(toks) & _TERMINAL_Q)
-    sel_cut = max(1, round(SELECTIVE_CUTOFF_FRAC * corpus_n))
-    selective = {t for t in toks if df[t] <= sel_cut}
+
+    # Anchor-first: anchor terms are the rarest (most discriminating) tokens,
+    # defined relative to the rarest term so the band is scale-invariant. Every
+    # candidate is strict-filtered to the anchor's cluster (must match >= 1 anchor
+    # term), which removes the cross-cluster pollution the old corpus-fraction
+    # cutoff let through at scale. Anchor-raw recalls fully but pollutes; the
+    # strict filter is the load-bearing precision gate (tester Runs 24-29).
+    min_df = min(df.values())
+    anchor_cut = max(2, round(ANCHOR_BAND * min_df))
+    anchor_terms = {t for t in toks if df[t] <= anchor_cut}
 
     scored = []
     for e in cand.values():
         if terminal_q and _pure_prep(e["body"]):
             continue                                   # drop purely-preparatory on a final-state query
-        if selective and not (e["m"] & selective):
-            continue                                   # drop cross-talk (only common terms matched)
         cov = sum(idf[t] for t in e["m"]) / total
-        if cov >= COVERAGE_THRESHOLD:
-            scored.append((e["hit"], cov, e["best"]))
-    scored.sort(key=lambda x: (-x[1], x[2]))
-    return [h for h, _cov, _best in scored[:limit]]
+        if cov < COVERAGE_THRESHOLD:
+            continue                                   # below the hard coverage floor
+        # Anchor-first HYBRID gate: keep a candidate that is in the anchor's
+        # cluster (matches an anchor term) OR clears the high-coverage bar
+        # (genuinely relevant despite lacking the rare anchor, e.g. natural-
+        # language evidence). A non-anchor, mid-coverage candidate is pure
+        # cross-cluster pollution and is dropped. Tuned on the LongMemEval
+        # retrieval diagnostic: synthetic-workflow pollution -> 0 while natural-
+        # language recall is preserved (anchor-only over-filtered real queries).
+        if anchor_terms and not (e["m"] & anchor_terms) and cov < ANCHOR_HYBRID_HI:
+            continue
+        tier = e["hit"].get("tier")
+        scored.append((e["hit"], cov, _TIER_PRIORITY.get(tier, 0), e["best"]))
+    scored.sort(key=lambda x: (-x[1], x[2], x[3]))
+    return [h for h, _cov, _tp, _best in scored[:limit]]

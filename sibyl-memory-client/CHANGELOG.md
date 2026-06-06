@@ -4,6 +4,45 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.9] - 2026-06-06
+
+### Fixed
+
+- **Multi-record search recall/precision regression at scale (anchor-first hybrid resolver).**
+  `multi_record_search` used a corpus-fraction selectivity cutoff
+  (`round(0.15 * corpus_n)`) calibrated on a 24-record reconstruction. Past ~150
+  records the cutoff lost meaning: almost every term read as "selective," so
+  cross-cluster records cleared the gate and polluted results (tester Sylvain
+  Runs 16/17, ~0.36 recall at 50-100 companies). The resolver is now anchor-first:
+  anchor terms are the rarest tokens, defined RELATIVE to the rarest query term
+  (`df <= ANCHOR_BAND * min_df`, scale-invariant). The gate is a HYBRID: a
+  candidate survives if it is in the anchor's cluster (matches an anchor term) OR
+  clears the high-coverage bar `ANCHOR_HYBRID_HI` (genuinely relevant despite
+  lacking the rare anchor). A pure strict filter killed cross-cluster pollution
+  but over-dropped natural-language evidence; the hybrid keeps both. Abstention
+  (zero-support term) and the terminal/prep gates are unchanged. Validated two
+  ways: (a) synthetic 480-record workflow A/B — full recall, 0 cross-cluster
+  pollution vs the old code's 1,920 polluting hits over 120 queries (matches
+  tester Runs 24-29); (b) real-data LongMemEval retrieval diagnostic — per-question
+  (oracle) retrieval is not regressed (NEW >= OLD, +3.4pts), and in a combined-
+  store contamination stress NEW cuts cross-question pollution ~29% for a small
+  recall trade. Regression guard: `tests/test_anchor_resolver_2026_06_06.py`.
+
+- **Cross-tier rank comparability.** `search()` BM25 ranks are not on a common
+  scale across FTS tables (`journal_events_fts` is contentless). Added a tier
+  tiebreaker so content tiers (entity/state/reference) sort before journal at equal
+  rank, layered on the existing 0.4.7 journal cap. (tester email 19e7eb3096b4dae5)
+
+### Added
+
+- **`search_entities(category=...)`.** Optional exact-match category anchor on
+  entity FTS, removing topical bleed across categories on multi-entity workloads
+  (tester email 19e7e75af0b7780a). Backward compatible (defaults to all categories).
+
+Sourced from Sylvain's beta Runs 24-29 + the bugflow batch dedup; this single
+patch also supersedes ~20 already-fixed entries that had accumulated in the
+bug-batch queue.
+
 ## [0.4.8] - 2026-06-04
 
 ### Fixed

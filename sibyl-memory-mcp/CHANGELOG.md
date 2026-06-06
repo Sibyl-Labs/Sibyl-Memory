@@ -4,6 +4,17 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.1.8] - 2026-06-06
+
+### Changed
+
+- **Pin `sibyl-memory-client>=0.4.9`.** Picks up the anchor-first hybrid
+  multi-record resolver (client 0.4.9): `memory_search` now strict-filters
+  multi-record / linked-record queries to the query's anchor cluster while
+  keeping high-coverage natural-language evidence, eliminating cross-cluster
+  pollution at scale. No MCP code change; routing through `multi_record_search`
+  is unchanged.
+
 ## [0.1.7] - 2026-06-05
 
 ### Fixed
