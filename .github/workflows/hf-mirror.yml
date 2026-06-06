@@ -13,6 +13,32 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Inject HF model-card frontmatter (runner-only; GitHub README stays clean)
+        run: |
+          printf '%s\n' \
+            '---' \
+            'license: mit' \
+            'tags:' \
+            '  - agent-memory' \
+            '  - long-term-memory' \
+            '  - llm' \
+            '  - ai-agents' \
+            '  - mcp' \
+            '  - retrieval' \
+            '  - sqlite' \
+            '  - rag' \
+            '---' \
+            '' \
+            '> **Read-only mirror of [`Sibyl-Labs/Sibyl-Memory`](https://github.com/Sibyl-Labs/Sibyl-Memory).** The canonical source is on GitHub. Install from PyPI: `pip install -U sibyl-memory-cli` · Docs: https://docs.sibyllabs.org/memory/ · Product: https://sibyllabs.org/plugin · Benchmarks: https://blog.sibylcap.com/beta-analysis' \
+            '' > README.hf.md
+          cat README.md >> README.hf.md
+          mv README.hf.md README.md
+          git config user.name sibyl
+          git config user.email sibyl@sibyllabs.org
+          git add README.md
+          git commit -q -m "hf: model-card frontmatter for the mirror" || echo "README unchanged"
+
       - name: Push to Hugging Face Hub (retry on transient 429)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
