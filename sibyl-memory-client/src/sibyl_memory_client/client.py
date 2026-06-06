@@ -881,7 +881,8 @@ class MemoryClient:
     # ------------------------------------------------------------------
     # FTS5 search
     # ------------------------------------------------------------------
-    def search_entities(self, query: str, *, limit: int = 20, prefix: bool = False) -> list[dict[str, Any]]:
+    def search_entities(self, query: str, *, limit: int = 20, prefix: bool = False,
+                        category: str | None = None) -> list[dict[str, Any]]:
         """Full-text search over entity name + category + body via FTS5.
 
         Returns warm-tier entity rows only. For cross-tier search (entities +
@@ -890,6 +891,11 @@ class MemoryClient:
         Query is sanitized as a single FTS5 phrase: column-filter syntax
         (``name:foo``) and unclosed quotes can't escape into the parser.
         Set ``prefix=True`` for prefix matching on the final token.
+
+        Pass ``category="<name>"`` to anchor the search to a single entity
+        category (exact match); this removes topical bleed across categories on
+        multi-entity workloads (tester email 19e7e75af0b7780a). Omit to search
+        all categories.
 
         Returns: list of entity rows. Each row is a dict with keys
             id, tenant_id, category, name, status, body, created_at, updated_at
@@ -904,15 +910,18 @@ class MemoryClient:
         # external-content FTS5: join by rowid back to base table.
         # _fts_query handles classification (v0.4.0 KAPPA) + corruption
         # containment (poisoned-index DatabaseError self-heals or returns []).
+        cat_clause = " AND e.category = ?" if category else ""
+        params = ((match_q, self._tenant_id, category, limit) if category
+                  else (match_q, self._tenant_id, limit))
         with self._storage.connection() as conn:
             rows = _fts_query(
                 conn,
                 "SELECT e.id, e.tenant_id, e.category, e.name, e.status, e.body, e.created_at, e.updated_at "
                 "FROM entities_fts f "
                 "JOIN entities e ON e.rowid = f.rowid "
-                "WHERE entities_fts MATCH ? AND f.tenant_id = ? "
+                "WHERE entities_fts MATCH ? AND f.tenant_id = ?" + cat_clause + " "
                 "ORDER BY rank LIMIT ?",
-                (match_q, self._tenant_id, limit),
+                params,
                 "entities_fts",
             )
         return [self._row_to_entity(r) for r in rows]
@@ -1049,8 +1058,12 @@ class MemoryClient:
                         },
                         "snippet": r["snip"], "rank": r["rank"], "ts": r["ts"],
                     })
-        # Sort by rank (lower = better in FTS5) and apply global limit
-        hits.sort(key=lambda h: h["rank"])
+        # Sort by rank (lower = better in FTS5), with a tier tiebreaker: at
+        # comparable rank the content tiers (entity/state/reference) sort before
+        # the contentless journal tier, whose BM25 scores are not on the same
+        # scale (cross-tier rank comparability, tester email 19e7eb3096b4dae5).
+        _tier_rank = {"entity": 0, "state": 0, "reference": 0, "journal": 1}
+        hits.sort(key=lambda h: (h["rank"], _tier_rank.get(h["tier"], 0)))
         return hits[:limit]
 
     # ------------------------------------------------------------------
