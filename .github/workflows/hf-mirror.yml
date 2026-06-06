@@ -13,8 +13,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Push to Hugging Face Hub
+      - name: Push to Hugging Face Hub (retry on transient 429)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          git push --force "https://sibyllabs:${HF_TOKEN}@huggingface.co/SibylLabsLLC/Sibyl-Memory" HEAD:main
+          for i in 1 2 3 4 5; do
+            if git push --force "https://sibyllabs:${HF_TOKEN}@huggingface.co/SibylLabsLLC/Sibyl-Memory" HEAD:main; then
+              echo "mirror pushed on attempt $i"; exit 0
+            fi
+            echo "attempt $i failed (likely transient HF 429); backing off"; sleep $((i*15))
+          done
+          echo "all push attempts failed"; exit 1
