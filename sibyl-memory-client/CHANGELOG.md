@@ -4,6 +4,30 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.10] - 2026-06-08
+
+### Fixed
+
+- **Multi-word search precision: "near-negative decoy" false positives** (chainriffs +
+  KAPPA Discord reports against v0.4.2 / v0.4.4; triaged from the 2026-06-06 bug intake).
+  The AND-of-tokens default (v0.4.2+) gives full recall but lets short rows that contain
+  the query tokens in an unrelated context out-rank the real answer under BM25, which
+  rewards term density over proximity (reported precision ~73% at recall 100%).
+  `search()` and `search_entities()` now re-rank multi-word results by match tightness
+  before the limit is applied: contiguous query phrase (bucket 0) > all tokens within a
+  small window (bucket 1) > scattered tokens (bucket 2), with the existing BM25 `rank` as
+  the in-bucket tiebreaker. No hit is dropped, so **recall is unchanged**: only the order
+  changes. Single-token and `prefix=True` queries keep plain BM25 order, so
+  `multi_record_search` (the anchor-first resolver, which only issues single-token
+  searches) is unaffected. New module helpers `_match_tokens` / `_normalize_text` /
+  `_proximity_bucket` / `_min_cover_span`; regression suite
+  `tests/test_proximity_rerank_2026_06_08.py` (9 tests). Verified: scattered-decoy
+  precision@1 0/6 -> 6/6 on the reproduction corpus, 119/119 suite green.
+
+  Residual (out of scope, by design): a decoy that contains the *exact query phrase* is a
+  genuine lexical-semantic collision, the documented graph-native / GNN-tier case, not
+  resolvable by keyword ranking.
+
 ## [0.4.9] - 2026-06-06
 
 ### Fixed

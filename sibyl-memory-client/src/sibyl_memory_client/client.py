@@ -348,6 +348,105 @@ def _sanitize_fts5_query(raw: str, *, prefix: bool = False, as_phrase: bool = Fa
     tokens = _drop_fts5_operator_tokens(tokens)
     return " ".join(f'"{t}"' for t in tokens)
 
+
+# ---------------------------------------------------------------------------
+# Proximity re-ranking (v0.4.10): precision boost for multi-word search.
+#
+# The default sanitizer (v0.4.2+) ANDs query tokens, so every token must appear
+# somewhere in a matched row, in any order. That gives full recall but lets
+# "near-negative decoy" rows (short docs that contain the same tokens in an
+# unrelated context) out-rank the real answer under BM25, which rewards term
+# density over proximity (chainriffs + KAPPA Discord reports against v0.4.2 and
+# v0.4.4: precision ~73% at recall 100%).
+#
+# Fix: after BM25 ranking, bucket each hit by how tightly it matches the query,
+# then sort by (bucket, bm25_rank). Recall is untouched: no hit is dropped, the
+# candidate set is identical, only the order changes before the limit applies.
+# Single-token queries are a no-op (every hit is bucket 0), so the single-token
+# searches issued by multi_record_search (the anchor-first resolver) are
+# unaffected. Prefix searches are also skipped (different intent).
+#
+#   bucket 0: query tokens appear as a contiguous phrase, in order
+#   bucket 1: all query tokens appear within a small window, any order
+#   bucket 2: tokens are scattered, or cannot be located in the extracted text
+_PROXIMITY_WINDOW_SLACK = 4
+
+
+def _match_tokens(query: str) -> list[str]:
+    """Lowercased alphanumeric+underscore tokens, FTS5 operator words dropped.
+
+    Mirrors the tokenization the default sanitizer ANDs together, so the
+    re-ranker reasons over the same tokens the MATCH actually required.
+    """
+    if not query or not isinstance(query, str):
+        return []
+    cleaned = "".join(ch if (ch.isalnum() or ch == "_") else " " for ch in query.lower())
+    toks = [t for t in cleaned.split() if t]
+    return _drop_fts5_operator_tokens(toks) if toks else []
+
+
+def _normalize_text(value: Any) -> str:
+    """Flatten a hit's searchable content to a single space-joined token string.
+
+    Serializes structured bodies via JSON so the re-ranker sees the same text
+    (keys + values) that FTS5 indexed for the row.
+    """
+    if isinstance(value, str):
+        raw = value
+    else:
+        try:
+            raw = dumps(value)
+        except (TypeError, ValueError):
+            raw = str(value)
+    cleaned = "".join(ch if (ch.isalnum() or ch == "_") else " " for ch in raw.lower())
+    return " ".join(cleaned.split())
+
+
+def _min_cover_span(positions: dict[str, list[int]]) -> int | None:
+    """Smallest window (max-min+1) of doc indices covering every token once."""
+    merged = sorted((i, t) for t, idxs in positions.items() for i in idxs)
+    if not merged:
+        return None
+    need = len(positions)
+    have: dict[str, int] = {}
+    best: int | None = None
+    left = 0
+    for right in range(len(merged)):
+        have[merged[right][1]] = have.get(merged[right][1], 0) + 1
+        while len(have) == need:
+            width = merged[right][0] - merged[left][0] + 1
+            if best is None or width < best:
+                best = width
+            tl = merged[left][1]
+            have[tl] -= 1
+            if have[tl] == 0:
+                del have[tl]
+            left += 1
+    return best
+
+
+def _proximity_bucket(query_tokens: list[str], text: str) -> int:
+    """0 = contiguous phrase, 1 = tight window, 2 = scattered/absent."""
+    n = len(query_tokens)
+    if n < 2:
+        return 0
+    if f" {' '.join(query_tokens)} " in f" {text} ":
+        return 0  # exact contiguous phrase, in query order
+    doc_tokens = text.split()
+    if not doc_tokens:
+        return 2
+    positions: dict[str, list[int]] = {t: [] for t in set(query_tokens)}
+    for i, tok in enumerate(doc_tokens):
+        if tok in positions:
+            positions[tok].append(i)
+    if any(not idxs for idxs in positions.values()):
+        return 2  # at least one query token absent from the extracted text
+    span = _min_cover_span(positions)
+    if span is not None and span <= n + _PROXIMITY_WINDOW_SLACK:
+        return 1
+    return 2
+
+
 # The default tenant for single-user local installs.
 DEFAULT_TENANT = "00000000-0000-0000-0000-000000000001"
 
@@ -924,7 +1023,22 @@ class MemoryClient:
                 params,
                 "entities_fts",
             )
-        return [self._row_to_entity(r) for r in rows]
+        ents = [self._row_to_entity(r) for r in rows]
+        # v0.4.10: proximity re-rank (see search()). Multi-word, non-prefix only;
+        # re-orders the fetched rows, never drops one.
+        query_tokens = _match_tokens(query)
+        if not prefix and len(query_tokens) >= 2 and len(ents) > 1:
+            keyed = []
+            for idx, e in enumerate(ents):
+                text = " ".join((
+                    _normalize_text(e.get("body")),
+                    _normalize_text(e.get("name", "")),
+                    _normalize_text(e.get("category") or ""),
+                ))
+                keyed.append((_proximity_bucket(query_tokens, text), idx, e))
+            keyed.sort(key=lambda t: (t[0], t[1]))
+            ents = [t[2] for t in keyed]
+        return ents
 
     def search(self, query: str, *, limit: int = 20, prefix: bool = False,
                tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
@@ -1063,7 +1177,32 @@ class MemoryClient:
         # the contentless journal tier, whose BM25 scores are not on the same
         # scale (cross-tier rank comparability, tester email 19e7eb3096b4dae5).
         _tier_rank = {"entity": 0, "state": 0, "reference": 0, "journal": 1}
-        hits.sort(key=lambda h: (h["rank"], _tier_rank.get(h["tier"], 0)))
+        # v0.4.10: proximity re-rank. For multi-word (non-prefix) queries, bucket
+        # each hit by how tightly it matches (contiguous phrase > tight window >
+        # scattered) and sort by (bucket, rank, tier). This demotes short
+        # "near-negative decoy" rows that share the query tokens in an unrelated
+        # context, without dropping any hit (recall unchanged). Single-token and
+        # prefix queries keep the plain BM25 order, so multi_record_search (which
+        # only issues single-token searches) is unaffected.
+        query_tokens = _match_tokens(query)
+        if not prefix and len(query_tokens) >= 2:
+            keyed = []
+            for h in hits:
+                text = " ".join((
+                    _normalize_text(h.get("body")),
+                    _normalize_text(h.get("key", "")),
+                    _normalize_text(h.get("category") or ""),
+                ))
+                keyed.append((
+                    _proximity_bucket(query_tokens, text),
+                    h["rank"],
+                    _tier_rank.get(h["tier"], 0),
+                    h,
+                ))
+            keyed.sort(key=lambda t: (t[0], t[1], t[2]))
+            hits = [t[3] for t in keyed]
+        else:
+            hits.sort(key=lambda h: (h["rank"], _tier_rank.get(h["tier"], 0)))
         return hits[:limit]
 
     # ------------------------------------------------------------------
