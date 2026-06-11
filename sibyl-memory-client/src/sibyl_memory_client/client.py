@@ -1064,13 +1064,20 @@ class MemoryClient:
         Query is sanitized as a single FTS5 phrase (see ``search_entities``
         notes). Empty / invalid queries return [].
 
-        Raises: StorageError on backend failure.
+        Raises: StorageError on backend failure; ValueError on unknown tier names.
         """
         limit = max(0, limit)  # negative limit must not broaden: SQLite LIMIT -1 = unbounded
         match_q = _sanitize_fts5_query(query, prefix=prefix)
         if not match_q:
             return []
         allowed = set(tiers) if tiers else {"entity", "state", "reference", "journal"}
+        if tiers:
+            unknown = sorted(allowed - {"entity", "state", "reference", "journal"})
+            if unknown:
+                raise ValueError(
+                    f"unknown tiers: {', '.join(unknown)}; "
+                    "valid: entity, state, reference, journal"
+                )
         hits: list[dict[str, Any]] = []
         with self._storage.connection() as conn:
             # v0.4.0 (KAPPA YELLOW finding): per-tier OperationalError handling

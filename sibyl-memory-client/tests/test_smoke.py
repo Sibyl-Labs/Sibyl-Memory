@@ -167,6 +167,46 @@ def test_tenant_isolation(tmp_path):
     return "multi-tenant: same (category, name) isolated by tenant_id"
 
 
+def test_tenant_search_isolation(tmp_path):
+    """Search-path tenant isolation (Discord report 2026-05-31: sibling-case
+    bleed under 50 parallel company workflows). Both tenants index near-
+    identical vocabulary in the SAME database file; every search surface
+    (search_entities, cross-tier search, multi_record_search) must return
+    only the calling tenant's rows."""
+    from sibyl_memory_client.multi_record import multi_record_search
+
+    client_a = MemoryClient.local(tmp_path / "memory.db", tenant_id="tenant-a")
+    client_b = MemoryClient.local(tmp_path / "memory.db", tenant_id="tenant-b")
+    for i in range(5):
+        client_a.set_entity("case", f"case-a{i}",
+                            {"summary": f"billing outage refund escalation ticket {i}", "owner": "a"})
+        client_b.set_entity("case", f"case-b{i}",
+                            {"summary": f"billing outage refund escalation ticket {i}", "owner": "b"})
+    client_a.set_state("triage", {"queue": ["billing outage refund"], "owner": "a"})
+    client_b.set_state("triage", {"queue": ["billing outage refund"], "owner": "b"})
+
+    ents = client_a.search_entities("billing outage refund")
+    assert ents, "tenant-a search_entities returned nothing"
+    assert all(e["tenant_id"] == "tenant-a" for e in ents), \
+        f"cross-tenant rows in search_entities: {sorted({e['tenant_id'] for e in ents})}"
+
+    hits = client_b.search("billing outage refund escalation")
+    assert hits, "tenant-b search returned nothing"
+    keys = {str(h["key"]) for h in hits}
+    assert not any(k.startswith("case-a") for k in keys), \
+        f"tenant-a rows leaked into tenant-b search: {keys}"
+    for h in hits:
+        body = h.get("body")
+        if isinstance(body, dict) and "owner" in body:
+            assert body["owner"] == "b", f"tenant-a body leaked into tenant-b search: {h}"
+
+    mr = multi_record_search(client_a, "billing outage refund escalation ticket")
+    mr_keys = {str(h["key"]) for h in mr}
+    assert not any(k.startswith("case-b") for k in mr_keys), \
+        f"tenant-b rows leaked into tenant-a multi_record_search: {mr_keys}"
+    return "multi-tenant: search_entities + search + multi_record_search stay tenant-scoped"
+
+
 def main():
     tests = [
         test_schema_applies_idempotently,
@@ -179,6 +219,7 @@ def main():
         test_fts_search,
         test_json_validation,
         test_tenant_isolation,
+        test_tenant_search_isolation,
     ]
     passed = failed = 0
     for t in tests:

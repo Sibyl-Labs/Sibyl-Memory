@@ -258,8 +258,8 @@ class Linter:
 
             # ── stale entities
             cutoff = (
-                _dt.datetime.utcnow() - _dt.timedelta(days=self._stale_days)
-            ).strftime("%Y-%m-%dT%H:%M:%fZ")
+                _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=self._stale_days)
+            ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
             stale = conn.execute(
                 "SELECT category, name, updated_at FROM entities "
                 "WHERE tenant_id = ? AND updated_at < ? "
@@ -348,8 +348,8 @@ class Linter:
 
             # ── recent flagged actors (info-level surface)
             recent_cutoff = (
-                _dt.datetime.utcnow() - _dt.timedelta(days=self._flag_recency)
-            ).strftime("%Y-%m-%dT%H:%M:%fZ")
+                _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=self._flag_recency)
+            ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
             try:
                 flagged = conn.execute(
                     "SELECT identifier, flagged_at, reason FROM flagged_actors "

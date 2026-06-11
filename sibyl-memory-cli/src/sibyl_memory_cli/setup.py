@@ -222,6 +222,15 @@ class HermesWirer:
             loaded = yaml.safe_load(raw)
             if isinstance(loaded, dict):
                 cfg = loaded
+            elif loaded is not None:
+                # Fail fast: a non-mapping top level means the config is not
+                # something we can merge into. Silently reinitializing would
+                # destroy the user's existing Hermes settings.
+                raise ValueError(
+                    f"{self.config_path} top level is not a YAML mapping "
+                    f"(got {type(loaded).__name__}). Fix the file or move it "
+                    "aside and re-run; it was not modified."
+                )
         if not isinstance(cfg.get("memory"), dict):
             cfg["memory"] = {}
         cfg["memory"]["provider"] = "sibyl"
@@ -338,6 +347,7 @@ class ClaudeCodeWirer:
         settings_exists = self.settings_path.exists()
         mcp_servers: dict = {}
         sibyl_block: Optional[dict] = None
+        settings_parse_error: Optional[str] = None
         if settings_exists:
             try:
                 cfg = json.loads(self.settings_path.read_text(encoding="utf-8"))
@@ -346,8 +356,8 @@ class ClaudeCodeWirer:
                     if isinstance(raw_servers, dict):
                         mcp_servers = raw_servers
                         sibyl_block = mcp_servers.get("sibyl-memory")
-            except Exception:
-                pass
+            except Exception as e:
+                settings_parse_error = f"{type(e).__name__}: {e}"
         mcp_binary = self._mcp_binary_found()
         cli_registered = self._registered_via_cli()  # None when no `claude` CLI
         # Source of truth: when the claude CLI exists, trust `claude mcp get` (where
@@ -359,6 +369,7 @@ class ClaudeCodeWirer:
         return {
             "settings_path": str(self.settings_path),
             "settings_exists": settings_exists,
+            "settings_parse_error": settings_parse_error,
             "mcp_servers_count": len(mcp_servers),
             "sibyl_mcp": sibyl_block,
             "mcp_binary_found": mcp_binary,
@@ -493,12 +504,27 @@ class ClaudeCodeWirer:
     def _write_settings_with_sibyl(self) -> None:
         cfg: dict = {}
         if self.settings_path.exists():
-            try:
-                loaded = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            raw = self.settings_path.read_text(encoding="utf-8")
+            if raw.strip():
+                try:
+                    loaded = json.loads(raw)
+                except ValueError as e:
+                    # Fail fast: never atomically replace a corrupt settings.json
+                    # with a sibyl-only file (that destroys the user's other
+                    # mcpServers, permissions, hooks, env).
+                    raise ValueError(
+                        f"{self.settings_path} is not valid JSON ({e}). "
+                        "Fix the file or move it aside and re-run setup; "
+                        "your settings were not modified."
+                    ) from e
                 if isinstance(loaded, dict):
                     cfg = loaded
-            except Exception:
-                cfg = {}
+                else:
+                    raise ValueError(
+                        f"{self.settings_path} top level is not a JSON object "
+                        f"(got {type(loaded).__name__}). Fix the file or move it "
+                        "aside and re-run setup; your settings were not modified."
+                    )
         if not isinstance(cfg.get("mcpServers"), dict):
             cfg["mcpServers"] = {}
         cfg["mcpServers"]["sibyl-memory"] = self.SIBYL_MCP_BLOCK
