@@ -33,6 +33,8 @@ Four PyPI packages, one schema family, one architecture.
 
 `sibyl-memory-client` is a local-first agentic memory SDK. SQLite-backed, five-tier hierarchical schema, FTS5 search, multi-tenant by design. No vector database. No embedding model. No external retrieval service. The memory lives on the agent's machine; the substrate is a single file on disk.
 
+> **Privacy disclosure.** Your memory content never leaves the machine. The only outbound network call is tier verification: when an activated account writes past its tier cap, the client calls `api.sibyllabs.org/api/plugin/check-write` with account metadata only (account id, session token, and the database's byte size and proposed delta) — never the contents of your memory. Verified against the source in `sibyl-memory-client/src/sibyl_memory_client/_capcheck.py`. Free, unactivated use makes no network calls at all.
+
 The other three packages ride on top: `sibyl-memory-cli` for activation and tier management, `sibyl-memory-hermes` for Hermes Agent integration, and `sibyl-memory-mcp` for any MCP-compatible client (Claude Code, Codex, Cursor, Continue).
 
 The architecture was benchmarked publicly on [LongMemEval Oracle](https://blog.sibylcap.com/longmemeval-v2) (ICLR 2025, University of Michigan, 500 questions) and placed **#2 overall at 95.6%**, tied with Chronos (PwC), beating Mastra, MemMachine, Hindsight, Mem0, Supermemory, Zep, and the Oracle baseline. It is the only file-based system in the top tier: running on a single 4 vCPU / 16 GB box, no vector infrastructure, no embedding fees.

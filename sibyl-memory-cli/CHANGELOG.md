@@ -4,6 +4,22 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.14] — 2026-06-11
+
+### Added
+
+- **`sibyl status` now lists every memory store on the machine + warns on
+  split-brain divergence** (beta report VRTX, 2026-06-11). A new read-only
+  `_discover_stores()` enumerates the SDK/CLI/MCP default
+  (`~/.sibyl-memory/memory.db`), the Hermes adapter
+  (`$HERMES_HOME/sibyl/memory.db`), per-profile DBs
+  (`$HERMES_HOME/sibyl/profiles/<p>/memory.db`), and any `SIBYL_MEMORY_DB`
+  override, listing each with path + size. When more than one store holds data,
+  a warning explains that memory is not shared across entry points and how to
+  point them at one path. Discovery creates and moves nothing — path
+  unification is a separate, migration-gated change. Regression test:
+  `tests/test_status_stores_2026_06_11.py` (4 cases). (big-patch PKG-2/PKG-3)
+
 ## [0.3.13] — 2026-06-11
 
 ### Fixed

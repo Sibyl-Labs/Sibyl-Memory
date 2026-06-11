@@ -4,6 +4,33 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.9] - 2026-06-11
+
+### Fixed
+
+- **Hermes 0.7+ did not discover the plugin as a memory provider** (beta report
+  Sylvain, 2026-06-11, Hermes Agent v0.7.0). `install-plugin` wrote only the
+  legacy user-plugin path `$HERMES_HOME/plugins/sibyl`, which shows in
+  `hermes plugins list` but is NOT scanned for memory providers on 0.7+. The
+  installer now ALSO targets the 0.7+ memory-provider scan path
+  `<hermes pkg>/plugins/memory/sibyl` (auto-detected via importlib, or set with
+  the new `--memory-provider-path` flag), keeping the user-plugin write for
+  older Hermes. A `PermissionError` on a root-owned site-packages dir is
+  non-fatal: the user-plugin write stands and the exact `sudo` copy command is
+  printed. When the Hermes package can't be detected, a clear note tells the
+  user to rerun with `--memory-provider-path`. A "discovery paths" summary now
+  prints which Hermes versions read which path. (big-patch PKG-1)
+
+### Changed
+
+- **system_prompt block coaches keyword/proper-noun search** over
+  natural-language questions: "search matches stored TEXT, not meaning … for a
+  multi-concept query, search each key term separately and merge." Closes the
+  default-UX gap where an agent's first natural-language query returns 0 hits.
+  (big-patch PKG-10, priority #7 remainder)
+
+Regression tests: `tests/test_provider_path_2026_06_11.py` (6 cases).
+
 ## [0.3.8] - 2026-06-01
 
 ### Fixed

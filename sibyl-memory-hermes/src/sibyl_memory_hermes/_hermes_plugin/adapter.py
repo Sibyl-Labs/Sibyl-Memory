@@ -324,6 +324,10 @@ class SibylAdapter(MemoryProvider):
             "Query is treated as AND-of-tokens by default (every word in the query must "
             "appear in the matched row, in any order). For consecutive-phrase match, wrap "
             "the input in double-quotes (e.g. query='\"Christopher Nolan\"').\n"
+            "  Search matches stored TEXT, not meaning. Prefer the exact keywords or "
+            "proper nouns you stored (names, ids, categories) over a full natural-language "
+            "question. For a multi-concept query, search each key term separately and merge "
+            "the results, or use sibyl_recall when you know the category and name.\n"
             "- sibyl_list(category?, status?): browse what's remembered"
         )
 
