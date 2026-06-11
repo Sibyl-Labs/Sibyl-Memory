@@ -555,7 +555,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     tier_cache = Path(args.tier_cache).expanduser()
     if tier_cache.exists():
         cache = json.loads(tier_cache.read_text(encoding="utf-8"))
-        print(a.kv("Tier cache", f"{cache.get('tier','?')} (checked {cache.get('checked_at','?')[:19]})"))
+        # checked_at is written by _capcheck.py as epoch seconds (float), but
+        # older caches / future formats may carry an ISO string. Render both;
+        # never index a float (TypeError on every `sibyl status` run with a
+        # populated tier cache; Discord report 2026-06-10).
+        checked = cache.get("checked_at")
+        if isinstance(checked, (int, float)) and not isinstance(checked, bool):
+            checked = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(checked))
+        checked = str(checked)[:19] if checked else "?"
+        print(a.kv("Tier cache", f"{cache.get('tier','?')} (checked {checked})"))
     else:
         print(a.kv("Tier cache", "—"))
 

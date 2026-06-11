@@ -4,6 +4,35 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.11] - 2026-06-11
+
+### Added
+
+- **Cross-tenant search isolation regression test**
+  (`tests/test_smoke.py::test_tenant_search_isolation`). Two tenants index
+  near-identical "billing outage refund escalation ticket" vocabulary in the
+  same database file; asserts `search_entities`, cross-tier `search()`, and
+  `multi_record_search` each return only the calling tenant's rows (Discord
+  2026-05-31 parallel-workflow report). Passes against current source: SQL
+  `tenant_id` filtering holds on all three surfaces, so the reported sibling-
+  case bleed is attributed to within-tenant topical ranking, addressed by the
+  0.4.9 anchor-first resolver and 0.4.10 proximity re-rank. Tests only, no
+  source change. (bugflow)
+
+### Fixed
+
+- **`search()` silently returned `[]` on unknown tier names.** Unknown values in
+  `tiers` now raise `ValueError` (defense in depth behind the MCP-level
+  whitelist; direct callers such as the Hermes provider inherit the fix).
+  (bugflow)
+- **Lint timestamp cutoffs were malformed and used deprecated
+  `datetime.utcnow()`.** Python `%f` means microseconds (not SQLite's
+  seconds-with-millis), so stale-entity and flagged-actor cutoffs rendered as
+  `HH:MM:<microseconds>Z` with no seconds field, breaking the lexicographic
+  comparison against stored `HH:MM:SS.sssZ` timestamps. Cutoffs now use
+  `datetime.now(timezone.utc)` with an exactly aligned `%Y-%m-%dT%H:%M:%S.000Z`
+  format. (bugflow)
+
 ## [0.4.10] - 2026-06-08
 
 ### Fixed

@@ -43,8 +43,11 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          # Token via credential helper (read from env at call time): never in the
+          # remote URL, argv, or any error message git might print.
+          git config credential.helper '!f() { echo "username=sibyllabs"; echo "password=${HF_TOKEN}"; }; f'
           for i in 1 2 3 4 5; do
-            if git push --force "https://sibyllabs:${HF_TOKEN}@huggingface.co/SibylLabsLLC/Sibyl-Memory" HEAD:main; then
+            if git push --force "https://huggingface.co/SibylLabsLLC/Sibyl-Memory" HEAD:main; then
               echo "mirror pushed on attempt $i"; exit 0
             fi
             echo "attempt $i failed (likely transient HF 429); backing off"; sleep $((i*15))

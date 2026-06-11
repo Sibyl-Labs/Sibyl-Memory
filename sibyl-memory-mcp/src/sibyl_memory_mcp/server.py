@@ -350,6 +350,12 @@ def build_server() -> FastMCP:
                 # tiers param) and call client.search() directly. Lets callers
                 # avoid journal-entry domination on generic-keyword queries.
                 tier_tuple = tuple(t.strip() for t in tiers.split(",") if t.strip())
+                unknown = sorted(set(tier_tuple) - {"entity", "state", "reference", "journal"})
+                if unknown:
+                    raise ValueError(
+                        f"unknown tiers: {', '.join(unknown)}; "
+                        "valid: entity, state, reference, journal"
+                    )
                 results = client.search(query, limit=safe_limit, tiers=tier_tuple or None)
             else:
                 # Run15 multi-record fix (Terminal B): route workflow search through

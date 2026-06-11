@@ -4,6 +4,28 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.13] — 2026-06-11
+
+### Fixed
+
+- **Corrupt `~/.claude/settings.json` was silently replaced with a sibyl-only
+  file (data loss).** `_write_settings_with_sibyl` swallowed JSON parse errors
+  (`except Exception: cfg = {}`) and the subsequent atomic replace destroyed the
+  user's other `mcpServers`, `permissions`, `hooks`, and `env`. Setup now fails
+  fast with a clear error (file untouched, backup path reported) on invalid JSON
+  or a non-object top level; an empty file is still treated as legitimately
+  empty. The same fail-fast applies to a valid-but-non-mapping Hermes YAML
+  config. `current_state()` now surfaces `settings_parse_error` instead of
+  swallowing it. (bugflow)
+- **`sibyl status` crashed with a TypeError whenever a tier cache existed.**
+  `cmd_status` sliced `checked_at` with `[:19]`, but `_capcheck` writes
+  `checked_at` as epoch seconds (float), so every `sibyl status` run with a
+  populated `~/.sibyl-memory/tier_cache.json` raised
+  `TypeError: 'float' object is not subscriptable`. The value is now rendered
+  via `time.strftime` when numeric and passed through (truncated to 19 chars)
+  when it is already an ISO string; missing or null renders as `?`. Validated
+  against float, ISO-string, missing, null, and zero inputs. (bugflow)
+
 ## [0.3.12] — 2026-06-05
 
 ### Fixed

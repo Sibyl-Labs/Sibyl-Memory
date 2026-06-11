@@ -4,6 +4,15 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.1.9] - 2026-06-11
+
+### Fixed
+
+- **`memory_search` silently returned 0 hits on tier typos.** The `tiers` CSV
+  param is now validated against the `entity, state, reference, journal`
+  whitelist; unknown values (e.g. `entities`) raise a clear `ToolError`
+  (`isError=true`) instead of an empty ok result. (bugflow)
+
 ## [0.1.8] - 2026-06-06
 
 ### Changed
