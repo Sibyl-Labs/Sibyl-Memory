@@ -516,6 +516,55 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
 
 # ---- `sibyl status` ----------------------------------------------------
 
+def _discover_stores(primary_db: Path) -> list[dict[str, Any]]:
+    """Enumerate every memory.db an agent on this machine might resolve.
+
+    Beta reports (VRTX 2026-06-11) showed split-brain storage: the SDK / CLI /
+    MCP default (``~/.sibyl-memory/memory.db``), the Hermes adapter
+    (``$HERMES_HOME/sibyl/memory.db``), per-profile DBs
+    (``$HERMES_HOME/sibyl/profiles/<p>/memory.db``), and an MCP
+    ``SIBYL_MEMORY_DB`` override can each hold a disjoint set of memories, so a
+    user switching entry points sees memory "vanish". This surfaces all of
+    them in one place. Read-only: it never creates or moves anything (path
+    unification is a separate, migration-gated change).
+
+    Returns one dict per DISTINCT existing store, resolved + deduped:
+    ``{"label", "path", "size"}``.
+    """
+    candidates: list[tuple[str, Path]] = [("default (SDK/CLI/MCP)", primary_db)]
+
+    hermes_home_env = os.environ.get("HERMES_HOME")
+    hermes_home = Path(hermes_home_env).expanduser() if hermes_home_env else (Path.home() / ".hermes")
+    candidates.append(("hermes adapter", hermes_home / "sibyl" / "memory.db"))
+    profiles_dir = hermes_home / "sibyl" / "profiles"
+    if profiles_dir.is_dir():
+        for prof in sorted(profiles_dir.iterdir()):
+            db = prof / "memory.db"
+            if db.exists():
+                candidates.append((f"hermes profile · {prof.name}", db))
+
+    mcp_override = os.environ.get("SIBYL_MEMORY_DB")
+    if mcp_override:
+        candidates.append(("MCP SIBYL_MEMORY_DB", Path(mcp_override).expanduser()))
+
+    seen: set[str] = set()
+    stores: list[dict[str, Any]] = []
+    for label, path in candidates:
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            resolved = str(path)
+        if resolved in seen or not path.exists():
+            continue
+        seen.add(resolved)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        stores.append({"label": label, "path": str(path), "size": size})
+    return stores
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Show local + server-side state without modifying anything.
 
@@ -551,6 +600,27 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(a.kv("DB size", size_label, value_color=size_color))
     else:
         print(a.kv("DB path", f"{db_path} (not created)"))
+
+    # All resolvable stores on this machine (split-brain visibility floor,
+    # VRTX beta report 2026-06-11). Read-only: lists what exists, moves
+    # nothing. A divergence warning fires when more than one store holds data,
+    # because that is exactly when an agent "loses" memory by switching the
+    # entry point it reads from.
+    stores = _discover_stores(db_path)
+    if len(stores) > 1:
+        print()
+        print(a.eyebrow("memory stores"))
+        for s in stores:
+            mb = s["size"] / (1024 * 1024)
+            print(a.kv(s["label"], f"{s['path']}  ({s['size']:,} bytes · {mb:.2f} MB)"))
+        with_data = [s for s in stores if s["size"] > 0]
+        if len(with_data) > 1:
+            print()
+            print(a.warn_line("Multiple memory stores hold data on this machine."))
+            print(a.dim("  Memory is NOT shared across these paths. An agent reads only the store"))
+            print(a.dim("  for its entry point (SDK/CLI vs Hermes vs profile vs MCP), so memory can"))
+            print(a.dim("  look 'missing' when you switch. Point every entry point at one path via"))
+            print(a.dim("  --db / SIBYL_MEMORY_DB, or back up and consolidate before relying on recall."))
 
     tier_cache = Path(args.tier_cache).expanduser()
     if tier_cache.exists():

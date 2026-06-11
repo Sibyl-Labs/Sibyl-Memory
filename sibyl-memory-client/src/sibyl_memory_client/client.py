@@ -806,7 +806,7 @@ class MemoryClient:
     def set_reference(
         self,
         key: str,
-        body: str,
+        body: str | dict[str, Any] | list[Any],
         *,
         metadata: dict[str, Any] | None = None,
     ) -> None:
@@ -814,8 +814,23 @@ class MemoryClient:
 
         v0.4.0: ``key`` is validated as an identifier (non-empty string, no
         control characters, length <= 1024). Raises ValidationError on
-        rejection."""
+        rejection.
+
+        v0.4.12 (beta report VRTX ISSUE-003): ``body`` accepts ``str`` or a
+        JSON-serializable ``dict``/``list``. A mapping/sequence is coerced to a
+        canonical JSON string (sorted keys) and stored as the reference body,
+        so ``set_reference(key, {...})`` no longer raises StorageError on the
+        INSERT. Any other type raises a clear ``ValidationError`` naming the
+        ``body`` parameter instead of failing opaquely inside SQLite."""
         validate_identifier(key, field_name="key")
+        if isinstance(body, (dict, list)):
+            # Reuse the JSON guard used for metadata: rejects non-serializable
+            # payloads with a typed error before it can reach the DB layer.
+            body = _check_json(body, "body")
+        elif not isinstance(body, str):
+            raise ValidationError(
+                f"body must be a str or a JSON-serializable dict/list, got {type(body).__name__}"
+            )
         meta_json = _check_json(metadata, "metadata") if metadata is not None else None
         delta = len(body) + len(key) + (len(meta_json) if meta_json else 0) + 200
         self._cap_gate.check(proposed_delta_bytes=delta)

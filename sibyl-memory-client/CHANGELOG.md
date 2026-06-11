@@ -4,6 +4,18 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.12] - 2026-06-11
+
+### Fixed
+
+- **`set_reference(key, body)` raised StorageError on a dict/list body**
+  (beta report VRTX ISSUE-003, 2026-06-11). `body` now accepts a `str` or a
+  JSON-serializable `dict`/`list`; mappings/sequences are coerced to canonical
+  JSON (via the same `_check_json` guard used for metadata) before the INSERT.
+  Any other type raises a typed `ValidationError` naming the `body` parameter
+  instead of an opaque DB-layer failure. Regression test:
+  `tests/test_set_reference_body_2026_06_11.py` (4 cases). (big-patch PKG-5)
+
 ## [0.4.11] - 2026-06-11
 
 ### Added
