@@ -9,6 +9,7 @@ re-learning the model.
 """
 from __future__ import annotations
 
+import functools
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -482,6 +483,23 @@ def _require_container(body: Any, field: str = "body") -> None:
         )
 
 
+def _track_op(kind: str):
+    """Decorator: count one memory op on the client's usage heartbeat before the
+    wrapped method runs. Fire-and-forget; never raises into the operation."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            hb = getattr(self, "_heartbeat", None)
+            if hb is not None:
+                try:
+                    hb.record(kind)
+                except Exception:
+                    pass
+            return fn(self, *args, **kwargs)
+        return wrapper
+    return deco
+
+
 class MemoryClient:
     """Single canonical interface for reading and writing Sibyl Memory state."""
 
@@ -526,6 +544,18 @@ class MemoryClient:
                 credentials_signature=credentials_signature,
             )
         self._cap_gate = cap_gate
+
+        # Usage heartbeat: local-first memory ops never hit the network, so the
+        # server has no usage signal. This reports ONLY aggregate op COUNTS
+        # (no content, no PII beyond account_id), debounced + fire-and-forget,
+        # so an active account's request count finally reflects real use.
+        # No-op without an account_id; opt out with SIBYL_MEMORY_TELEMETRY=0.
+        try:
+            from ._heartbeat import HeartbeatReporter
+            self._heartbeat = HeartbeatReporter(account_id, session_token)
+        except Exception:
+            from ._heartbeat import _NullHeartbeat
+            self._heartbeat = _NullHeartbeat()
 
     # ------------------------------------------------------------------
     # Constructors
@@ -610,6 +640,7 @@ class MemoryClient:
     # ------------------------------------------------------------------
     # Entities (WARM tier): single source of truth per rule 43
     # ------------------------------------------------------------------
+    @_track_op("set_entity")
     def set_entity(
         self,
         category: str,
@@ -660,6 +691,7 @@ class MemoryClient:
                 )
         return self.get_entity(category, name)
 
+    @_track_op("recall")
     def get_entity(self, category: str, name: str) -> dict[str, Any]:
         with self._storage.connection() as conn:
             row = conn.execute(
@@ -671,6 +703,7 @@ class MemoryClient:
             raise NotFoundError(f"entity {category}/{name} not found for tenant {self._tenant_id}")
         return self._row_to_entity(row)
 
+    @_track_op("list_entities")
     def list_entities(
         self,
         category: str | None = None,
@@ -703,6 +736,7 @@ class MemoryClient:
     # ------------------------------------------------------------------
     # State documents (HOT tier)
     # ------------------------------------------------------------------
+    @_track_op("set_state")
     def set_state(self, key: str, body: dict[str, Any] | list[Any]) -> None:
         """Insert or update a HOT-tier state document.
 
@@ -803,6 +837,7 @@ class MemoryClient:
     # ------------------------------------------------------------------
     # Reference (REFERENCE tier): static lookup documents
     # ------------------------------------------------------------------
+    @_track_op("set_reference")
     def set_reference(
         self,
         key: str,
@@ -995,6 +1030,7 @@ class MemoryClient:
     # ------------------------------------------------------------------
     # FTS5 search
     # ------------------------------------------------------------------
+    @_track_op("search_entities")
     def search_entities(self, query: str, *, limit: int = 20, prefix: bool = False,
                         category: str | None = None) -> list[dict[str, Any]]:
         """Full-text search over entity name + category + body via FTS5.
@@ -1055,6 +1091,7 @@ class MemoryClient:
             ents = [t[2] for t in keyed]
         return ents
 
+    @_track_op("search")
     def search(self, query: str, *, limit: int = 20, prefix: bool = False,
                tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         """Cross-tier full-text search over entities + state + reference + journal.

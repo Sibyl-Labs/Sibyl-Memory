@@ -4,6 +4,28 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.13] - 2026-06-16
+
+### Added
+
+- **Usage heartbeat (privacy-preserving).** Local-first memory operations never
+  touch the network, so an account's request count under-reported real usage (a
+  heavy user and a tire-kicker looked identical). The client now sends a
+  debounced, fire-and-forget POST to `/api/plugin/heartbeat` carrying ONLY an
+  aggregate operation COUNT -- no memory content, no query text, no PII beyond
+  the `account_id` already held. Flushes every 15 ops or 10 min and once at
+  process exit; no-op without an `account_id`; opt out with
+  `SIBYL_MEMORY_TELEMETRY=0`. Never blocks or breaks a memory op; offline-safe.
+  Closes the usage-visibility blind spot the beta reports surfaced (deadguy
+  2026-06-14). Regression tests: `tests/test_heartbeat_2026_06_16.py` (7 cases).
+
+### Documented
+
+- **`forget`/archive is recoverable, not a hard delete.** Clarified that
+  archiving moves an entity into `archived_entities` (recoverable, stored
+  plaintext at rest) rather than destroying it; a hard-delete path is tracked
+  separately. (big-patch PKG-11)
+
 ## [0.4.12] - 2026-06-11
 
 ### Fixed

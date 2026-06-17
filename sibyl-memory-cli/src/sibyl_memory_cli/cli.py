@@ -1214,6 +1214,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_h = sub.add_parser("health", help="Run the provider self-check")
     p_h.set_defaults(func=cmd_health)
 
+    p_mem = sub.add_parser("memory", help="Read-only inspection of your memory store (list / search / recall)")
+    mem_sub = p_mem.add_subparsers(dest="mem_cmd")
+    p_ml = mem_sub.add_parser("list", help="List entities (optionally filtered by category)")
+    p_ml.add_argument("category", nargs="?", default=None, help="Optional category to filter by")
+    p_ml.add_argument("--limit", type=int, default=50, help="Max rows (default 50)")
+    p_ml.set_defaults(func=cmd_memory)
+    p_ms = mem_sub.add_parser("search", help="Full-text search across entities + state + reference + journal")
+    p_ms.add_argument("query", help="Search query (matches stored text, not meaning)")
+    p_ms.add_argument("--limit", type=int, default=20, help="Max hits (default 20)")
+    p_ms.set_defaults(func=cmd_memory)
+    p_mr = mem_sub.add_parser("recall", help="Recall one entity by category + name")
+    p_mr.add_argument("category", help="Entity category")
+    p_mr.add_argument("name", help="Entity name")
+    p_mr.set_defaults(func=cmd_memory)
+    p_mem.set_defaults(func=cmd_memory)
+
     p_update = sub.add_parser(
         "update",
         help="Check for newer sibyl-memory-* releases on PyPI (use --apply to upgrade)",
@@ -1282,6 +1298,61 @@ def build_parser() -> argparse.ArgumentParser:
     p_migrate.set_defaults(func=cmd_migrate)
 
     return p
+
+
+def cmd_memory(args: argparse.Namespace) -> int:
+    """Read-only inspection of the local memory store (PKG-4, VRTX/deadguy beta).
+
+        sibyl memory list [category]    list entities
+        sibyl memory search <query>     full-text search across tiers
+        sibyl memory recall <cat> <nm>  recall one entity by category + name
+
+    Opens the resolved DB read-only via the SDK; never writes. Respects --db so
+    you can inspect any split-brain store that `sibyl status` surfaces.
+    """
+    from sibyl_memory_client import MemoryClient
+
+    db_path = Path(args.db).expanduser()
+    print()
+    if not db_path.exists():
+        print(a.warn_line(f"No memory store at {db_path}."))
+        print(a.dim("  Run `sibyl status` to see every store on this machine."))
+        return 1
+    client = MemoryClient.local(path=db_path)
+    op = getattr(args, "mem_cmd", None)
+    if op == "list":
+        rows = client.list_entities(category=args.category, limit=args.limit)
+        if not rows:
+            print(a.dim("(no entities)"))
+            return 0
+        print(a.eyebrow(f"entities ({len(rows)})"))
+        for r in rows:
+            print(a.kv(f"{r['category']}/{r['name']}", r.get("status") or "-"))
+        return 0
+    if op == "search":
+        hits = client.search(args.query, limit=args.limit)
+        if not hits:
+            print(a.dim(f"(no matches for {args.query!r})"))
+            return 0
+        print(a.eyebrow(f"matches ({len(hits)})"))
+        for h in hits:
+            snip = (h.get("snippet") or "").replace("\n", " ")[:100]
+            print(a.kv(f"[{h.get('tier') or '-'}] {h.get('key') or '-'}", snip))
+        return 0
+    if op == "recall":
+        try:
+            ent = client.get_entity(args.category, args.name)
+        except Exception as e:
+            print(a.warn_line(str(e)))
+            return 1
+        print(a.eyebrow(f"{ent['category']}/{ent['name']}"))
+        print(a.kv("status", ent.get("status") or "-"))
+        print(a.kv("updated", ent.get("updated_at") or "-"))
+        body = ent.get("body")
+        print(body if isinstance(body, str) else json.dumps(body, indent=2, ensure_ascii=False))
+        return 0
+    print(a.warn_line("Usage: sibyl memory {list|search|recall} ..."))
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
