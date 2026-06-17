@@ -47,6 +47,13 @@ Most agent-memory products store everything on someone else's servers, treat eve
 | Frozen things, kept but out of the way | ARCHIVE | `archive_entity(kind, name)` |
 | Search across everything | FTS5 | `search_entities(query)` |
 
+### Forgetting vs deleting
+
+`archive_entity(kind, name)` is **recoverable**: it moves the entity into the
+`archived_entities` table (stored plaintext at rest), out of the active set but
+still on disk. `delete_entity(kind, name)` is a **permanent hard delete** that
+removes the row outright. Use archive to declutter, delete to truly forget.
+
 ## What's in v0.4.x
 
 - The full five-tier memory model and the API surface above.

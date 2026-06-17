@@ -4,6 +4,18 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.15] - 2026-06-16
+
+### Added
+
+- **Read-only `sibyl memory list | search | recall`** (beta reports VRTX +
+  deadguy, 2026-06). Inspect what is actually stored without writing through an
+  agent: `list [category]`, full-text `search <query>` across all tiers, and
+  `recall <category> <name>`. Opens the resolved DB read-only via the SDK (never
+  writes) and respects `--db`, so you can inspect any split-brain store that
+  `sibyl status` surfaces. (big-patch PKG-4) Regression test:
+  `tests/test_memory_cmd_2026_06_16.py` (6 cases).
+
 ## [0.3.14] — 2026-06-11
 
 ### Added
