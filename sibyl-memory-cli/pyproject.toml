@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sibyl-memory-cli"
-version = "0.3.15"
+version = "0.3.16"
 description = "Command-line interface for the Sibyl Memory Plugin. `sibyl init` activates, `sibyl upgrade` runs the staker / subscription flow, `sibyl status` shows current tier and DB stats, `sibyl whoami` gives a one-line account summary, `sibyl devices` lists active devices and supports per-device revoke."
 authors = [{ name = "SIBYL, Sibyl Labs LLC", email = "sibyl@sibyllabs.org" }]
 license = { text = "MIT" }

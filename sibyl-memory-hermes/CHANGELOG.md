@@ -4,6 +4,26 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.10] - 2026-06-19
+
+### Fixed
+
+- **Forgeable untrusted-context fence -> cross-session prompt injection (red-team
+  F1, 2026-06-17).** `prefetch()` fenced recalled memory with a FIXED literal close
+  marker, so a stored body containing that marker could close the fence early and
+  land injected text outside the "data only" block, where the host agent reads it
+  as instructions. The fence now uses a per-call random NONCE in both markers (a
+  body can't predict the terminator), literal markers are stripped from bodies
+  before interpolation, and the `sibyl_search` / `sibyl_recall` tool outputs are
+  sanitized too (they were previously unfenced). Test: `tests/test_prefetch_fence.py`.
+
+### Changed
+
+- **Per-hit body truncation in `sibyl_search` output (red-team F5, 2026-06-17).**
+  Each hit body is capped at ~1.5k chars in the tool result (with a `truncated`
+  flag) so one oversized stored value can't flood the agent's context. `recall` of
+  a specific entity still returns the full body.
+
 ## [0.3.9] - 2026-06-11
 
 ### Fixed

@@ -434,7 +434,12 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     print()
     print(a.kv("Account", short(account_id)))
     print(a.kv("Current tier", current_tier.upper(), value_color="accent"))
-    print(a.kv("Opening", upgrade_url))
+    # F3 (red-team 2026-06-17): never print the bearer to stdout (terminal
+    # scrollback / tmux / CI logs / screen-shares) — restores the invariant
+    # stated at the top of this file. Show the bare base URL only; the token
+    # still rides the opened browser URL (moving that handoff to a one-time
+    # server-issued exchange code is the tracked server-side follow-up).
+    print(a.kv("Opening", UPGRADE_BASE))
     print()
     print(a.dim("  two paths in the browser:"))
     print(a.dim("    1. stake $SIBYL on Base (free unlimited if you qualify)"))
@@ -693,7 +698,8 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
             url = f"{DASHBOARD_BASE}?session={creds['session_token']}"
             print()
             print(bold("Sibyl Memory Plugin · dashboard"))
-            print(f"  {dim('Opening:')}     {url}")
+            # F3: don't print the bearer-bearing URL to stdout; show base only.
+            print(f"  {dim('Opening:')}     {DASHBOARD_BASE}")
             print()
             try:
                 webbrowser.open(url, new=2)

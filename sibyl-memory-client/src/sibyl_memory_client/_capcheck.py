@@ -27,11 +27,14 @@ to the check-write endpoint.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 # v0.4.0: CapExceededError + TierVerificationError live in exceptions.py
 # (canonical exception module). _capcheck imports them back so existing
@@ -59,6 +62,22 @@ DEFAULT_CACHE_PATH = "~/.sibyl-memory/tier_cache.json"
 # Network timeout for the check-write call. Short to keep latency tolerable
 # on the user's first write at the cap.
 HTTP_TIMEOUT_SECONDS = 4.0
+
+# Bounded retry for transient verification failures (v0.4.14). Under sustained
+# free-tier write volume the server can return a rate-limit-shaped 401/429; a
+# couple of short backoff retries clears the transient case before we treat the
+# call as unreachable. Kept small so worst-case added latency stays ~1.2s.
+RETRYABLE_HTTP_CODES = frozenset({401, 408, 425, 429, 500, 502, 503, 504})
+CHECK_WRITE_MAX_RETRIES = 2
+CHECK_WRITE_RETRY_BACKOFF = 0.4  # seconds, exponential: 0.4, 0.8
+
+# Fail-open safety ceiling (v0.4.14). When tier verification is unreachable and
+# there is no usable cache, the write is allowed to avoid silent data loss
+# (durability > cap enforcement during an outage; the server reconciles on the
+# next reachable check). This is bounded: a permanently offline free user can
+# still only grow to FAIL_OPEN_CEILING_MULT x the cap before hard-blocking, so
+# the concession can't be abused indefinitely.
+FAIL_OPEN_CEILING_MULT = 4
 
 
 # ----------------------------------------------------------------------
@@ -228,31 +247,39 @@ def _default_check_write_fn(
         headers=headers,
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        # T2-3 fix: do NOT synthesize a fake "free tier" decision on HTTP
-        # error. Previously a transient 502 would write `{tier:free, cap_bytes:2MB}`
-        # into the cache for a legitimately paid user, locking them out
-        # for up to 7 days. Now we raise TierVerificationError: the
-        # caller (_refresh_and_check) will fall back to a recent cache
-        # if one exists, or hard-cap if no cache.
+    # v0.4.14: bounded retry on transient verification failures. Under sustained
+    # free-tier write volume the server can return a rate-limit-shaped 401/429
+    # (the silent-write-loss path reported in beta). A couple of short backoff
+    # retries clears the transient case before the caller treats verification as
+    # unreachable. A clean non-retryable HTTP error (e.g. 400/403/404) still
+    # raises immediately so we don't add latency to genuine failures.
+    for attempt in range(CHECK_WRITE_MAX_RETRIES + 1):
         try:
-            body = json.loads(e.read().decode("utf-8"))
-        except Exception:
-            body = {}
-        # SEC-9 (v0.3.3): strip the server-side `error` string from the
-        # surfaced message to avoid echoing verbose internal detail (or
-        # potential PII) into user logs.
-        raise TierVerificationError(
-            f"Sibyl Labs returned HTTP {e.code} while verifying your account. "
-            f"Retry shortly.",
-        ) from e
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise TierVerificationError(
-            f"Could not reach Sibyl Labs to verify your account: {type(e).__name__}",
-        ) from e
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code in RETRYABLE_HTTP_CODES and attempt < CHECK_WRITE_MAX_RETRIES:
+                time.sleep(CHECK_WRITE_RETRY_BACKOFF * (2 ** attempt))
+                continue
+            # T2-3 fix: do NOT synthesize a fake "free tier" decision on HTTP
+            # error. Previously a transient 502 would write `{tier:free,
+            # cap_bytes:2MB}` into the cache for a legitimately paid user,
+            # locking them out for up to 7 days. Now we raise
+            # TierVerificationError: the caller (_refresh_and_check) falls back
+            # to a recent cache if one exists, or fails open for no-cache writes.
+            # SEC-9 (v0.3.3): do not echo the server-side `error` string (verbose
+            # internal detail / potential PII) into user logs.
+            raise TierVerificationError(
+                f"Sibyl Labs returned HTTP {e.code} while verifying your account. "
+                f"Retry shortly.",
+            ) from e
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            if attempt < CHECK_WRITE_MAX_RETRIES:
+                time.sleep(CHECK_WRITE_RETRY_BACKOFF * (2 ** attempt))
+                continue
+            raise TierVerificationError(
+                f"Could not reach Sibyl Labs to verify your account: {type(e).__name__}",
+            ) from e
 
 
 # ----------------------------------------------------------------------
@@ -384,10 +411,10 @@ class CapGate:
 
         try:
             resp = self._check_fn(self._check_url, payload)
-        except TierVerificationError:
-            # Offline. Fall back to the most recent cache if we have one,
-            # even if technically expired (within an extended grace window
-            # of double the normal period: i.e., 14 days for tier=free).
+        except TierVerificationError as e:
+            # Verification unreachable. First, honor a recent cache if we have
+            # one (within an extended 2x grace window), respecting any
+            # server-supplied subscription expiry.
             #
             # T1-4 fix: respect server-supplied subscription expiry on the
             # offline path. The cache can no longer be honored past the
@@ -408,7 +435,34 @@ class CapGate:
                     new_size = current + proposed_delta_bytes
                     if new_size <= cached.cap_bytes:
                         return
-            raise  # re-raise TierVerificationError; SDK will surface to caller
+
+            # v0.4.14 FAIL-OPEN: verification is unreachable AND there is no
+            # usable cache. This is the silent-write-loss case from beta — a
+            # fresh / no-cache account doing a heavy write burst or migration
+            # import whose check-write call 401s under load. Previously this
+            # re-raised and the write was rejected (silent data loss if the
+            # caller ignored ok/error). Now we allow the write to preserve
+            # durability; the server reconciles tier/cap on the next reachable
+            # check. Bounded by a safety ceiling so a permanently offline free
+            # user can't grow without limit.
+            new_size = current + proposed_delta_bytes
+            ceiling = self._cap * FAIL_OPEN_CEILING_MULT
+            if new_size <= ceiling:
+                logger.warning(
+                    "Sibyl tier verification unreachable (%s); allowing write to "
+                    "avoid data loss (size=%.1fKB, reconciles when reachable).",
+                    type(e).__name__, new_size / 1024,
+                )
+                return
+            # Past the fail-open ceiling: hard-block to bound the concession.
+            raise CapExceededError(
+                "Memory is past the offline safety ceiling and Sibyl Labs can't "
+                "be reached to verify your tier. Reconnect to continue, or upgrade.",
+                current_size=current,
+                cap=ceiling,
+                proposed_delta=proposed_delta_bytes,
+                upgrade_url=DEFAULT_UPGRADE_URL,
+            ) from e
 
         # Got a response. Update the cache.
         ok = bool(resp.get("ok"))

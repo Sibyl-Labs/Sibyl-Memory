@@ -4,6 +4,38 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.14] - 2026-06-19
+
+### Fixed
+
+- **Silent write loss under sustained load (CRITICAL; beta deadguy 2026-06-17,
+  report 3.1).** When tier verification was unreachable (e.g. the check-write
+  endpoint returning a rate-limit-shaped 401 under a heavy write burst) and there
+  was no cached tier, the write was rejected with `TierVerificationError` -- and a
+  caller that ignored ok/error lost the write silently. The check-write transport
+  now does a bounded retry with backoff on transient codes (401/408/425/429/5xx),
+  and a no-cache write whose verification is unreachable now FAILS OPEN (allows the
+  write) up to a 4x safety ceiling, logging a warning, instead of dropping data.
+  Durability is preserved during outages; the server reconciles tier/cap on the
+  next reachable check. Past the ceiling it hard-blocks. Test: `tests/test_capcheck.py`.
+
+### Added
+
+- **Paraphrase zero-hit search fallback (beta deadguy 2026-06-14).** Natural-language
+  queries miss under strict token-AND (+ Porter stem). `MemoryClient.search` now
+  retries with relaxed variants (stopwords stripped, then rarest token) ONLY when
+  the strict search returns nothing. Strictly additive: a non-empty strict result
+  is returned untouched, and single-token / prefix queries (the `multi_record`
+  path) never trigger it. Test: `tests/test_paraphrase_fallback_2026_06_19.py`.
+
+- **Single-value size ceiling (red-team F5, 2026-06-17).** `_check_json` rejects a
+  single serialized body over 1 MiB with a clear, recoverable error, so one
+  oversized value can't flood agent context on recall/search.
+
+- **Bounded learner scan (red-team F6, 2026-06-17).** `Learner._load_events` caps
+  the per-run journal scan at 10k events (DoS backstop); the watermark advances so
+  a large backlog drains across runs instead of spiking memory/CPU in one pass.
+
 ## [0.4.13] - 2026-06-16
 
 ### Added
