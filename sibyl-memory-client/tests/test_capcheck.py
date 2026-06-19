@@ -182,19 +182,44 @@ def test_offline_at_cap_with_recent_paid_cache(tmp_path: Path) -> None:
     gate.check(proposed_delta_bytes=10_000)
 
 
-def test_offline_at_cap_no_cache_raises(tmp_path: Path) -> None:
-    """No cache + offline + at the cap = TierVerificationError."""
+def test_offline_at_cap_no_cache_fails_open_under_ceiling(tmp_path: Path) -> None:
+    """v0.4.14 silent-write-loss fix: no cache + verification unreachable + just
+    over the 2 MB cap but under the 4x safety ceiling = FAIL OPEN (write allowed).
+    Durability beats cap enforcement during an outage; the previous behavior
+    (raise TierVerificationError -> caller may drop the write) was the reported
+    silent data-loss bug."""
+    from sibyl_memory_client._capcheck import FAIL_OPEN_CEILING_MULT, FREE_TIER_CAP_BYTES
     server = FakeServer(offline=True)
     cache = TierCache(tmp_path / "tc.json")
     gate = CapGate(
         account_id="acc-1",
         session_token="sess-1",
-        db_size_fn=lambda: 2 * 1024 * 1024 + 100,
+        db_size_fn=lambda: FREE_TIER_CAP_BYTES + 100,  # just over the 2 MB cap
         local_tier_hint="free",
         cache=cache,
         check_fn=server,
     )
-    with pytest.raises(TierVerificationError):
+    # No exception: under the fail-open ceiling the write is allowed.
+    gate.check(proposed_delta_bytes=500)
+
+
+def test_offline_no_cache_past_ceiling_blocks(tmp_path: Path) -> None:
+    """Fail-open is bounded: past the 4x safety ceiling, an offline no-cache
+    write hard-blocks (CapExceededError) so the concession can't be abused by a
+    permanently-offline free user."""
+    from sibyl_memory_client._capcheck import FAIL_OPEN_CEILING_MULT, FREE_TIER_CAP_BYTES
+    ceiling = FREE_TIER_CAP_BYTES * FAIL_OPEN_CEILING_MULT
+    server = FakeServer(offline=True)
+    cache = TierCache(tmp_path / "tc.json")
+    gate = CapGate(
+        account_id="acc-1",
+        session_token="sess-1",
+        db_size_fn=lambda: ceiling + 1024,  # already past the fail-open ceiling
+        local_tier_hint="free",
+        cache=cache,
+        check_fn=server,
+    )
+    with pytest.raises(CapExceededError):
         gate.check(proposed_delta_bytes=500)
 
 

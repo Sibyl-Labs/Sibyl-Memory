@@ -452,15 +452,77 @@ def _proximity_bucket(query_tokens: list[str], text: str) -> int:
 DEFAULT_TENANT = "00000000-0000-0000-0000-000000000001"
 
 
+# Paraphrase zero-hit fallback (beta deadguy 2026-06-14): natural-language
+# queries miss under strict token-AND. The fallback (in MemoryClient.search) only
+# fires when the strict search returns NOTHING, so it is purely additive — it can
+# never reorder or drop an existing non-empty result, and single-token / prefix
+# queries (multi_record's path) are untouched.
+_SEARCH_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "be",
+    "been", "being", "do", "did", "does", "have", "has", "had", "i", "you",
+    "he", "she", "it", "we", "they", "my", "your", "our", "their", "what",
+    "which", "who", "whom", "whose", "when", "where", "why", "how", "to", "of",
+    "in", "on", "at", "for", "with", "from", "by", "as", "this", "that",
+    "these", "those", "not", "no", "can", "will", "would", "should", "could",
+    "may", "might", "just", "also", "all", "any", "some", "more", "most",
+    "into", "about", "over", "than", "then", "there", "here",
+})
+
+
+def _relaxed_query_strings(query: str):
+    """Yield progressively relaxed query strings for the zero-hit search fallback.
+
+    Each candidate is fed back through the normal search path (so it is
+    re-sanitized by _sanitize_fts5_query — no raw FTS5 construction, no injection
+    surface). Order: stopword-stripped (recovers most paraphrase misses), then
+    the rarest single token (last-resort recall).
+    """
+    toks = _match_tokens(query)
+    if len(toks) < 2:
+        return  # single-token queries have nothing to relax
+    content = [t for t in toks if t.lower() not in _SEARCH_STOPWORDS]
+    seen: set[str] = set()
+    # 1) stopwords stripped, still AND (recovers most paraphrase misses)
+    if content and len(content) < len(toks):
+        cand = " ".join(content)
+        seen.add(cand)
+        yield cand
+    # 2) each content token alone, longest-first (length = cheap rarity proxy).
+    #    The wrapper stops at the first variant that returns hits, so the most
+    #    specific term is tried before more common ones. Last-resort recall.
+    for tok in sorted(set(content or toks), key=len, reverse=True):
+        if len(tok) >= 3 and tok not in seen:
+            seen.add(tok)
+            yield tok
+
+
+# F5 (red-team 2026-06-17): sanity ceiling on a single serialized body. The 2 MB
+# free cap bounds TOTAL memory, but one oversized value still floods agent context
+# on recall/search. This high ceiling rejects only pathological single values;
+# per-hit search output is additionally truncated at the tool boundary (adapter).
+_MAX_BODY_BYTES = 1024 * 1024  # 1 MiB per single memory value
+
+
 def _check_json(payload: Any, field: str = "body") -> str:
     """Validate that payload is JSON-serializable, return the encoded string."""
     try:
-        return dumps(payload)
+        encoded = dumps(payload)
     except (TypeError, ValueError) as e:
         raise ValidationError(
             f"{field} is not JSON-serializable: {e}",
             recovery=f"Pass a dict, list, or JSON primitive as {field}.",
         ) from e
+    size = len(encoded.encode("utf-8"))
+    if size > _MAX_BODY_BYTES:
+        raise ValidationError(
+            f"{field} is too large ({size // 1024} KB; max "
+            f"{_MAX_BODY_BYTES // 1024} KB per value).",
+            recovery=(
+                "Split the content across multiple smaller memories, or store a "
+                "summary plus a reference to external storage."
+            ),
+        )
+    return encoded
 
 
 def _require_container(body: Any, field: str = "body") -> None:
@@ -1094,6 +1156,28 @@ class MemoryClient:
     @_track_op("search")
     def search(self, query: str, *, limit: int = 20, prefix: bool = False,
                tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+        """Cross-tier search with a zero-hit paraphrase fallback.
+
+        Runs the strict AND + proximity search first (``_search_strict``,
+        unchanged behavior). ONLY when that returns nothing and the query is a
+        multi-word non-prefix query does it retry with relaxed variants
+        (stopwords stripped, then the rarest token). This is strictly additive: a
+        non-empty strict result is returned untouched, so ranking and recall of
+        existing hits cannot regress, and single-token / prefix queries (the
+        multi_record path) never trigger the fallback. (paraphrase recall, beta
+        deadguy 2026-06-14: NL queries miss under strict token-AND.)
+        """
+        hits = self._search_strict(query, limit=limit, prefix=prefix, tiers=tiers)
+        if hits or prefix:
+            return hits
+        for relaxed in _relaxed_query_strings(query):
+            hits = self._search_strict(relaxed, limit=limit, prefix=False, tiers=tiers)
+            if hits:
+                return hits
+        return hits
+
+    def _search_strict(self, query: str, *, limit: int = 20, prefix: bool = False,
+                       tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         """Cross-tier full-text search over entities + state + reference + journal.
 
         Each hit is tier-tagged so callers know which tier surfaced the match.

@@ -4,6 +4,18 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.1.10] - 2026-06-19
+
+### Fixed
+
+- **SDK-layer argument-validation errors were plain text, not JSON (beta deadguy
+  2026-06-14).** A pydantic validation failure on tool arguments returned an
+  `Error executing tool: ...` string instead of the `{ok:false,code,...}` envelope
+  the handler-layer errors use, so a fraction of malformed inputs broke a caller's
+  JSON parse. The argument-validation guard now emits the same JSON envelope
+  (`code: "VALIDATION_ERROR"`); the offending value is still never echoed back
+  (SEC-14). Test: `tests/test_arg_validation_leak_2026_06_02.py`.
+
 ## [0.1.9] - 2026-06-11
 
 ### Fixed

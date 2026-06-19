@@ -222,10 +222,20 @@ def _coerce_body(body: Any) -> Any:
 # back. This signature is the pydantic-on-arguments fingerprint (the arg model is
 # named "<func>Arguments").
 _VALIDATION_LEAK = re.compile(r"validation error.*Arguments", re.IGNORECASE | re.DOTALL)
-_GENERIC_ARG_ERROR = (
-    "Error executing tool: one or more arguments failed validation "
-    "(wrong type or format). The offending value is not echoed back for safety."
-)
+# Emit the SDK-layer (pydantic) argument-validation failure as the SAME JSON
+# envelope the handler-layer errors use, so callers get one parseable error
+# contract across both layers (beta finding, deadguy 2026-06-14: 11/36 malformed
+# inputs returned plain text instead of {ok:false,...}). The offending value is
+# still never echoed back (SEC-14).
+_GENERIC_ARG_ERROR = json.dumps({
+    "ok": False,
+    "code": "VALIDATION_ERROR",
+    "error": "ValidationError",
+    "message": (
+        "one or more arguments failed validation (wrong type or format); "
+        "the offending value is not echoed back for safety."
+    ),
+}, ensure_ascii=False)
 
 
 def _scrub_call_tool_result(server_result: Any) -> Any:

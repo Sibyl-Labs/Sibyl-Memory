@@ -59,6 +59,7 @@ Accepted proposals create `reference_documents` rows keyed `skill/<slug>`.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from collections import Counter, defaultdict
@@ -68,6 +69,15 @@ from typing import Any, Callable, Iterable, Protocol
 from .client import DEFAULT_TENANT
 from .exceptions import NotFoundError, ValidationError
 from .storage import Storage, _utc_now_iso, dumps, loads, new_id
+
+logger = logging.getLogger(__name__)
+
+# F6 (red-team 2026-06-17): cap the per-run journal scan. The journal grows
+# unbounded (every turn appends); an uncapped SELECT + fetchall + 4-column JSON
+# decode is a memory/CPU spike on a large journal. This is a DoS backstop, not a
+# routine limit — the watermark (max scanned ts) advances each run, so a large
+# backlog drains across runs instead of in one spike.
+_MAX_EVENTS_PER_RUN = 10000
 
 
 # ----------------------------------------------------------------------
@@ -530,9 +540,18 @@ class Learner:
         if since:
             sql += " AND ts > ?"
             params.append(since)
-        sql += " ORDER BY ts ASC, id ASC"
+        # F6: bound the scan (oldest-first so the watermark can resume). A backlog
+        # over the cap drains across subsequent runs.
+        sql += " ORDER BY ts ASC, id ASC LIMIT ?"
+        params.append(_MAX_EVENTS_PER_RUN)
         with self._storage.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
+        if len(rows) >= _MAX_EVENTS_PER_RUN:
+            logger.warning(
+                "Sibyl learner scan hit the per-run cap (%d events); a large "
+                "journal backlog will drain across multiple runs.",
+                _MAX_EVENTS_PER_RUN,
+            )
         return [
             {
                 "id": r["id"],

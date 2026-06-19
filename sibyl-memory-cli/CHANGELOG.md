@@ -4,6 +4,18 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.16] - 2026-06-19
+
+### Fixed
+
+- **Bearer token printed to the terminal (red-team F3, 2026-06-17).** `sibyl upgrade`
+  and `sibyl dashboard` printed the full session bearer inside the opened URL to
+  stdout (terminal scrollback / tmux / CI logs / screen-shares), violating this
+  package's own "session_token is never printed in full" rule. They now print only
+  the bare base URL; the token still rides the opened browser URL (moving that
+  handoff to a one-time, server-issued exchange code is a tracked server-side
+  follow-up).
+
 ## [0.3.15] - 2026-06-16
 
 ### Added
