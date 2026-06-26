@@ -226,6 +226,10 @@ _FENCE_MARKER_RE = re.compile(
     r"\[UNTRUSTED MEMORY CONTEXT (?:BEGIN|END)[^\]]*\]", re.IGNORECASE
 )
 
+# Characters that an attacker might inject to break the fence regex:
+# null bytes, zero-width spaces, zero-width joiners, zero-width non-joiners
+_STRIP_CHARS_RE = re.compile(r"[\x00\u200b\u200c\u200d\u200e\u200f\ufeff]")
+
 # MH-2: per-hit body cap (mirror adapter._SEARCH_HIT_BODY_MAX) + a total output
 # byte budget so one ~2MB entity (or many large hits) can't flood the model
 # window via memory_search / memory_list. memory_recall stays full but bounded
@@ -243,10 +247,19 @@ _MIN_QUERY_LEN = 3
 
 def _strip_fence_markers(text: str) -> str:
     """Neutralize literal untrusted-context fence markers embedded in surfaced
-    memory text so a stored payload can't close/forge the fence (MH-1)."""
+    memory text so a stored payload can't close/forge the fence (MH-1).
+
+    Defense-in-depth: strip invisible characters (null bytes, zero-width spaces)
+    BEFORE matching, so an attacker can't inject ``[UNTRUSTED\\x00MEMORY CONTEXT
+    BEGIN]`` to bypass the regex.
+    """
     if not text:
         return text
-    return _FENCE_MARKER_RE.sub("[redacted-marker]", text)
+    # Remove invisible characters that could break the regex
+    cleaned = _STRIP_CHARS_RE.sub("", text)
+    # Normalize multiple spaces to single space (catches "[UNTRUSTED  MEMORY...]")
+    cleaned = re.sub(r" {2,}", " ", cleaned)
+    return _FENCE_MARKER_RE.sub("[redacted-marker]", cleaned)
 
 
 def _scrub_value(value: Any) -> Any:
