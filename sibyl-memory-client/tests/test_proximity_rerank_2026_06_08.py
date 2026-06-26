@@ -71,42 +71,42 @@ def _seed(client):
 
 def test_true_answer_outranks_scattered_decoys():
     with tempfile.TemporaryDirectory() as tmp:
-        client = MemoryClient.local(path=Path(tmp) / "m.db", tier="staker")
-        _seed(client)
-        hits = client.search("redis cache ttl", limit=20)
-        keys = [h["key"] for h in hits]
-        assert keys[0] == "true_answer", f"true answer should rank #1, got {keys}"
+        with MemoryClient.local(path=Path(tmp) / "m.db", tier="staker") as client:
+            _seed(client)
+            hits = client.search("redis cache ttl", limit=20)
+            keys = [h["key"] for h in hits]
+            assert keys[0] == "true_answer", f"true answer should rank #1, got {keys}"
 
 
 def test_recall_unchanged_all_rows_returned():
     with tempfile.TemporaryDirectory() as tmp:
-        client = MemoryClient.local(path=Path(tmp) / "m.db", tier="staker")
-        _seed(client)
-        hits = client.search("redis cache ttl", limit=20)
-        keys = set(h["key"] for h in hits)
-        # every seeded row contains all three tokens -> all must still be present
-        assert {"true_answer", "decoy_a", "decoy_b", "decoy_c"} <= keys
+        with MemoryClient.local(path=Path(tmp) / "m.db", tier="staker") as client:
+            _seed(client)
+            hits = client.search("redis cache ttl", limit=20)
+            keys = set(h["key"] for h in hits)
+            # every seeded row contains all three tokens -> all must still be present
+            assert {"true_answer", "decoy_a", "decoy_b", "decoy_c"} <= keys
 
 
 def test_single_token_order_matches_plain_bm25():
     """Single-token query: proximity is a no-op, so order is pure BM25 (the
     behavior multi_record_search relies on)."""
     with tempfile.TemporaryDirectory() as tmp:
-        client = MemoryClient.local(path=Path(tmp) / "m.db", tier="staker")
-        _seed(client)
-        hits = client.search("redis", limit=20)
-        # ranks must be non-decreasing (pure FTS5 rank order, untouched)
-        ranks = [h["rank"] for h in hits]
-        assert ranks == sorted(ranks), f"single-token order should be plain BM25, got {ranks}"
+        with MemoryClient.local(path=Path(tmp) / "m.db", tier="staker") as client:
+            _seed(client)
+            hits = client.search("redis", limit=20)
+            # ranks must be non-decreasing (pure FTS5 rank order, untouched)
+            ranks = [h["rank"] for h in hits]
+            assert ranks == sorted(ranks), f"single-token order should be plain BM25, got {ranks}"
 
 
 def test_search_entities_also_reranked():
     with tempfile.TemporaryDirectory() as tmp:
-        client = MemoryClient.local(path=Path(tmp) / "m.db", tier="staker")
-        _seed(client)
-        ents = client.search_entities("redis cache ttl", limit=20)
-        assert ents and ents[0]["name"] == "true_answer", \
-            f"true answer should rank #1 in search_entities, got {[e['name'] for e in ents]}"
+        with MemoryClient.local(path=Path(tmp) / "m.db", tier="staker") as client:
+            _seed(client)
+            ents = client.search_entities("redis cache ttl", limit=20)
+            assert ents and ents[0]["name"] == "true_answer", \
+                f"true answer should rank #1 in search_entities, got {[e['name'] for e in ents]}"
 
 
 if __name__ == "__main__":

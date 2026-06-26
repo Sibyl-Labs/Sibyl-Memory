@@ -663,6 +663,25 @@ class MemoryClient:
             self._heartbeat = _NullHeartbeat()
 
     # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+    def close(self) -> None:
+        """Close all database connections and release file locks.
+
+        After calling ``close()``, the client is unusable — any subsequent
+        call that needs a connection will raise ``sqlite3.ProgrammingError``.
+        Safe to call multiple times (idempotent).
+        """
+        self._storage.close()
+
+    def __enter__(self) -> "MemoryClient":
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        self.close()
+        return False
+
+    # ------------------------------------------------------------------
     # Constructors
     # ------------------------------------------------------------------
     @classmethod

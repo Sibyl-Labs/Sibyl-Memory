@@ -60,34 +60,31 @@ def test_end_to_end_multi_word_recall_against_live_storage():
     """Real SQLite + FTS5: multi-word natural query finds the row."""
     with tempfile.TemporaryDirectory() as tmp:
         db = Path(tmp) / "memory.db"
-        client = MemoryClient.local(path=db, tier="staker")
-        client.set_entity(
-            "purchase",
-            "h_and_m_tops",
-            {"item": "tops", "store": "H&M", "count": 5, "action": "bought"},
-        )
-        # Pre-v0.4.2 this would return [] because the sanitizer wrapped
-        # "tops bought H M" as a phrase requiring exact word order.
-        # All four tokens: tops, bought, H, M: appear in the body.
-        hits = client.search("tops bought H M", limit=10)
-        assert len(hits) >= 1, "multi-word natural query should match the entity"
-        keys = [(h.get("tier"), h.get("key")) for h in hits]
-        assert ("entity", "h_and_m_tops") in keys, f"got: {keys}"
+        with MemoryClient.local(path=db, tier="staker") as client:
+            client.set_entity(
+                "purchase",
+                "h_and_m_tops",
+                {"item": "tops", "store": "H&M", "count": 5, "action": "bought"},
+            )
+            hits = client.search("tops bought H M", limit=10)
+            assert len(hits) >= 1, "multi-word natural query should match the entity"
+            keys = [(h.get("tier"), h.get("key")) for h in hits]
+            assert ("entity", "h_and_m_tops") in keys, f"got: {keys}"
 
 
 def test_explicit_phrase_mode_requires_exact_sequence():
     """as_phrase=True still requires consecutive-token match."""
     with tempfile.TemporaryDirectory() as tmp:
         db = Path(tmp) / "memory.db"
-        client = MemoryClient.local(path=db, tier="staker")
-        client.set_entity(
-            "movie",
-            "inception",
-            {"title": "Inception", "director": "Christopher Nolan"},
-        )
-        # Phrase that exists consecutively
-        hits = client.search('"Christopher Nolan"', limit=10)
-        assert any(h.get("key") == "inception" for h in hits)
+        with MemoryClient.local(path=db, tier="staker") as client:
+            client.set_entity(
+                "movie",
+                "inception",
+                {"title": "Inception", "director": "Christopher Nolan"},
+            )
+            # Phrase that exists consecutively
+            hits = client.search('"Christopher Nolan"', limit=10)
+            assert any(h.get("key") == "inception" for h in hits)
 
 
 if __name__ == "__main__":
