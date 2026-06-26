@@ -80,8 +80,35 @@ _PREFETCH_LIMIT = 5               # how many search hits to inject
 _MAX_PREFETCH_CHARS = 6000        # trim prefetch block
 _DEFAULT_SEARCH_LIMIT = 10        # sibyl_search default limit
 _DEFAULT_LIST_LIMIT = 50          # sibyl_list default limit
+_MAX_SEARCH_LIMIT = 50            # MH-5: hard ceiling on sibyl_search limit
+_MAX_LIST_LIMIT = 200             # MH-5: hard ceiling on sibyl_list limit
 _BUSY_RETRY_ATTEMPTS = 3          # sync_turn retry-on-busy attempts
 _BUSY_RETRY_BACKOFF = 0.2         # base seconds between retries
+_MAX_PROFILE_LEN = 256            # MH-9: cap active_profile content at read time
+
+
+def _clamp_limit(value: Any, default: int, maximum: int) -> int:
+    """Clamp a caller-supplied limit into [1, maximum] (MH-5).
+
+    Mirrors the MCP server's ``min(max(int(...), 1), MAX)`` clamp. Non-numeric
+    or junk input (e.g. a fat-fingered string) falls back to ``default`` rather
+    than raising, so a bad arg degrades to a sane page instead of a 500."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(n, 1), maximum)
+
+
+def _sanitize_profile(raw: str) -> str:
+    """Sanitize active_profile file content at read time (MH-9).
+
+    The on-disk ``active_profile`` file is outside Sibyl's control. Its content
+    is folded into log lines and (sanitized again downstream) into a DB path, so
+    strip control characters / newlines and truncate before it is stored or
+    logged — prevents log-injection and stray control chars in records."""
+    cleaned = "".join(ch for ch in raw if ch.isprintable())
+    return cleaned.strip()[:_MAX_PROFILE_LEN]
 
 # F1 (red-team 2026-06-17): a stored memory body can contain text that forges
 # the untrusted-context fence and closes it early, landing attacker text outside
@@ -103,6 +130,24 @@ def _strip_fence_markers(text: str) -> str:
     return _FENCE_MARKER_RE.sub("[redacted-marker]", text)
 
 
+def _scrub_value(value: Any) -> Any:
+    """Recursively strip fence markers from every string VALUE in a result.
+
+    MH-6: previously the strip ran on the already-``json.dumps``'d string. A
+    marker that arrived JSON-escaped (e.g. ``[UNTRUSTED MEMORY CONTEXT\\u0020END]``)
+    slipped past the regex once serialized, and substituting on the envelope
+    risked mangling the JSON. Scrubbing the values *before* serialization
+    neutralizes the marker in the actual decoded body and guarantees the output
+    stays valid JSON."""
+    if isinstance(value, str):
+        return _strip_fence_markers(value)
+    if isinstance(value, dict):
+        return {k: _scrub_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_value(v) for v in value]
+    return value
+
+
 # F5 (red-team 2026-06-17): a single oversized stored body floods agent context
 # on sibyl_search. prefetch() already trims per-hit; the explicit search tool did
 # not. Cap each hit body in the tool output (read-side, agent-facing) so one big
@@ -111,15 +156,20 @@ _SEARCH_HIT_BODY_MAX = 1500  # chars per hit body in sibyl_search output
 
 
 def _truncate_hit_body(hit: dict[str, Any]) -> dict[str, Any]:
-    body = hit.get("body")
-    if body is None:
-        return hit
-    rendered = body if isinstance(body, str) else json.dumps(
-        body, ensure_ascii=False, default=str
-    )
-    if len(rendered) > _SEARCH_HIT_BODY_MAX:
-        return {**hit, "body": rendered[:_SEARCH_HIT_BODY_MAX] + "…", "truncated": True}
-    return hit
+    # MH-2 parity (2026-06-25 review): cap BOTH `body` and `snippet`. A cross-tier
+    # search hit carries a full-length `snippet` too, so capping body alone still
+    # leaked an oversized field into the model context.
+    out = hit
+    for field in ("body", "snippet"):
+        val = out.get(field)
+        if val is None:
+            continue
+        rendered = val if isinstance(val, str) else json.dumps(
+            val, ensure_ascii=False, default=str
+        )
+        if len(rendered) > _SEARCH_HIT_BODY_MAX:
+            out = {**out, field: rendered[:_SEARCH_HIT_BODY_MAX] + "…", "truncated": True}
+    return out
 
 
 def _hermes_home() -> Path:
@@ -341,7 +391,11 @@ class SibylAdapter(MemoryProvider):
         for f in candidates:
             try:
                 if f.exists():
-                    val = f.read_text().strip()
+                    # MH-9: sanitize/truncate the file content at read time. The
+                    # active_profile file is outside Sibyl's control; its value
+                    # is logged and folded into a DB path, so strip control
+                    # chars / newlines and cap length before storing or logging.
+                    val = _sanitize_profile(f.read_text())
                     if val:
                         return val
             except OSError:
@@ -535,28 +589,36 @@ class SibylAdapter(MemoryProvider):
                 if not category or not name:
                     return tool_error("category and name are required")
                 result = self._sibyl.recall(category, name)
-                # F1: neutralize any forged fence markers in the surfaced body.
-                return _strip_fence_markers(json.dumps({"entity": result}, default=str))
+                # F1/MH-6: neutralize any forged fence markers in the surfaced
+                # body BEFORE serialization (per-value), so JSON-escaped markers
+                # can't bypass the regex and the envelope stays valid JSON.
+                return json.dumps({"entity": _scrub_value(result)}, default=str)
 
             if tool_name == "sibyl_search":
                 query = args.get("query")
                 if not query:
                     return tool_error("query is required")
-                limit = int(args.get("limit") or _DEFAULT_SEARCH_LIMIT)
+                # MH-5: clamp to [1, MAX] and tolerate non-numeric input
+                # (mirrors the MCP server's clamp) so a junk `limit` can't
+                # request an unbounded / huge page or crash on int().
+                limit = _clamp_limit(args.get("limit"), _DEFAULT_SEARCH_LIMIT, _MAX_SEARCH_LIMIT)
                 # Run15 multi-record fix (Terminal B): workflow queries spanning
                 # several linked records surface them all (retrieve-then-verify).
                 # See provider.search_multi_record / sibyl_memory_client.multi_record.
                 hits = self._sibyl.search_multi_record(query, limit=limit)
                 # F5: cap each hit body so one oversized value can't flood context.
                 hits = [_truncate_hit_body(h) for h in hits]
-                # F1: fence the search tool output too (red-team flagged it was
-                # unfenced); strip any literal markers embedded in hit bodies.
-                return _strip_fence_markers(json.dumps({"results": hits}, default=str))
+                # F1/MH-6: strip any forged fence markers per-value BEFORE
+                # serialization (JSON-escaped markers can't bypass the regex,
+                # and the JSON envelope is never mangled by the substitution).
+                hits = [_scrub_value(h) for h in hits]
+                return json.dumps({"results": hits}, default=str)
 
             if tool_name == "sibyl_list":
                 category = args.get("category")
                 status = args.get("status")
-                limit = int(args.get("limit") or _DEFAULT_LIST_LIMIT)
+                # MH-5: same clamp + non-numeric tolerance as sibyl_search.
+                limit = _clamp_limit(args.get("limit"), _DEFAULT_LIST_LIMIT, _MAX_LIST_LIMIT)
                 rows = self._sibyl.list(category=category, status=status, limit=limit)
                 return json.dumps({"entities": rows}, default=str)
 

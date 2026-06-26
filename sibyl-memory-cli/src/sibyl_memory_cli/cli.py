@@ -110,6 +110,21 @@ def print_status(label: str, value: str) -> None:
     print(f"  {dim(label.ljust(18))} {value}")
 
 
+def _fmt_cap_bytes(cap: Any) -> str:
+    """Render a server-supplied cap_bytes value defensively.
+
+    CLI-16: `cap_bytes` is None for unlimited, otherwise an int. A non-int,
+    non-None value (e.g. a string from a buggy/old server) would raise on the
+    `:,` format spec. Coerce to int when possible; show the raw value rather
+    than crash when it can't be coerced."""
+    if cap is None:
+        return "unlimited"
+    try:
+        return f"{int(cap):,}"
+    except (TypeError, ValueError):
+        return str(cap)
+
+
 # ---- HTTP --------------------------------------------------------------
 
 class HttpError(Exception):
@@ -171,22 +186,30 @@ def write_credentials_atomic(creds: dict, path: Path = DEFAULT_CRED_PATH) -> Pat
     except OSError:
         pass
     data = json.dumps(creds, indent=2).encode("utf-8")
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    # Clean any leftover .tmp from a crashed prior write so O_EXCL can succeed.
+    # v0.3.17 hardening (audit CLI-2): unique per-process temp via
+    # tempfile.mkstemp instead of the fixed `<name>.tmp` + unlink dance.
+    # The old approach unlinked a leftover temp and then re-created it with
+    # O_EXCL — a TOCTOU window where two concurrent writers (or an attacker
+    # who recreated the path between unlink and open) could collide. mkstemp
+    # picks a name no other process holds and opens it O_CREAT|O_EXCL itself,
+    # so no unlink is needed. We still enforce mode 0600 (fchmod, since mkstemp
+    # honors the process umask) and fsync before the atomic replace.
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
-        os.unlink(tmp)
-    except FileNotFoundError:
-        pass
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    fd = os.open(str(tmp), flags, 0o600)
-    try:
+        os.fchmod(fd, 0o600)
         os.write(fd, data)
         os.fsync(fd)
-    finally:
+    except BaseException:
         os.close(fd)
-    os.replace(str(tmp), str(path))
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    else:
+        os.close(fd)
+    os.replace(tmp, str(path))
     return path
 
 
@@ -200,7 +223,13 @@ def read_credentials(path: Path = DEFAULT_CRED_PATH) -> dict | None:
         return None
     if path.is_symlink():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    # v0.3.17 hardening (audit CLI-1 / submitter D1): a corrupt or unreadable
+    # credentials.json must surface a clean one-liner, not a raw traceback.
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        print(red("credentials.json is corrupt or unreadable. Run `sibyl init --force` to re-activate."))
+        return None
 
 
 def invalidate_tier_cache(path: Path = DEFAULT_TIER_CACHE_PATH) -> None:
@@ -208,6 +237,36 @@ def invalidate_tier_cache(path: Path = DEFAULT_TIER_CACHE_PATH) -> None:
     path = path.expanduser()
     if path.exists():
         path.unlink()
+
+
+def is_sqlite_db(path: Path) -> bool:
+    """Lightweight check that `path` is a real SQLite database.
+
+    v0.3.17 (audit CLI-3 / submitter D3): `sibyl status --db <garbage>` used to
+    report a non-SQLite file as if it were a normal DB. We check the 16-byte
+    SQLite header magic, then confirm the file opens and answers a trivial
+    PRAGMA. A 0-byte file is a valid (empty) SQLite database, so it passes.
+    Returns False on any read/parse error rather than raising."""
+    import sqlite3
+
+    try:
+        if not path.exists() or not path.is_file():
+            return False
+        size = path.stat().st_size
+        if size == 0:
+            return True  # empty file is a valid, freshly-created SQLite DB
+        with open(path, "rb") as fh:
+            header = fh.read(16)
+        if header != b"SQLite format 3\x00":
+            return False
+        con = sqlite3.connect(str(path))
+        try:
+            con.execute("PRAGMA schema_version")
+        finally:
+            con.close()
+        return True
+    except (OSError, sqlite3.Error):
+        return False
 
 
 # ---- `sibyl init` ------------------------------------------------------
@@ -340,23 +399,36 @@ def cmd_init(args: argparse.Namespace) -> int:
             resp = {"bound": False}
 
         if resp.get("bound") and resp.get("credentials"):
-            creds = resp["credentials"]
+            raw_creds = resp["credentials"]
+            # CLI-15: never trust the server payload shape blindly. A non-dict
+            # `credentials` (string, list, null) would otherwise crash on .get
+            # or persist garbage. Treat it as "not yet bound" and keep polling.
+            if not isinstance(raw_creds, dict):
+                print(f"\r{' ' * 80}\r", end="")
+                print(red("\nServer returned malformed credentials. Re-run `sibyl init --force`."))
+                return 2
             # SEC-1: prefer the server-issued bearer_token (post-fix) over
             # echoing the URL pairing-session id. Servers running pre-SEC-1
             # firmware echo `session_token` back as the bearer — we use
             # whichever the server returns. The CLI's session_id (URL
             # identifier) is the rendezvous key, not the persistent bearer.
-            bearer = creds.get("bearer_token") or creds.get("session_token")
+            bearer = raw_creds.get("bearer_token") or raw_creds.get("session_token")
             if not bearer:
                 # Fallback: pre-SEC-1 server flow where neither field is
                 # echoed back — inject the pairing session id so subsequent
                 # /access and /check-write calls have something to send.
                 bearer = session_id
             # Sanity check on echoed session_token (pre-SEC-1 flow only)
-            if creds.get("session_token") and creds["session_token"] != session_id \
-                    and not creds.get("bearer_token"):
+            if raw_creds.get("session_token") and raw_creds["session_token"] != session_id \
+                    and not raw_creds.get("bearer_token"):
                 print(red("\nSession token mismatch — refusing to write credentials."))
                 return 2
+            # CLI-15: build the persisted dict from an explicit allowlist of
+            # known fields, not the raw server blob. This keeps unexpected /
+            # hostile server-supplied keys out of credentials.json.
+            _CRED_FIELDS = ("account_id", "tier", "wallet", "email", "issued_at",
+                            "bearer_token", "expires_at")
+            creds = {k: raw_creds[k] for k in _CRED_FIELDS if k in raw_creds}
             creds["session_token"] = bearer
             path = write_credentials_atomic(creds, cred_path)
             print(f"\r{' ' * 80}\r", end="")  # clear spinner line
@@ -493,7 +565,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
             if resp.get("cap_bytes") is None:
                 print(a.kv("Storage cap", "unlimited", value_color="ok"))
             else:
-                print(a.kv("Storage cap", f"{resp['cap_bytes']:,} bytes"))
+                print(a.kv("Storage cap", f"{_fmt_cap_bytes(resp.get('cap_bytes'))} bytes"))
             if resp.get("staker"):
                 s = resp["staker"]
                 print(a.kv("Wallet", s.get("wallet", "—")))
@@ -598,11 +670,17 @@ def cmd_status(args: argparse.Namespace) -> int:
     db_path = Path(args.db).expanduser()
     if db_path.exists():
         size = db_path.stat().st_size
-        pct = size / 2_097_152 * 100
-        size_label = f"{size:,} bytes ({size / (1024 * 1024):.2f} MB · {pct:.1f}% of free cap)"
-        size_color = "warn" if pct > 80 else "soft"
-        print(a.kv("DB path", str(db_path)))
-        print(a.kv("DB size", size_label, value_color=size_color))
+        # CLI-3 / D3: a path that exists but is not a SQLite DB is labeled
+        # explicitly instead of being reported as a normal memory store.
+        if not is_sqlite_db(db_path):
+            print(a.kv("DB path", str(db_path)))
+            print(a.kv("DB size", f"{size:,} bytes (not a SQLite database)", value_color="err"))
+        else:
+            pct = size / 2_097_152 * 100
+            size_label = f"{size:,} bytes ({size / (1024 * 1024):.2f} MB · {pct:.1f}% of free cap)"
+            size_color = "warn" if pct > 80 else "soft"
+            print(a.kv("DB path", str(db_path)))
+            print(a.kv("DB size", size_label, value_color=size_color))
     else:
         print(a.kv("DB path", f"{db_path} (not created)"))
 
@@ -629,7 +707,14 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     tier_cache = Path(args.tier_cache).expanduser()
     if tier_cache.exists():
-        cache = json.loads(tier_cache.read_text(encoding="utf-8"))
+        # CLI-4: a corrupt tier_cache.json must not crash `sibyl status` —
+        # same crash class as D1, separate call site. Degrade to empty dict.
+        try:
+            cache = json.loads(tier_cache.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            cache = {}
+        if not isinstance(cache, dict):
+            cache = {}
         # checked_at is written by _capcheck.py as epoch seconds (float), but
         # older caches / future formats may carry an ISO string. Render both;
         # never index a float (TypeError on every `sibyl status` run with a
@@ -655,7 +740,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             )
             print(a.kv("Tier", (resp.get("tier") or "free").upper(), value_color="accent"))
             print(a.kv("Source", resp.get("source") or "—"))
-            print(a.kv("Cap bytes", "unlimited" if resp.get("cap_bytes") is None else f"{resp['cap_bytes']:,}"))
+            print(a.kv("Cap bytes", _fmt_cap_bytes(resp.get("cap_bytes"))))
             if resp.get("expires_at"):
                 print(a.kv("Expires", resp["expires_at"]))
             if resp.get("staker"):
@@ -780,6 +865,13 @@ def cmd_devices(args: argparse.Namespace) -> int:
         if idx is None:
             print(red("usage: sibyl devices revoke <index>"))
             return 1
+        # CLI-5: reject negative indexes. Python's negative indexing means
+        # `revoke -1` would silently target the LAST device — a footgun that
+        # could revoke the wrong (or your own) device. Require an explicit
+        # non-negative index from `sibyl devices` output.
+        if idx < 0:
+            print(red(f"invalid index {idx}. Use a non-negative index from `sibyl devices`."))
+            return 1
         # List first to map index → bearer_id
         try:
             resp = http_request(
@@ -797,21 +889,30 @@ def cmd_devices(args: argparse.Namespace) -> int:
         except (IndexError, TypeError):
             print(red(f"no device at index {idx}. Run `sibyl devices` to see indexes."))
             return 1
+        if not isinstance(target, dict):
+            print(red(f"malformed device record at index {idx}. Run `sibyl devices`."))
+            return 2
         if target.get("is_this_device"):
             print(red("refusing to revoke your own device — that would lock you out. Run `sibyl logout` instead, then `sibyl init` on a fresh activation."))
             return 1
+        # CLI-5: bail cleanly if the server payload lacks bearer_id instead of
+        # raising KeyError on hostile/malformed data.
+        bearer_id = target.get("bearer_id")
+        if not bearer_id:
+            print(red(f"device at index {idx} has no bearer_id. Run `sibyl devices` to refresh."))
+            return 2
         try:
             revoke_resp = http_request(
                 "POST",
                 "/api/plugin/devices",
-                body={"bearer_id": target["bearer_id"]},
+                body={"bearer_id": bearer_id},
                 headers={"Authorization": f"Bearer {session_token}"},
                 timeout=10.0,
             )
         except HttpError as e:
             print(red(f"revoke failed: {e.status} {e.body}"))
             return 2
-        print(green(f"✓ Revoked device {target.get('device_label') or target['bearer_id']}"))
+        print(green(f"✓ Revoked device {target.get('device_label') or bearer_id}"))
         return 0 if revoke_resp.get("revoked") else 1
 
     # Default: list devices
@@ -899,8 +1000,21 @@ def cmd_health(args: argparse.Namespace) -> int:
     # LIGHT treatment: verdict + details. No banner, no section header.
     # Pattern: `pg_isready` / `redis-cli ping` / `gh auth status`.
     print()
-    provider = SibylMemoryProvider(db_path=args.db)
-    h = provider.health()
+    # CLI-6: expanduser the db path (a leading ~ was passed through literally),
+    # and wrap provider construction + health() so a bad DB / provider error
+    # prints a clean line instead of a traceback.
+    db_path = Path(args.db).expanduser()
+    try:
+        provider = SibylMemoryProvider(db_path=str(db_path))
+        h = provider.health()
+    except Exception as e:
+        print(a.err_line(f"Health check failed: {type(e).__name__}: {e}"))
+        print()
+        return 1
+    if not isinstance(h, dict):
+        print(a.err_line("Health check returned an unexpected result."))
+        print()
+        return 1
     ok_state = bool(h.get("ok"))
     if ok_state:
         print(a.success_line("All green."))
@@ -963,6 +1077,29 @@ def _ver_tuple(v: str) -> tuple:
     return tuple(out)
 
 
+def _ver_lt(installed: str, latest: str) -> bool:
+    """True if `installed` is strictly older than `latest`.
+
+    CLI-13: prefer packaging.version.parse for PEP 440 correctness (rc/dev/post
+    tags handled, 1.2 == 1.2.0). If packaging is unavailable (stdlib-only
+    environments), fall back to a length-normalized numeric-tuple compare so
+    1.2 vs 1.2.0 no longer mis-orders (the old raw-tuple compare made (1,2) <
+    (1,2,0), reporting a spurious update)."""
+    try:
+        from packaging.version import InvalidVersion, parse as _parse
+        try:
+            return _parse(installed) < _parse(latest)
+        except InvalidVersion:
+            pass  # fall through to tuple compare on unparseable input
+    except ImportError:
+        pass
+    a_t, b_t = _ver_tuple(installed), _ver_tuple(latest)
+    width = max(len(a_t), len(b_t))
+    a_t = a_t + (0,) * (width - len(a_t))
+    b_t = b_t + (0,) * (width - len(b_t))
+    return a_t < b_t
+
+
 def _detect_install_method() -> str:
     """Best-guess of how the CLI was installed — pipx / venv / system-pip / pep668-blocked."""
     exe = sys.executable
@@ -992,7 +1129,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         latest = _pypi_latest(pkg)
         outdated = False
         if installed and latest:
-            outdated = _ver_tuple(installed) < _ver_tuple(latest)
+            outdated = _ver_lt(installed, latest)
         rows.append({"pkg": pkg, "installed": installed, "latest": latest, "outdated": outdated})
         if outdated:
             any_outdated = True
@@ -1333,7 +1470,10 @@ def cmd_memory(args: argparse.Namespace) -> int:
             return 0
         print(a.eyebrow(f"entities ({len(rows)})"))
         for r in rows:
-            print(a.kv(f"{r['category']}/{r['name']}", r.get("status") or "-"))
+            # CLI-7: tolerate SDK rows missing category/name keys.
+            cat = r.get("category", "?")
+            name = r.get("name", "?")
+            print(a.kv(f"{cat}/{name}", r.get("status") or "-"))
         return 0
     if op == "search":
         hits = client.search(args.query, limit=args.limit)
@@ -1351,7 +1491,8 @@ def cmd_memory(args: argparse.Namespace) -> int:
         except Exception as e:
             print(a.warn_line(str(e)))
             return 1
-        print(a.eyebrow(f"{ent['category']}/{ent['name']}"))
+        # CLI-7: tolerate SDK rows missing category/name keys.
+        print(a.eyebrow(f"{ent.get('category', args.category)}/{ent.get('name', args.name)}"))
         print(a.kv("status", ent.get("status") or "-"))
         print(a.kv("updated", ent.get("updated_at") or "-"))
         body = ent.get("body")

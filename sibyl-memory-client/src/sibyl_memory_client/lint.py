@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from .client import DEFAULT_TENANT
-from .storage import Storage
+from .storage import Storage, db_size_bytes
 
 # ----------------------------------------------------------------------
 # Public types
@@ -305,7 +305,10 @@ class Linter:
                 ))
 
             # ── DB size vs soft cap
-            db_size = Path(self._storage.db_path).stat().st_size
+            # CAP-1 (2026-06-25 pre-launch audit): WAL-inclusive sizing so the
+            # lint cap warning matches the enforced footprint (memory.db alone
+            # under-reports while writes sit in memory.db-wal).
+            db_size = db_size_bytes(self._storage.db_path)
             if db_size >= 0.8 * self._soft_cap:
                 pct = db_size / self._soft_cap
                 severity = "critical" if db_size >= self._soft_cap else "warning"
@@ -380,7 +383,7 @@ class Linter:
             tenant_id=self._tenant_id,
             db_path=str(self._storage.db_path),
             schema_version=schema_version,
-            db_size_bytes=Path(self._storage.db_path).stat().st_size,
+            db_size_bytes=db_size_bytes(self._storage.db_path),  # CAP-1: WAL-inclusive
             counts=counts,
             findings=findings,
             started_at=started_at,

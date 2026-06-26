@@ -47,6 +47,43 @@ def _run(cmd: list[str], *, timeout: float = 20.0) -> tuple[int, str, str]:
     except Exception as e:  # never let a wirer crash the whole flow
         return 1, "", f"{type(e).__name__}: {e}"
 
+
+def _install_pkg_or_instruct(package: str) -> Optional[str]:
+    """Attempt to install `package` into the current interpreter, respecting PEP 668.
+
+    CLI-11: in an externally-managed (PEP 668) or pipx-managed environment we do
+    NOT silently `pip install` (that mutates a system/managed env and surprises
+    the user). We return an instruction string instead. For a plain venv/system
+    install we run pip with output captured and return the captured stderr/stdout
+    on failure so the caller can surface it. Returns None on success, otherwise a
+    human-readable error/instruction string."""
+    try:
+        from .cli import _detect_install_method
+        method = _detect_install_method()
+    except Exception:
+        method = "system"
+
+    if method == "pep668":
+        return (
+            f"'{package}' is missing and this Python is externally-managed (PEP 668). "
+            f"Install it yourself, ideally in a venv:\n"
+            f"    pip install {package}\n"
+            f"  or, if you understand the risk:\n"
+            f"    pip install --break-system-packages {package}"
+        )
+    if method == "pipx":
+        return (
+            f"'{package}' is missing and the CLI is running under pipx. "
+            f"Inject it into the pipx venv:\n"
+            f"    pipx inject sibyl-memory-cli {package}"
+        )
+    rc, out, err = _run([sys.executable, "-m", "pip", "install", package], timeout=120.0)
+    if rc == 0:
+        return None
+    detail = (err or out or "").strip()
+    return f"pip install {package} failed (exit {rc}): {detail[:400]}" if detail \
+        else f"pip install {package} failed (exit {rc})."
+
 # Color helpers re-imported from cli module via late binding to avoid circular dep.
 # When called via `sibyl setup` they resolve through the cli module's tty detection.
 def _color_fns():
@@ -146,27 +183,17 @@ class HermesWirer:
                 "PyYAML not installed. Run `pip install pyyaml` and retry.",
             )
 
-        # 1. Install plugin if missing
-        if not state["plugin_installed"]:
-            if dry_run:
-                pass  # report at the end
-            else:
-                try:
-                    self._install_plugin()
-                except Exception as e:
-                    return WireOutcome(
-                        self.name, "error",
-                        f"install-plugin failed: {type(e).__name__}: {e}",
-                    )
-
-        # 2. Already wired? no-op
+        # 1. Already wired? no-op (no install needed; nothing to overwrite).
         if state["wired_with_sibyl"] and state["plugin_installed"]:
             return WireOutcome(
                 self.name, "already",
                 f"Hermes already has SIBYL as memory provider in {self.config_path}",
             )
 
-        # 3. Existing non-SIBYL provider? confirm or refuse
+        # 2. Existing non-SIBYL provider? confirm or refuse FIRST.
+        #    CLI-10: the overwrite-confirm gate must run before any side effect
+        #    (plugin install / config write) so a declined overwrite writes
+        #    nothing — previously the plugin was installed before this gate.
         if state["memory_provider"] and state["memory_provider"] != "sibyl" and not force:
             if prompt_fn is None:
                 return WireOutcome(
@@ -180,13 +207,23 @@ class HermesWirer:
             if ans != "y":
                 return WireOutcome(self.name, "skipped", "Memory provider overwrite declined.")
 
-        # 4. Dry-run report
+        # 3. Dry-run report — never installs or writes.
         if dry_run:
             actions = []
             if not state["plugin_installed"]:
                 actions.append(f"install plugin at {self.plugin_dir}")
             actions.append(f"set memory.provider=sibyl in {self.config_path}")
             return WireOutcome(self.name, "dry-run", "Would: " + "; ".join(actions))
+
+        # 4. Install plugin if missing — only now that the gate has passed.
+        if not state["plugin_installed"]:
+            try:
+                self._install_plugin()
+            except Exception as e:
+                return WireOutcome(
+                    self.name, "error",
+                    f"install-plugin failed: {type(e).__name__}: {e}",
+                )
 
         # 5. Real write. Backup, then atomic rename.
         backup = self._backup_config()
@@ -286,23 +323,26 @@ class ClaudeCodeWirer:
         rc, _o, _e = _run(["claude", "mcp", "get", self.MCP_NAME], timeout=15)
         return rc == 0
 
+    _last_install_error: Optional[str] = None
+
+    def _install_hint(self) -> str:
+        """Append the captured install failure / PEP-668 instruction, if any,
+        to the generic 'not on PATH' message. CLI-11."""
+        return f"\n{self._last_install_error}" if self._last_install_error else ""
+
     def _ensure_mcp_binary(self, *, prompt_fn: Optional[Callable[..., str]] = None) -> bool:
         """Check for sibyl-memory-mcp binary; auto-install if missing.
 
         Returns True if binary is available after the call, False otherwise.
+
+        CLI-11: respect PEP 668 — never silently `pip install` into an
+        externally-managed (or pipx-managed) environment; instruct instead.
+        On a plain install, capture pip output and surface it on failure rather
+        than discarding it to /dev/null (opaque failures).
         """
         if self._mcp_binary_found():
             return True
-        # Attempt auto-install via pip
-        import subprocess
-        try:
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", self.MCP_PACKAGE, "--quiet"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            pass
+        self._last_install_error = _install_pkg_or_instruct(self.MCP_PACKAGE)
         return self._mcp_binary_found()
 
     def verify_mcp_starts(self) -> tuple:
@@ -325,14 +365,31 @@ class ClaudeCodeWirer:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            # MCP stdio servers block on stdin. If the process crashes on import
-            # or init it exits within the first second. Give it 1.5s.
-            time.sleep(1.5)
-            rc = proc.poll()
+            # CLI-12: MCP stdio servers block on stdin; a crash-on-import exits
+            # quickly with a non-zero code. POLL the exit code over a short
+            # window instead of a fixed sleep — a slow import (cold caches,
+            # heavy deps) that is still alive at the deadline is treated as
+            # healthy (it's blocking on stdin), not "crashed".
+            deadline = time.monotonic() + 3.0
+            rc = None
+            while time.monotonic() < deadline:
+                rc = proc.poll()
+                if rc is not None:
+                    break
+                time.sleep(0.1)
             if rc is not None and rc != 0:
-                err = proc.stderr.read().decode(errors="replace").strip()
+                # CLI-12: bound the stderr read so a server that floods stderr
+                # before exiting can't make us block on an unbounded read.
+                try:
+                    err = (proc.stderr.read(4096) or b"").decode(errors="replace").strip()
+                except Exception:
+                    err = ""
                 return False, f"Server crashed on startup (exit {rc}): {err[:200]}"
-            # Still running (blocking on stdin) or exited 0 — binary works.
+            if rc == 0:
+                # Exited cleanly without blocking — unusual for a stdio server
+                # but not a crash.
+                return True, "MCP server verified (exited cleanly)"
+            # Still running (blocking on stdin) — binary works.
             proc.terminate()
             try:
                 proc.wait(timeout=3)
@@ -384,7 +441,8 @@ class ClaudeCodeWirer:
         registration/discovery bug). `--scope user` makes it global across projects."""
         if not dry_run and not self._ensure_mcp_binary():
             return WireOutcome(self.name, "error",
-                f"'{self.MCP_BINARY}' not on PATH. Install it: pip install {self.MCP_PACKAGE}")
+                f"'{self.MCP_BINARY}' not on PATH. Install it: pip install {self.MCP_PACKAGE}"
+                + self._install_hint())
         if self._registered_via_cli():
             if not force:
                 return WireOutcome(self.name, "already",
@@ -435,7 +493,7 @@ class ClaudeCodeWirer:
                 return WireOutcome(
                     self.name, "error",
                     f"Config is set but '{self.MCP_BINARY}' not on PATH. "
-                    f"Install it: pip install {self.MCP_PACKAGE}",
+                    f"Install it: pip install {self.MCP_PACKAGE}" + self._install_hint(),
                 )
             return WireOutcome(
                 self.name, "wired",
@@ -476,7 +534,7 @@ class ClaudeCodeWirer:
             return WireOutcome(
                 self.name, "error",
                 f"'{self.MCP_BINARY}' not on PATH after install attempt. "
-                f"Install manually: pip install {self.MCP_PACKAGE}",
+                f"Install manually: pip install {self.MCP_PACKAGE}" + self._install_hint(),
             )
 
         backup = self._backup_settings()
@@ -580,14 +638,17 @@ class CodexWirer:
         cmd = self._toml_escape(self._mcp_command())
         return f'\n[mcp_servers.sibyl_memory]\ncommand = "{cmd}"\n'
 
+    _last_install_error: Optional[str] = None
+
+    def _install_hint(self) -> str:
+        return f"\n{self._last_install_error}" if self._last_install_error else ""
+
     def _ensure_mcp_binary(self) -> bool:
+        # CLI-11: same hardening as the Claude wirer — respect PEP 668, surface
+        # pip output on failure instead of discarding it.
         if self._mcp_binary_found():
             return True
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", self.MCP_PACKAGE, "--quiet"],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+        self._last_install_error = _install_pkg_or_instruct(self.MCP_PACKAGE)
         return self._mcp_binary_found()
 
     def current_state(self) -> dict:
@@ -632,7 +693,8 @@ class CodexWirer:
                 f"Would {verb} [mcp_servers.sibyl_memory] in {self.config_path}")
         if not self._ensure_mcp_binary():
             return WireOutcome(self.name, "error",
-                f"'{self.MCP_BINARY}' not on PATH. Install it: pip install {self.MCP_PACKAGE}")
+                f"'{self.MCP_BINARY}' not on PATH. Install it: pip install {self.MCP_PACKAGE}"
+                + self._install_hint())
         backup = self._backup_config()
         try:
             self._append_block()

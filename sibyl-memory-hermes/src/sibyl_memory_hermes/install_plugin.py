@@ -31,6 +31,7 @@ import importlib.util
 import os
 import shutil
 import sys
+import tempfile
 from importlib import resources
 from pathlib import Path
 
@@ -116,16 +117,35 @@ def _write_payload(dest: Path, force: bool, dry_run: bool) -> int:
             shutil.rmtree(dest)
         else:
             print(a.dim(f"  [dry-run] would remove existing plugin at {dest}"))
-    if not dry_run:
-        dest.mkdir(parents=True, exist_ok=True)
-    for src_name, dest_name in _payload_files():
-        bytes_in = _read_payload(src_name)
-        out = dest / dest_name
-        if dry_run:
+    if dry_run:
+        for src_name, dest_name in _payload_files():
+            bytes_in = _read_payload(src_name)
+            out = dest / dest_name
             print(f"  {a.dim('[dry-run]')} would write {a.color(str(out), a.INK)}  {a.dim(f'({len(bytes_in)} bytes)')}")
-        else:
-            out.write_bytes(bytes_in)
-            print(f"  {a.ok(a.GLYPH_OK)} {a.color(str(out), a.INK)}  {a.dim(f'({len(bytes_in)} bytes)')}")
+        return 0
+
+    # MH-8: build the whole payload in a sibling temp dir, then atomically
+    # ``os.replace`` it onto ``dest``. An interrupt (Ctrl-C, crash, ENOSPC)
+    # mid-write leaves a stray temp dir, never a half-written plugin directory
+    # that Hermes would try to load. The temp dir is a sibling of ``dest`` so
+    # the rename stays on one filesystem (cross-device replace would fail).
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".sibyl-plugin-", dir=str(dest.parent)))
+    try:
+        for src_name, dest_name in _payload_files():
+            bytes_in = _read_payload(src_name)
+            (staging / dest_name).write_bytes(bytes_in)
+        # ``os.replace`` requires the target be absent or an empty dir; the
+        # refusal/rmtree logic above guarantees ``dest`` is gone here.
+        if dest.exists():
+            shutil.rmtree(dest)
+        os.replace(str(staging), str(dest))
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    for _src_name, dest_name in _payload_files():
+        out = dest / dest_name
+        print(f"  {a.ok(a.GLYPH_OK)} {a.color(str(out), a.INK)}  {a.dim(f'({(out).stat().st_size} bytes)')}")
     return 0
 
 
@@ -274,19 +294,14 @@ def install(hermes_home: Path, force: bool, dry_run: bool,
     return 0
 
 
-def uninstall(hermes_home: Path, dry_run: bool) -> int:
-    dest = _plugin_dest(hermes_home)
-    # ── HEAVY: removal is also ceremonial: banner + section header.
-    print_banner()
-    print(a.section_header("uninstall-plugin",
-                          subtitle="remove sibyl from this hermes install"))
-    print()
-    print(a.kv("Hermes home", str(hermes_home)))
-    print(a.kv("Plugin dest", str(dest)))
-    print()
+def _remove_plugin_dir(dest: Path, dry_run: bool) -> int:
+    """Remove one plugin directory with the SEC-5 guards (symlink refusal +
+    Sibyl-install sentinel). Returns: 0 removed / 1 absent / 3 symlink /
+    4 unrecognized. Shared by the user-path and the 0.7+ provider-path
+    removals so both honor the same guards (MH-7)."""
     if not dest.exists():
-        print(a.warn_line("Nothing to uninstall: plugin directory does not exist."))
-        return 0
+        print(a.dim(f"  Nothing to remove at {dest} (does not exist)."))
+        return 1
     if dest.is_symlink():
         print(a.err_line(f"Refused: {dest} is a symlink."))
         print(a.dim("  Sibyl will not rmtree through symlinks."))
@@ -300,10 +315,58 @@ def uninstall(hermes_home: Path, dry_run: bool) -> int:
         return 0
     shutil.rmtree(dest)
     print(a.success_line(f"Removed {dest}"))
+    return 0
+
+
+def uninstall(hermes_home: Path, dry_run: bool,
+              memory_provider_path: str | None = None) -> int:
+    dest = _plugin_dest(hermes_home)
+    # MH-7: the installer (Hermes 0.7+) also writes the provider-scan-path copy
+    # under <hermes pkg>/plugins/memory/sibyl. Uninstall must remove that too,
+    # or the adapter lingers and Hermes keeps loading it after "uninstall".
+    provider_dest = _memory_provider_dest(memory_provider_path)
+    # ── HEAVY: removal is also ceremonial: banner + section header.
+    print_banner()
+    print(a.section_header("uninstall-plugin",
+                          subtitle="remove sibyl from this hermes install"))
+    print()
+    print(a.kv("Hermes home", str(hermes_home)))
+    print(a.kv("Plugin dest", str(dest)))
+    print(a.kv("Provider dest", str(provider_dest) if provider_dest else "— (hermes pkg not detected)"))
+    print()
+
+    # 1) User-plugin path
+    print(a.eyebrow("removing · user-plugin path"))
+    user_rc = _remove_plugin_dir(dest, dry_run)
+    if user_rc in (3, 4):
+        # Hard refusal on the primary path: stop before touching anything else.
+        return user_rc
+
+    # 2) 0.7+ memory-provider scan path (best-effort; may be root-owned).
+    provider_rc = 1
+    if provider_dest is not None:
+        print()
+        print(a.eyebrow("removing · 0.7+ memory-provider path"))
+        try:
+            provider_rc = _remove_plugin_dir(provider_dest, dry_run)
+        except PermissionError:
+            print(a.warn_line(f"No write permission for {provider_dest}."))
+            print(a.dim("  This is usually a root-owned site-packages dir. Remove it with sudo:"))
+            print(a.dim(f"    sudo rm -rf {provider_dest}"))
+            provider_rc = 5
+
+    if user_rc == 1 and provider_rc in (1, 5):
+        print()
+        print(a.warn_line("Nothing was removed: no Sibyl install found at either path."))
+        return 0
+
     print()
     print(a.dim(f"  remember to remove `memory.provider: sibyl` from"))
     print(a.dim(f"  {hermes_home / 'config.yaml'}"))
     print(a.dim("  if it's still set, or Hermes will warn on startup."))
+    # Surface a non-fatal note if the provider path needed manual sudo removal.
+    if provider_rc in (3, 4, 5):
+        return provider_rc
     return 0
 
 
@@ -325,6 +388,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p_uninstall = sub.add_parser("uninstall-plugin", help="Remove the Sibyl plugin from HERMES_HOME.")
     p_uninstall.add_argument("--hermes-home", help="Override HERMES_HOME (defaults to env var or ~/.hermes).")
+    p_uninstall.add_argument("--memory-provider-path",
+                             help="Path to your Hermes install's plugins/memory directory; the "
+                                  "0.7+ provider-path copy is removed there too. Defaults to the "
+                                  "detected hermes package's plugins/memory dir.")
     p_uninstall.add_argument("--dry-run", action="store_true", help="Show what would happen without writing.")
 
     args = parser.parse_args(argv)
@@ -334,7 +401,8 @@ def main(argv: list[str] | None = None) -> int:
         return install(hermes_home, force=args.force, dry_run=args.dry_run,
                        memory_provider_path=args.memory_provider_path)
     if args.cmd == "uninstall-plugin":
-        return uninstall(hermes_home, dry_run=args.dry_run)
+        return uninstall(hermes_home, dry_run=args.dry_run,
+                         memory_provider_path=args.memory_provider_path)
     parser.print_help()
     return 1
 

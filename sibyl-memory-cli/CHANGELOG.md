@@ -4,6 +4,24 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.17] - 2026-06-25
+
+Pre-launch security audit hardening.
+
+### Fixed
+- `read_credentials()` and the `tier_cache.json` parse no longer crash on a
+  corrupt/non-JSON file (graceful "Not activated" instead of a traceback).
+- Atomic credentials write uses a unique temp name + `fsync` + `os.replace`
+  (no fixed-`.tmp` concurrent-writer race).
+- `status` and `migrate` validate that a `--db` target is a real SQLite file
+  instead of silently treating garbage as an empty database.
+- `devices revoke` guards malformed/hostile server data and rejects negative
+  indexes. `health` expands `~` and wraps provider errors. Version compare
+  normalized (1.2 == 1.2.0, rc tags). `init` persists an allowlisted
+  credentials dict. `setup` installs the plugin only after the overwrite
+  confirm, surfaces pip output on failure, and respects PEP-668. `migrate`
+  backup is fsync'd and re-verified on disk before any debloat.
+
 ## [0.3.16] - 2026-06-19
 
 ### Fixed

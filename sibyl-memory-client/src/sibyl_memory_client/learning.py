@@ -459,12 +459,30 @@ class Learner:
                 recovery="Only pending proposals can be accepted. Use list_proposals(status='pending').",
             )
         doc_key = f"skill/{proposal.proposed_slug}"
+        metadata = {
+            "source": "sibyl-memory-client/learning",
+            "pattern_kind": proposal.pattern_kind,
+            "summarizer": proposal.summarizer,
+            "confidence": proposal.confidence,
+            "evidence_count": len(proposal.evidence),
+            "title": proposal.proposed_title,
+        }
+        metadata_json = dumps(metadata)
         # T1-3 fix: gate the reference_documents insert through the cap
         # check. Free user at 1.9MB could previously accept skill proposals
         # (often kilobytes of body) to keep writing past the 2 MB cap.
         # When cap_gate is None (direct-Learner instantiation), no check.
         if self._cap_gate is not None:
-            body_size = len(proposal.proposed_body or "") + len(doc_key) + 250
+            # CAP-7 (2026-06-25 pre-launch audit): the estimate omitted the
+            # metadata JSON and the FTS5 index overhead. reference_documents is
+            # FTS5-indexed, so the body is effectively stored twice-over (base
+            # row + tokenized index). Count the body + metadata + key, then add a
+            # ~1x body FTS overhead factor plus base row overhead, so the cap
+            # estimate is not a systematic under-count that lets accept_proposal
+            # squeak past the cap.
+            body_len = len(proposal.proposed_body or "")
+            fts_overhead = body_len  # FTS5 index roughly mirrors the body size
+            body_size = body_len + len(metadata_json) + len(doc_key) + fts_overhead + 250
             self._cap_gate.check(proposed_delta_bytes=body_size)
         with self._storage.transaction() as conn:
             conn.execute(
@@ -477,14 +495,7 @@ class Learner:
                     self._tenant_id,
                     doc_key,
                     proposal.proposed_body,
-                    dumps({
-                        "source": "sibyl-memory-client/learning",
-                        "pattern_kind": proposal.pattern_kind,
-                        "summarizer": proposal.summarizer,
-                        "confidence": proposal.confidence,
-                        "evidence_count": len(proposal.evidence),
-                        "title": proposal.proposed_title,
-                    }),
+                    metadata_json,
                 ),
             )
             conn.execute(

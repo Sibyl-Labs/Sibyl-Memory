@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 from .exceptions import (  # noqa: F401  (re-exported for backwards compat)
     CapExceededError,
     SibylMemoryError,
+    TierAuthError,
     TierVerificationError,
 )
 
@@ -64,10 +65,20 @@ DEFAULT_CACHE_PATH = "~/.sibyl-memory/tier_cache.json"
 HTTP_TIMEOUT_SECONDS = 4.0
 
 # Bounded retry for transient verification failures (v0.4.14). Under sustained
-# free-tier write volume the server can return a rate-limit-shaped 401/429; a
-# couple of short backoff retries clears the transient case before we treat the
-# call as unreachable. Kept small so worst-case added latency stays ~1.2s.
-RETRYABLE_HTTP_CODES = frozenset({401, 408, 425, 429, 500, 502, 503, 504})
+# free-tier write volume the server can return a rate-limit-shaped 429; a couple
+# of short backoff retries clears the transient case before we treat the call as
+# unreachable. Kept small so worst-case added latency stays ~1.2s.
+#
+# CAP-5 / CORE-2 (2026-06-25 pre-launch audit): 401 and 403 are NO LONGER
+# retryable and must NEVER route into the fail-open path. A 401/403 is the
+# server's authoritative "you are not entitled" (bad/expired/forged token, or
+# tier revoked) — retrying then failing open would let a forged token write past
+# the cap. _refresh_and_check now treats any TierAuthError (raised on 401/403)
+# as a hard denial: enforce the free cap, never fail open. Genuine rate limiting
+# must be a 429 (still retryable), not a 401.
+RETRYABLE_HTTP_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+# Authoritative "not entitled" codes: hard-deny, never fail-open.
+AUTH_DENY_HTTP_CODES = frozenset({401, 403})
 CHECK_WRITE_MAX_RETRIES = 2
 CHECK_WRITE_RETRY_BACKOFF = 0.4  # seconds, exponential: 0.4, 0.8
 
@@ -258,6 +269,15 @@ def _default_check_write_fn(
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
+            # CAP-5 / CORE-2: 401/403 are authoritative "not entitled". Do not
+            # retry and do not let them reach the generic TierVerificationError
+            # branch (which is fail-open eligible). Raise the distinct
+            # TierAuthError so _refresh_and_check hard-denies at the free cap.
+            if e.code in AUTH_DENY_HTTP_CODES:
+                raise TierAuthError(
+                    f"Sibyl Labs refused to authorize this account "
+                    f"(HTTP {e.code}). Re-activate to continue.",
+                ) from e
             if e.code in RETRYABLE_HTTP_CODES and attempt < CHECK_WRITE_MAX_RETRIES:
                 time.sleep(CHECK_WRITE_RETRY_BACKOFF * (2 ** attempt))
                 continue
@@ -376,6 +396,100 @@ class CapGate:
         # Free + at/past cap → must call server.
         return self._refresh_and_check(proposed_delta_bytes)
 
+    def check_total(self, total_size_bytes: int) -> None:
+        """Gate on an ABSOLUTE resulting footprint (CAP-2).
+
+        ``check()`` gates on ``db_size_fn() + proposed_delta`` *before* the
+        write, so it can never see the true post-write size (WAL lag + estimate
+        error). This entry point takes the actual resulting total — measured by
+        the caller immediately before COMMIT, inside the same transaction (via
+        SQLite ``page_count * page_size``, which already reflects the pending
+        INSERT) — and decides allow/deny against the effective cap.
+
+        It reuses the same trust ladder as ``check()``: a fresh account-matched
+        paid cache short-circuits to allow; an over-cap total triggers the
+        server refresh path (which hard-denies on auth failure and applies the
+        CAP-4 fail-open rules). The only difference is the size is the real total
+        rather than current + estimate, expressed as a zero-delta refresh so all
+        the size comparisons in _refresh_and_check operate on it directly.
+        """
+        cached = self._cache.load()
+        if cached and cached.is_fresh and cached.account_id == self.account_id:
+            if cached.cap_bytes is None:
+                if self.account_id is not None:
+                    return  # account-matched paid cache: uncapped
+            elif total_size_bytes <= cached.cap_bytes:
+                return
+            else:
+                return self._refresh_and_check_total(total_size_bytes)
+
+        if self._local_hint in PAID_TIERS:
+            return self._refresh_and_check_total(total_size_bytes)
+        if total_size_bytes <= self._cap:
+            return
+        return self._refresh_and_check_total(total_size_bytes)
+
+    def _effective_cap_local(self) -> int | None:
+        """The cap to enforce WITHOUT any network call. None = uncapped.
+
+        Used by the in-transaction recheck (check_total_local), which runs under
+        the BEGIN IMMEDIATE write lock where a urlopen would starve concurrent
+        writers (2026-06-25 audit blocker). The authoritative tier/cap decision
+        was already made by the pre-write check() BEFORE the transaction (and it
+        populated the cache); here we only read that result locally:
+          - a real account's paid grant in the cache (cap_bytes is None) -> uncapped
+          - a fresh cached free cap -> that cap
+          - otherwise -> the free default cap
+        The bare credentials paid-hint is NOT trusted here (check() already
+        server-verified it); a null-account uncapped cache is distrusted (SEC-13).
+        """
+        cached = self._cache.load()
+        if (cached and cached.account_id == self.account_id
+                and self.account_id is not None):
+            if cached.cap_bytes is None:
+                return None              # account-matched paid grant -> uncapped
+            if cached.is_fresh:
+                return cached.cap_bytes  # fresh cached free cap
+        return self._cap                 # free default
+
+    def check_total_local(self, total_size_bytes: int) -> None:
+        """Local-only absolute-footprint gate for the in-transaction recheck.
+
+        MUST NOT make a network call — it runs inside the BEGIN IMMEDIATE write
+        lock. Enforces the true post-stage footprint against the cap that the
+        pre-write check() already established (via _effective_cap_local). Raises
+        CapExceededError if over, so the surrounding transaction rolls back.
+        """
+        cap = self._effective_cap_local()
+        if cap is None or total_size_bytes <= cap:
+            return
+        raise CapExceededError(
+            f"This write would bring stored memory to "
+            f"{total_size_bytes / 1024:.1f} KB, over the "
+            f"{cap / 1024:.1f} KB free-tier cap.",
+            current_size=total_size_bytes,
+            cap=cap,
+            proposed_delta=0,
+        )
+
+    def _refresh_and_check_total(self, total_size_bytes: int) -> None:
+        """Server-authoritative recheck of an absolute footprint (CAP-2).
+
+        WARNING: this may perform a network call — do NOT call it while holding
+        a SQLite write lock. The in-transaction recheck uses check_total_local()
+        instead. Retained for any out-of-transaction absolute-footprint check.
+
+        Temporarily overrides db_size_fn so _refresh_and_check evaluates the
+        provided absolute total (delta 0). This keeps the auth-deny / fail-open /
+        cache logic single-sourced rather than duplicated.
+        """
+        prev = self._db_size_fn
+        self._db_size_fn = lambda: total_size_bytes
+        try:
+            self._refresh_and_check(0)
+        finally:
+            self._db_size_fn = prev
+
     # ------------------------------------------------------------------
     # Network refresh
     # ------------------------------------------------------------------
@@ -411,10 +525,30 @@ class CapGate:
 
         try:
             resp = self._check_fn(self._check_url, payload)
+        except TierAuthError as e:
+            # CAP-5 / CORE-2: authoritative "not entitled" (401/403). NEVER fail
+            # open: the token is bad/expired/forged/revoked, so the account is
+            # treated as free and the free cap is enforced. A recent PAID cache
+            # is not honored here — a 401 means the server is actively refusing,
+            # which supersedes a stale grant. The over-cap state is surfaced to
+            # the caller as a raised CapExceededError, not just a log line.
+            new_size = current + proposed_delta_bytes
+            if new_size <= self._cap:
+                return
+            raise CapExceededError(
+                "Your account could not be authorized and you're past the "
+                "2 MB free-tier cap. Re-run `sibyl init` to refresh "
+                "credentials, or stay under the cap.",
+                current_size=current,
+                cap=self._cap,
+                proposed_delta=proposed_delta_bytes,
+                upgrade_url=DEFAULT_UPGRADE_URL,
+            ) from e
         except TierVerificationError as e:
-            # Verification unreachable. First, honor a recent cache if we have
-            # one (within an extended 2x grace window), respecting any
-            # server-supplied subscription expiry.
+            # Verification unreachable (timeout / connection error / 5xx — NOT an
+            # auth refusal; those are TierAuthError, handled above). First, honor
+            # a recent cache if we have one (within an extended 2x grace window),
+            # respecting any server-supplied subscription expiry.
             #
             # T1-4 fix: respect server-supplied subscription expiry on the
             # offline path. The cache can no longer be honored past the
@@ -422,10 +556,14 @@ class CapGate:
             # blackholes /api/plugin/check-write. Subscription expiry is
             # authoritative, not a refresh-able grace window.
             cached = self._cache.load()
+            had_paid_grant = False
             if cached and cached.account_id == self.account_id:
                 now = time.time()
                 if cached.server_expires_at is not None and now >= cached.server_expires_at:
                     raise  # subscription already expired per server's own record
+                # CAP-4: a paid grant in the cache (cap_bytes is None) is the
+                # evidence that gates the bounded fail-open concession below.
+                had_paid_grant = cached.cap_bytes is None
                 age = now - cached.checked_at
                 if age < 2 * GRACE_PERIOD_SECONDS:
                     # Honor the cached result a bit longer for honest
@@ -436,21 +574,42 @@ class CapGate:
                     if new_size <= cached.cap_bytes:
                         return
 
-            # v0.4.14 FAIL-OPEN: verification is unreachable AND there is no
-            # usable cache. This is the silent-write-loss case from beta — a
-            # fresh / no-cache account doing a heavy write burst or migration
-            # import whose check-write call 401s under load. Previously this
-            # re-raised and the write was rejected (silent data loss if the
-            # caller ignored ok/error). Now we allow the write to preserve
-            # durability; the server reconciles tier/cap on the next reachable
-            # check. Bounded by a safety ceiling so a permanently offline free
-            # user can't grow without limit.
+            # CAP-4 + CORE-1: fail-open is for HONEST PAID users riding out an
+            # extended outage — NOT for free / never-paid accounts. A user who
+            # never had a verified paid grant (no cache, or a cache that says
+            # free) must fail CLOSED at the free cap; the old code let ANY
+            # account, including a blackholed free user with no cache, grow to
+            # 4x the cap. The size read here is WAL-inclusive (db_size_fn now
+            # sums the -wal/-shm sidecars per CAP-1), so this is the true
+            # cumulative footprint, not a per-write delta.
             new_size = current + proposed_delta_bytes
+            if not had_paid_grant:
+                # Free / no-grant account, unreachable verification. Enforce the
+                # free cap and surface the over-cap state to the caller.
+                if new_size <= self._cap:
+                    return
+                raise CapExceededError(
+                    "You're past the 2 MB free-tier cap and Sibyl Labs can't be "
+                    "reached to verify a paid tier. Reconnect to continue, or "
+                    "upgrade.",
+                    current_size=current,
+                    cap=self._cap,
+                    proposed_delta=proposed_delta_bytes,
+                    upgrade_url=DEFAULT_UPGRADE_URL,
+                ) from e
+
+            # v0.4.14 FAIL-OPEN (paid-grant evidenced only): verification is
+            # unreachable but the cache shows this account HELD a paid grant.
+            # Allow continued writes to preserve durability during the outage;
+            # the server reconciles tier/cap on the next reachable check.
+            # Bounded by a safety ceiling so even a paid grant gone permanently
+            # offline can't grow without limit.
             ceiling = self._cap * FAIL_OPEN_CEILING_MULT
             if new_size <= ceiling:
                 logger.warning(
-                    "Sibyl tier verification unreachable (%s); allowing write to "
-                    "avoid data loss (size=%.1fKB, reconciles when reachable).",
+                    "Sibyl tier verification unreachable (%s); allowing write for "
+                    "a previously-paid account to avoid data loss "
+                    "(size=%.1fKB, reconciles when reachable).",
                     type(e).__name__, new_size / 1024,
                 )
                 return
@@ -519,10 +678,24 @@ class CapGate:
         self._cache.clear()
 
     def current_cap(self) -> int | None:
-        """Return the current effective cap. None = uncapped."""
+        """Return the current effective cap. None = uncapped.
+
+        CAP-6 (2026-06-25 pre-launch audit): the cached entry is only trusted
+        when its account_id matches this gate's account_id, mirroring the guard
+        in check(). Without it, a tier_cache.json belonging to (or forged for) a
+        different account — including a null-account forged uncapped entry —
+        could be read as this account's cap, reporting uncapped for a free user.
+        """
         cached = self._cache.load()
-        if cached and cached.is_fresh:
-            return cached.cap_bytes
+        if (cached and cached.is_fresh
+                and cached.account_id == self.account_id):
+            # SEC-13: never honor a null-account "uncapped" entry
+            # (cap_bytes=None, account_id=None) for a free/unactivated user. A
+            # genuine uncapped tier always carries a real account_id, so this
+            # would let a forged tier_cache.json spoof "uncapped" in status.
+            # Mirrors the guard in check() / check_total().
+            if not (cached.cap_bytes is None and self.account_id is None):
+                return cached.cap_bytes
         if self._local_hint in PAID_TIERS:
             return None
         return self._cap

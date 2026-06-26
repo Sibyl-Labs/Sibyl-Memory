@@ -86,6 +86,40 @@ def _significant_tokens(query: str):
             if len(t) > 2 and t not in _STOP]
 
 
+# CORE-6/MH-3 (2026-06-25 pre-launch audit): cap the per-token recall fan-out.
+# An attacker (or a pathological query) with many significant tokens previously
+# issued one 200-row FTS5 search PER token, an unbounded multiplier on a single
+# untiered call. Bound the fan-out to the most-significant (longest, a cheap
+# rarity proxy) tokens so the work per query is O(MAX_FANOUT_TOKENS), not
+# O(len(query)).
+_MAX_FANOUT_TOKENS = 24
+
+
+def _corpus_count(client) -> int:
+    """Cheap corpus size for IDF weighting (CORE-6/MH-3).
+
+    Prefer the client's storage COUNT(*) over the old
+    ``len(list_entities(limit=100000))``, which materialized + JSON-decoded every
+    entity row just to count them. Falls back to the old path only if the cheap
+    method is unavailable (older client without count_rows / storage access).
+    """
+    storage = getattr(client, "storage", None)
+    tenant = None
+    get_tenant = getattr(client, "get_tenant", None)
+    if callable(get_tenant):
+        try:
+            tenant = get_tenant()
+        except Exception:
+            tenant = None
+    if storage is not None and tenant is not None and hasattr(storage, "count_rows"):
+        try:
+            return storage.count_rows("entities", tenant)
+        except Exception:
+            pass
+    # Fallback: bounded list (still cheaper than the old 100000 with the clamp).
+    return len(client.list_entities(limit=10_000))
+
+
 def _pure_prep(body_lower: str) -> bool:
     """True if the body is purely preparatory (a prep marker, no terminal marker)."""
     return bool(_PREP_RE.search(body_lower)) and not bool(_TERM_RE.search(body_lower))
@@ -103,8 +137,22 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
     toks = _significant_tokens(query)
     if not toks:
         return []
+    # CORE-6/MH-3: bound token fan-out. De-dup, then keep the longest (rarest-
+    # proxy) tokens up to the cap so an attacker can't force one FTS5 search per
+    # token on an arbitrarily long query. Terminal-state keywords are always
+    # retained so the terminal/prep gate still has its signal.
+    uniq = list(dict.fromkeys(toks))
+    if len(uniq) > _MAX_FANOUT_TOKENS:
+        forced = [t for t in uniq if t in _TERMINAL_Q]
+        rest = sorted((t for t in uniq if t not in _TERMINAL_Q), key=len, reverse=True)
+        keep = list(dict.fromkeys(forced + rest))[:_MAX_FANOUT_TOKENS]
+        toks = keep
+    else:
+        toks = uniq
     if corpus_n is None:
-        corpus_n = len(client.list_entities(limit=100000))
+        corpus_n = _corpus_count(client)  # CORE-6/MH-3: cheap COUNT(*), not full scan
+
+    terminal_q = bool(set(toks) & _TERMINAL_Q)
 
     cand: dict = {}
     df: dict = {}
@@ -115,8 +163,14 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
             return []  # abstention: a discriminating term that nothing satisfies
         for h in hits:
             key = (h.get("tier"), h.get("key"), h.get("category"))
-            e = cand.setdefault(key, {"m": set(), "best": 0.0, "hit": h,
-                                      "body": json.dumps(h.get("body")).lower()})
+            e = cand.get(key)
+            if e is None:
+                # CORE-6/MH-3: only serialize+lower the body when a terminal-state
+                # query will actually consult it (the prep/terminal gate). For
+                # non-terminal queries the body string is never read, so skip the
+                # per-hit json.dumps entirely.
+                body_lower = json.dumps(h.get("body")).lower() if terminal_q else ""
+                e = cand[key] = {"m": set(), "best": 0.0, "hit": h, "body": body_lower}
             e["m"].add(t)
             rank = h.get("rank", 0.0) or 0.0
             if rank < e["best"]:
@@ -124,7 +178,6 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
 
     idf = {t: math.log((corpus_n + 1) / (df[t] + 1)) + 1.0 for t in toks}
     total = sum(idf.values()) or 1.0
-    terminal_q = bool(set(toks) & _TERMINAL_Q)
 
     # Anchor-first: anchor terms are the rarest (most discriminating) tokens,
     # defined relative to the rarest term so the band is scale-invariant. Every
