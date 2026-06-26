@@ -1,0 +1,50 @@
+Loading LongMemEval Oracle dataset...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Running benchmark on 500 questions...
+
+  [50/500] Accuracy so far: 46.0%
+  [100/500] Accuracy so far: 32.0%
+  [150/500] Accuracy so far: 36.0%
+  [200/500] Accuracy so far: 47.0%
+  [250/500] Accuracy so far: 43.2%
+  [300/500] Accuracy so far: 50.7%
+  [350/500] Accuracy so far: 57.1%
+  [400/500] Accuracy so far: 50.7%
+  [450/500] Accuracy so far: 51.1%
+  [500/500] Accuracy so far: 49.6%
+
+============================================================
+LongMemEval Oracle Benchmark — Sibyl Memory Plugin
+============================================================
+
+Overall Accuracy: 248/500 = 49.6%
+
+By Question Type:
+  Type                            Correct    Total   Accuracy
+  ------------------------------ -------- -------- ----------
+  knowledge-update                     62       78      79.5%
+  multi-session                        32      133      24.1%
+  single-session-assistant             45       56      80.4%
+  single-session-preference             0       30       0.0%
+  single-session-user                  61       70      87.1%
+  temporal-reasoning                   48      133      36.1%
+
+Methodology:
+  - Dataset: LongMemEval Oracle (500 questions, 6 types)
+  - Memory: Sibyl Memory Plugin (sibyl-memory-client 0.4.15)
+  - Tier: staker (full access)
+  - Approach: Load sessions → search for answer terms → check recall
+  - Match: Exact substring + 70% token overlap
+  - This tests MEMORY RETRIEVAL, not LLM generation
+
+Comparison with Sibyl's published results:
+  - Sibyl claims 95.6% with Claude Opus 4.6 (full LLM pipeline)
+  - This benchmark isolates the memory layer only
+  - Lower scores are expected (no LLM reasoning)
+
+Sample failures (5 shown):
+  gpt4_2655b836: What was the first issue I had with my new car after its first service?
+  gpt4_2487a7cb: Which event did I attend first, the 'Effective Time Management' workshop or the 
+  0bb5a684: How many days before the team meeting I was preparing for did I attend the works
+  08f4fc43: How many days had passed between the Sunday mass at St. Mary's Church and the As
+  2c63a862: How many days did it take for me to find a house I loved after starting to work 
