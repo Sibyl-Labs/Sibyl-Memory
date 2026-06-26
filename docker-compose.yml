@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  sibyl-memory:
+    build: .
+    container_name: sibyl-memory-mcp
+    volumes:
+      - sibyl-data:/data
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+volumes:
+  sibyl-data:
+    driver: local
