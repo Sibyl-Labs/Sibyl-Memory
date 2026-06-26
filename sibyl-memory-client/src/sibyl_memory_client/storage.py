@@ -65,10 +65,76 @@ def dumps(payload: Any) -> str:
 
 def loads(blob: str | None) -> Any:
     """Inverse of dumps(). Returns None for None input (matches nullable
-    JSONB column semantics)."""
+    JSONB column semantics).
+
+    CORE-7 (2026-06-25 pre-launch audit): a corrupted stored row (truncated
+    blob, partial write, manual DB edit) previously raised a raw
+    ``json.JSONDecodeError`` out of the public read API (get_entity, search,
+    read_events, ...). That is an undeclared exception type that crashes
+    callers expecting only the typed SibylMemoryError hierarchy. Now a malformed
+    blob raises a typed StorageError with the offending prefix elided (no
+    content leak), chained to the original decode error for debugging."""
     if blob is None:
         return None
-    return json.loads(blob)
+    try:
+        return json.loads(blob)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise StorageError(
+            "A stored memory row contains malformed JSON and could not be "
+            "decoded.",
+            recovery=(
+                "The row was likely corrupted by a partial write or a manual "
+                "edit. Run the memory linter to locate invalid-json rows, then "
+                "repair or delete the offending row."
+            ),
+        ) from e
+
+
+def db_size_bytes(db_path: str | Path) -> int:
+    """Return the WAL-inclusive logical footprint of a SQLite database.
+
+    CAP-1 (2026-06-25 pre-launch audit): the free-tier cap must account for data
+    that has been committed but still lives in ``memory.db-wal`` (WAL journal
+    mode is the default here). Sizing ``memory.db`` alone under-reports during
+    write bursts, letting a user grow past the cap before the checkpoint folds
+    the WAL back in.
+
+    The authoritative measure is the SQLite *logical* size — ``page_count *
+    page_size`` — read over a short-lived connection. ``page_count`` reflects
+    every page the database logically holds, including committed pages still in
+    the WAL, so it counts WAL-resident data WITHOUT the transient over-count a
+    raw ``main + -wal`` file-byte sum produces (the WAL holds rewritten copies of
+    existing pages during a burst, not purely net-new bytes). This is the same
+    number ``Storage.logical_size_bytes`` reads inside a transaction, so the
+    pre-write estimate and the in-transaction CAP-2 check agree.
+
+    Falls back to the file-byte sum (main + -wal + -shm) if the logical read
+    fails for any reason (locked DB, pre-open path, non-SQLite file) — a sum
+    that is never an UNDER-count, which is the safe direction for a cap.
+    """
+    main = Path(db_path)
+    if main.exists():
+        try:
+            conn = sqlite3.connect(str(main), timeout=1.0)
+            try:
+                page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+                page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+                logical = int(page_count) * int(page_size)
+                if logical > 0:
+                    return logical
+            finally:
+                conn.close()
+        except (sqlite3.Error, TypeError, IndexError, OSError):
+            pass  # fall through to the file-sum lower-effort path
+    total = 0
+    for path in (main, main.with_name(main.name + "-wal"),
+                 main.with_name(main.name + "-shm")):
+        try:
+            if path.exists():
+                total += path.stat().st_size
+        except OSError:
+            pass
+    return total
 
 
 class Storage:
@@ -103,6 +169,13 @@ class Storage:
         # Per-instance thread-local cache (avoids leaking connections across
         # Storage instances pointing at different files).
         self._tls = threading.local()
+        # CORE-13 (2026-06-25 pre-launch audit): thread-local connections opened
+        # by worker threads were never closed by close() (which only sees the
+        # calling thread's TLS slot), leaking a file descriptor + WAL handle per
+        # thread for the life of the process. Track every opened connection in a
+        # registry guarded by a lock so close() can reap all of them.
+        self._conn_registry: list[sqlite3.Connection] = []
+        self._registry_lock = threading.Lock()
         # Bootstrap schema on first open (idempotent)
         self._ensure_schema()
         # v0.4.0 (KAPPA RED finding): tighten file permissions on the main DB
@@ -151,6 +224,10 @@ class Storage:
         if conn is None:
             conn = self._connect()
             self._tls.conn = conn
+            # CORE-13: register so close() can reap connections opened by other
+            # threads (TLS only exposes the calling thread's slot).
+            with self._registry_lock:
+                self._conn_registry.append(conn)
         try:
             yield conn
         except sqlite3.Error as e:
@@ -161,13 +238,29 @@ class Storage:
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
-        """Atomic transaction. Rolls back on exception, commits on clean exit."""
+        """Atomic transaction. Rolls back on exception, commits on clean exit.
+
+        CORE-14 (2026-06-25 pre-launch audit):
+          - ``BEGIN IMMEDIATE`` is now inside the try so a failure to acquire the
+            write lock (SQLITE_BUSY after busy_timeout) propagates cleanly
+            instead of escaping the rollback-aware block.
+          - The ROLLBACK is wrapped in its own try/except. Previously, if the
+            ROLLBACK itself raised (e.g. the connection is already in an aborted
+            state), that secondary error MASKED the real exception that caused
+            the rollback. Now the rollback failure is chained as __context__ but
+            the original error is always the one re-raised, so the caller sees
+            the true cause.
+        """
         with self.connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             try:
+                conn.execute("BEGIN IMMEDIATE")
                 yield conn
             except Exception:
-                conn.execute("ROLLBACK")
+                try:
+                    conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    # Do not mask the original error with a rollback failure.
+                    pass
                 raise
             else:
                 conn.execute("COMMIT")
@@ -294,9 +387,67 @@ class Storage:
                 # are truly broken (write operations will fail downstream).
                 pass
 
+    @staticmethod
+    def logical_size_bytes(conn: sqlite3.Connection) -> int:
+        """Return the logical DB size (page_count * page_size) on a connection.
+
+        CAP-2 (2026-06-25 pre-launch audit): inside an open transaction this
+        already reflects the pages the pending INSERT/UPDATE will occupy, so it
+        is the reliable "true size immediately before commit" signal that a raw
+        file ``stat`` cannot give mid-transaction (WAL has not folded back yet).
+        Used by the write paths to gate on the ABSOLUTE resulting footprint
+        rather than a pre-write byte estimate.
+        """
+        try:
+            page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+            page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+            return int(page_count) * int(page_size)
+        except (sqlite3.Error, TypeError, IndexError):
+            return 0
+
+    def count_rows(self, table: str, tenant_id: str) -> int:
+        """Return COUNT(*) for a tenant in one of the canonical tables.
+
+        CORE-6/MH-3 (2026-06-25 pre-launch audit): multi_record_search needs a
+        corpus size for IDF weighting. It previously did
+        ``len(list_entities(limit=100000))`` — a full materialization of every
+        entity row (and a JSON decode of each body) just to count them. This is a
+        cheap COUNT(*) that touches no bodies. ``table`` is matched against a
+        fixed allowlist (never user input) so the interpolation is injection-safe;
+        the tenant value is parameterized.
+        """
+        allowed = {
+            "entities", "state_documents", "journal_events",
+            "reference_documents", "archived_entities",
+        }
+        if table not in allowed:
+            raise StorageError(
+                f"count_rows: unknown table {table!r}",
+                recovery="Pass one of the canonical memory tables.",
+            )
+        with self.connection() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS n FROM {table} WHERE tenant_id = ?",
+                (tenant_id,),
+            ).fetchone()
+        return int(row["n"]) if row else 0
+
     def close(self) -> None:
-        """Close the thread-local connection (mainly for tests / shutdown)."""
-        conn = getattr(self._tls, "conn", None)
-        if conn is not None:
-            conn.close()
+        """Close all tracked connections (mainly for tests / shutdown).
+
+        CORE-13 (2026-06-25 pre-launch audit): previously only the calling
+        thread's TLS connection was closed, leaking every connection opened by
+        a worker thread. Now reap the full registry so no fd / WAL handle is
+        left open at shutdown.
+        """
+        with self._registry_lock:
+            registry = list(self._conn_registry)
+            self._conn_registry.clear()
+        for conn in registry:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+        # Drop the calling thread's TLS slot so a later connection() reopens.
+        if getattr(self._tls, "conn", None) is not None:
             self._tls.conn = None

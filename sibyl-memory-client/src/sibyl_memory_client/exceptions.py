@@ -139,3 +139,23 @@ class TierVerificationError(SibylMemoryError):
         "Connect to the internet so the SDK can verify your account, or "
         "stay under the 2 MB free-tier cap until you're online."
     )
+
+
+class TierAuthError(TierVerificationError):
+    """Raised when the tier-verification server authoritatively refuses the
+    request (HTTP 401/403): a bad, expired, forged, or revoked token.
+
+    CAP-5 / CORE-2 (2026-06-25 pre-launch audit): this is a SUBCLASS of
+    TierVerificationError so existing ``except TierVerificationError`` handlers
+    still catch it, but the cap gate handles it distinctly — an auth refusal is
+    authoritative ("not entitled"), so the gate enforces the free cap and NEVER
+    fails open. Only a genuine reachability failure (timeout, connection error,
+    5xx) is eligible for the bounded fail-open concession.
+    """
+
+    code = "TIER_AUTH_FAILED"
+    recovery = (
+        "Your account could not be authorized (token invalid, expired, or "
+        "revoked). Re-run `sibyl init` to refresh credentials. The free 2 MB "
+        "cap is enforced until your account is re-verified."
+    )

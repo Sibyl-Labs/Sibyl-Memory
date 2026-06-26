@@ -99,6 +99,25 @@ def _tree_size(p: Path) -> int:
     return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
 
 
+def _fsync_path(p: Path) -> None:
+    """Best-effort fsync of a file or directory so a crash right after backup
+    can't leave a partially-flushed copy. CLI-9: backups must survive a power
+    loss before we trust them enough to trim the originals."""
+    try:
+        if p.is_dir():
+            flags = getattr(os, "O_DIRECTORY", 0)
+            fd = os.open(str(p), os.O_RDONLY | flags)
+        else:
+            fd = os.open(str(p), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        # Directory fsync is not portable everywhere; never fail the backup on it.
+        pass
+
+
 # ----------------------------------------------------------------------
 # 2. Backup (deterministic, verified, timestamped) — the safety win
 # ----------------------------------------------------------------------
@@ -135,9 +154,15 @@ def run_backup(files: list[FoundFile], dest_parent: Path, *, now: Optional[datet
             if f.is_dir:
                 shutil.copytree(f.path, target, dirs_exist_ok=True)
                 src_sz, dst_sz = _tree_size(f.path), _tree_size(target)
+                # CLI-9: fsync every copied file in the tree so the backup is
+                # durable before we ever trim an original.
+                for cf in target.rglob("*"):
+                    if cf.is_file():
+                        _fsync_path(cf)
             else:
                 shutil.copy2(f.path, target)
                 src_sz, dst_sz = f.path.stat().st_size, target.stat().st_size
+                _fsync_path(target)  # CLI-9: durable copy before any trim
             if src_sz != dst_sz:
                 res.ok = False; res.error = f"byte mismatch on {f.rel} ({src_sz} != {dst_sz})"
                 return res
@@ -145,6 +170,9 @@ def run_backup(files: list[FoundFile], dest_parent: Path, *, now: Optional[datet
         except Exception as e:
             res.ok = False; res.error = f"copy failed on {f.rel}: {type(e).__name__}: {e}"
             return res
+    # CLI-9: fsync the backup directory itself so its directory entries (the
+    # newly-created files) are persisted, not just the file contents.
+    _fsync_path(backup)
     return res
 
 
@@ -198,25 +226,73 @@ def extraction_prompt(harness: str, backup_dir: Path) -> str:
 # 5. Verify — count what actually landed in the local Sibyl DB
 # ----------------------------------------------------------------------
 
+# Sentinel returned by db_baseline when the path EXISTS but is not a readable
+# SQLite database (garbage bytes, wrong magic, locked, corrupt). Distinct from
+# 0 (a valid empty DB / no DB yet). CLI-3 migrate half: the orchestrator must
+# ABORT verify + debloat on this, never silently treat it as a 0-row DB and
+# proceed to trim the user's real files against a backup it can't trust.
+DB_UNREADABLE = -1
+
+
+def _is_readable_db(db_path: Path) -> bool:
+    """True if `db_path` is a non-empty file that opens as a real SQLite DB.
+
+    A 0-byte file is treated as a fresh/empty DB by sqlite and counts as
+    readable (no rows yet). Anything that fails the header check or PRAGMA is
+    unreadable."""
+    try:
+        if not db_path.is_file():
+            return False
+        if db_path.stat().st_size == 0:
+            return True
+        with open(db_path, "rb") as fh:
+            if fh.read(16) != b"SQLite format 3\x00":
+                return False
+        con = sqlite3.connect(str(db_path))
+        try:
+            con.execute("PRAGMA schema_version")
+        finally:
+            con.close()
+        return True
+    except (OSError, sqlite3.Error):
+        return False
+
+
 def db_baseline(db_path: Path) -> int:
-    """Total entity count now, to diff against after extraction. 0 if no DB yet."""
+    """Total entity count now, to diff against after extraction.
+
+    Returns 0 if no DB exists yet (or an empty DB with no rows), and
+    DB_UNREADABLE (-1) when the path exists but is not a usable SQLite DB —
+    CLI-3: the caller must distinguish "no DB" from "unreadable DB"."""
     db_path = Path(db_path).expanduser()
     if not db_path.exists():
         return 0
+    if not _is_readable_db(db_path):
+        return DB_UNREADABLE
     try:
         con = sqlite3.connect(str(db_path)); con.row_factory = sqlite3.Row
         n = con.execute("SELECT COUNT(*) c FROM entities").fetchone()["c"]
         con.close()
         return int(n)
     except sqlite3.Error:
+        # Readable SQLite file but no `entities` table yet (fresh schema) —
+        # that's 0 baseline, not an unreadable DB.
         return 0
 
 
 def verify_new_entries(db_path: Path, baseline_total: int) -> dict:
-    """Return {'new_total': N, 'by_category': {...}, 'ok': bool}. ok = new_total > 0."""
+    """Return {'new_total': N, 'by_category': {...}, 'ok': bool}. ok = new_total > 0.
+
+    CLI-3: if the DB path exists but is unreadable, set ok=False and flag
+    `unreadable` so the orchestrator aborts rather than reporting 0 new
+    entries (which would falsely gate a debloat)."""
     db_path = Path(db_path).expanduser()
     out = {"new_total": 0, "by_category": {}, "ok": False}
     if not db_path.exists():
+        return out
+    if not _is_readable_db(db_path):
+        out["unreadable"] = True
+        out["error"] = "database file exists but is not a readable SQLite database"
         return out
     try:
         con = sqlite3.connect(str(db_path)); con.row_factory = sqlite3.Row
@@ -260,6 +336,23 @@ def heuristic_lean(text: str) -> str:
     return core + pointer
 
 
+def verify_backup_of(live_path: Path, backup_dir: Path, *, home: Path, cwd: Optional[Path]) -> bool:
+    """Re-stat the SPECIFIC backup copy of `live_path` and confirm it exists
+    with a matching byte count.
+
+    CLI-9: before trimming an original we must verify the backup file on disk
+    right now — not trust the in-memory `bk.ok` flag from earlier, which can't
+    catch a backup that was deleted/truncated/corrupted in the meantime."""
+    try:
+        rel = _backup_rel(Path(live_path), Path(home), cwd)
+        backup_copy = Path(backup_dir) / rel
+        if not backup_copy.is_file():
+            return False
+        return backup_copy.stat().st_size == Path(live_path).stat().st_size
+    except OSError:
+        return False
+
+
 def debloat_file(live_path: Path, lean_text: str, *, backup_exists: bool, dry_run: bool = False) -> dict:
     """Atomically replace live_path with lean_text. REFUSES unless backup_exists is True.
     Returns {before, after, written, error}."""
@@ -267,14 +360,36 @@ def debloat_file(live_path: Path, lean_text: str, *, backup_exists: bool, dry_ru
     out = {"before": 0, "after": len(lean_text.encode()), "written": False}
     if not backup_exists:
         out["error"] = "refused: no verified backup exists"; return out
+    # CLI-8: refuse to trim through a symlink. os.replace on a symlinked target
+    # would clobber whatever the link points at — potentially a file outside
+    # the intended scope. The debloat is the highest-blast-radius step; it must
+    # only ever rewrite a regular file we backed up.
+    if live_path.is_symlink():
+        out["error"] = "refused: live file is a symlink"; return out
     if not live_path.exists():
         out["error"] = "live file not found"; return out
     out["before"] = live_path.stat().st_size
     if dry_run:
         return out
-    tmp = live_path.with_suffix(live_path.suffix + ".sibyl-tmp")
-    tmp.write_text(lean_text, encoding="utf-8")
-    os.replace(tmp, live_path)
+    # CLI-8: mkstemp (unique per-process) + fsync + atomic os.replace, instead
+    # of a fixed `.sibyl-tmp` name that two runs could collide on.
+    data = lean_text.encode("utf-8")
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=str(live_path.parent),
+                               prefix=live_path.name + ".", suffix=".sibyl-tmp")
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    else:
+        os.close(fd)
+    os.replace(tmp, str(live_path))
     out["written"] = True
     return out
 
@@ -377,6 +492,15 @@ def run_guided_setup(*, home=None, cwd=None, db_path=None, backup_parent=None,
 
     # 3. extraction (the harness does it; default prints the prompt + pauses)
     baseline = db_baseline(db_path)
+    # CLI-3: if the DB path exists but is unreadable, do NOT proceed to verify
+    # + debloat. A debloat trims the user's live files; gating it on a DB we
+    # cannot read would be unsafe. Abort cleanly with the originals intact.
+    if baseline == DB_UNREADABLE:
+        io.say("Sibyl memory DB exists but is unreadable (not a valid SQLite database).")
+        io.say("Aborting before verify/trim — your originals and backup are intact.")
+        report["phases"]["verify"] = {"new_total": 0, "by_category": {}, "ok": False, "unreadable": True}
+        report["ok"] = False
+        return report
     target = next(iter(detected), "claude-code")
     if extract_fn is not None:
         extract_fn(bk.backup_dir, db_path)
@@ -394,8 +518,16 @@ def run_guided_setup(*, home=None, cwd=None, db_path=None, backup_parent=None,
     cm = (Path(cwd) / "CLAUDE.md") if cwd else (home / "CLAUDE.md")
     if debloat and v["ok"] and cm.exists():
         if io.confirm(f"Trim {cm.name} to lean now? Full backup is safe at {bk.backup_dir}", default=False):
-            lean = heuristic_lean(cm.read_text(encoding="utf-8", errors="replace"))
-            d = debloat_file(cm, lean, backup_exists=bk.ok)
-            report["phases"]["debloat"] = {"written": d["written"], "before": d["before"], "after": d["after"]}
-            io.say(f"Trimmed {cm.name}. Backup safe at {bk.backup_dir}")
+            # CLI-9: re-verify the actual backup copy on disk RIGHT NOW before
+            # trimming, instead of trusting the earlier in-memory bk.ok.
+            backup_ok_now = bk.ok and verify_backup_of(cm, bk.backup_dir, home=home, cwd=cwd)
+            if not backup_ok_now:
+                io.say(f"Backup of {cm.name} could not be re-verified — skipping trim. Original untouched.")
+                report["phases"]["debloat"] = {"written": False, "before": cm.stat().st_size,
+                                               "after": 0, "error": "backup re-verification failed"}
+            else:
+                lean = heuristic_lean(cm.read_text(encoding="utf-8", errors="replace"))
+                d = debloat_file(cm, lean, backup_exists=backup_ok_now)
+                report["phases"]["debloat"] = {"written": d["written"], "before": d["before"], "after": d["after"]}
+                io.say(f"Trimmed {cm.name}. Backup safe at {bk.backup_dir}")
     return report

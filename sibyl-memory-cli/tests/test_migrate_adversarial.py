@@ -109,10 +109,14 @@ def test_scan_no_files_returns_empty(tmp_path):
 # ---------------------------------------------------------------- verify / DB
 
 def test_verify_corrupt_db_is_contained(tmp_path):
+    # CLI-3: a corrupt/non-SQLite file that EXISTS is now flagged as unreadable
+    # (DB_UNREADABLE sentinel), distinct from 0 (no DB / empty DB), so the
+    # orchestrator can abort verify/debloat instead of treating it as 0 rows.
     db = tmp_path / "memory.db"; db.write_bytes(os.urandom(4096))  # not a sqlite file
-    assert M.db_baseline(db) == 0                      # contained, no raise
+    assert M.db_baseline(db) == M.DB_UNREADABLE        # contained, no raise, flagged
     v = M.verify_new_entries(db, 0)
     assert v["ok"] is False                            # contained, no raise
+    assert v.get("unreadable") is True
 
 
 def test_verify_empty_schema_db(tmp_path):

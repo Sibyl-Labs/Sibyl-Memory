@@ -4,6 +4,19 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.1.11] - 2026-06-25
+
+Pre-launch security audit hardening.
+
+### Security
+- Ported the prompt-injection fence + per-call nonce + body/snippet size caps
+  onto all four read tools (`memory_recall`, `memory_search`, `memory_list`,
+  `memory_get_state`). Previously only the Hermes adapter carried this; the MCP
+  server returned raw stored bodies with no fence or size cap.
+
+### Fixed
+- `memory_search` early-returns on a sub-3-character query (mirrors the adapter).
+
 ## [0.1.10] - 2026-06-19
 
 ### Fixed

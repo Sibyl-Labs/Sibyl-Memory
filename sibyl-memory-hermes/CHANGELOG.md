@@ -4,6 +4,21 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.11] - 2026-06-25
+
+Pre-launch security audit hardening.
+
+### Fixed
+- Search-hit size cap now applies to both `body` and `snippet` (a cross-tier
+  hit carried a full-length snippet that was previously uncapped).
+- Tool-call `limit` is clamped (non-numeric falls back to default; ceiling
+  enforced).
+- Fence-marker scrub runs on each value BEFORE `json.dumps` (an unterminated
+  marker could previously corrupt the JSON envelope).
+- `uninstall` also removes the Hermes 0.7+ provider-path copy (was left behind).
+- Plugin install is atomic (staged temp dir + rename; no half-written plugin on
+  interrupt). `active_profile` content is sanitized at read (log-injection).
+
 ## [0.3.10] - 2026-06-19
 
 ### Fixed

@@ -15,7 +15,34 @@ from pathlib import Path
 from typing import Any
 
 from .exceptions import NotFoundError, StorageError, TenantError, ValidationError
-from .storage import Storage, dumps, loads, new_id, _utc_now_iso
+from .storage import Storage, db_size_bytes, dumps, loads, new_id, _utc_now_iso
+
+
+# ----------------------------------------------------------------------
+# Shared limit clamp (CORE-5, 2026-06-25 pre-launch audit)
+# ----------------------------------------------------------------------
+# SQLite treats LIMIT -1 as UNBOUNDED, so a caller passing limit=-1 (or any
+# negative) to a read path previously got an unbounded result set — a DoS /
+# context-flood vector. A huge positive limit is the same class of problem
+# (materialize the whole table). Every public read path clamps through this
+# helper: negatives floor to 0 (no rows), and the ceiling bounds the worst
+# case. MAX_LIMIT is generous (well above any legitimate page) so it never
+# truncates real use; it only stops pathological values.
+MAX_LIMIT = 10_000
+
+
+def _clamp_limit(limit: Any) -> int:
+    """Clamp a caller-supplied limit to [0, MAX_LIMIT].
+
+    Coerces to int (a non-int limit is a caller bug, not a broaden vector):
+    anything that won't coerce floors to 0 so it cannot fall through to
+    SQLite's unbounded LIMIT -1.
+    """
+    try:
+        n = int(limit)
+    except (TypeError, ValueError):
+        return 0
+    return min(max(0, n), MAX_LIMIT)
 
 
 # ----------------------------------------------------------------------
@@ -491,7 +518,15 @@ def _relaxed_query_strings(query: str):
     #    The wrapper stops at the first variant that returns hits, so the most
     #    specific term is tried before more common ones. Last-resort recall.
     for tok in sorted(set(content or toks), key=len, reverse=True):
-        if len(tok) >= 3 and tok not in seen:
+        # CORE-11 (2026-06-25 pre-launch audit): the old len>=3 floor silently
+        # dropped short alphanumeric identifiers (q3, v2, k8, s3) — exactly the
+        # discriminating tokens a developer searches for. Recover any token of
+        # length >= 2 OR any token containing a digit (so single-letter+digit
+        # identifiers like "k8" still retry). One-char pure-alpha tokens stay
+        # excluded (too common to be useful as a last-resort recall term).
+        if tok in seen:
+            continue
+        if len(tok) >= 2 or any(ch.isdigit() for ch in tok):
             seen.add(tok)
             yield tok
 
@@ -582,6 +617,13 @@ class MemoryClient:
         credentials_signature: str | None = None,
     ) -> None:
         self._storage = storage
+        # CORE-8: validate the tenant_id at construction too (set_tenant guards
+        # the runtime switch; this guards the initial value). Re-raise as
+        # TenantError for a consistent failure mode.
+        try:
+            validate_identifier(tenant_id, field_name="tenant_id")
+        except ValidationError as e:
+            raise TenantError(str(e), recovery=e.recovery) from e
         self._tenant_id = tenant_id
         self._tier = tier
         self._account_id = account_id
@@ -594,10 +636,11 @@ class MemoryClient:
             cap_gate = CapGate(
                 account_id=account_id,
                 session_token=session_token,
-                db_size_fn=lambda: (
-                    Path(storage.db_path).stat().st_size
-                    if Path(storage.db_path).exists() else 0
-                ),
+                # CAP-1: WAL-inclusive sizing. Sizing memory.db alone under-counts
+                # writes still sitting in memory.db-wal, letting a free user grow
+                # past the cap during a write burst before the checkpoint folds
+                # the WAL back in. db_size_bytes sums the main file + -wal + -shm.
+                db_size_fn=lambda: db_size_bytes(storage.db_path),
                 local_tier_hint=tier,
                 cache=TierCache(
                     Path(storage.db_path).parent / "tier_cache.json"
@@ -665,8 +708,22 @@ class MemoryClient:
         return self._tenant_id
 
     def set_tenant(self, tenant_id: str) -> None:
-        if not tenant_id or not isinstance(tenant_id, str):
-            raise TenantError("tenant_id must be a non-empty string")
+        """Switch the active tenant.
+
+        CORE-8 (2026-06-25 pre-launch audit): tenant_id is now validated the
+        same way every other user-supplied identifier is (non-empty string, no
+        control characters / null bytes, no path-traversal or shell
+        metacharacters, length <= 1024). An unvalidated tenant_id silently
+        created a separate, unreachable data partition (a control char or empty
+        string is a different key than the user thinks they typed), which both
+        loses data and weakens isolation. validate_identifier raises
+        ValidationError; we re-raise as TenantError to keep the documented
+        set_tenant failure mode.
+        """
+        try:
+            validate_identifier(tenant_id, field_name="tenant_id")
+        except ValidationError as e:
+            raise TenantError(str(e), recovery=e.recovery) from e
         self._tenant_id = tenant_id
 
     @property
@@ -689,14 +746,52 @@ class MemoryClient:
             raise ValidationError("tier must be a non-empty string")
         self._tier = tier
 
+    def _effective_tier(self) -> str:
+        """Best-available trustworthy tier for feature gating.
+
+        CORE-10 (2026-06-25 pre-launch audit, SAFE-MINIMAL — see FLAG below):
+        the paid-feature gates trusted the raw client-supplied ``self._tier``,
+        so editing credentials.json to ``tier:"lifetime"`` unlocked the learner
+        and linter for free. A full server round-trip on every learn()/lint()
+        would be the authoritative fix but risks latency + offline regressions,
+        so we use the cheapest server-authoritative signal we already hold: the
+        CapGate's tier cache, which is populated by a server-verified
+        /check-write boundary call.
+
+        When the cache carries a FRESH, account-matched entry, its tier is the
+        server's word and overrides the client hint — a tampered free->paid
+        credentials edit is caught the moment a real cache exists. When there is
+        no usable cache (user never approached the cap, or offline pre-cache),
+        we fall back to the client hint (unchanged behavior, no new failure
+        mode). This narrows the abuse window without a network dependency.
+        """
+        gate = getattr(self, "_cap_gate", None)
+        cache = getattr(gate, "_cache", None)
+        account_id = getattr(gate, "account_id", None)
+        if cache is not None:
+            try:
+                cached = cache.load()
+            except Exception:
+                cached = None
+            if (cached is not None and cached.is_fresh
+                    and cached.account_id == account_id
+                    and account_id is not None):
+                return cached.tier
+        return self._tier
+
     def _require_paid_tier(self, feature: str) -> None:
-        """Raise TierGateError if the current tier is not paid-tier."""
+        """Raise TierGateError if the current tier is not paid-tier.
+
+        CORE-10: gates on the server-authoritative tier when a fresh cap-gate
+        cache is available, else on the client hint (see _effective_tier).
+        """
         from .exceptions import TierGateError
-        if self._tier not in self._PAID_ONLY_TIERS:
+        effective = self._effective_tier()
+        if effective not in self._PAID_ONLY_TIERS:
             raise TierGateError(
-                f"{feature} requires a paid tier. Current tier: {self._tier!r}.",
+                f"{feature} requires a paid tier. Current tier: {effective!r}.",
                 feature=feature,
-                current_tier=self._tier,
+                current_tier=effective,
             )
 
     # ------------------------------------------------------------------
@@ -751,6 +846,8 @@ class MemoryClient:
                     "WHERE id = ?",
                     (status, body_json, ent_id),
                 )
+            # CAP-2: absolute-footprint recheck inside the same transaction.
+            self._verify_committed_size(conn)
         return self.get_entity(category, name)
 
     @_track_op("recall")
@@ -773,6 +870,7 @@ class MemoryClient:
         status: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
+        limit = _clamp_limit(limit)  # CORE-5: negative/huge limit must not broaden
         sql = "SELECT id, tenant_id, category, name, status, body, created_at, updated_at FROM entities WHERE tenant_id = ?"
         params: list[Any] = [self._tenant_id]
         if category is not None:
@@ -816,6 +914,8 @@ class MemoryClient:
                 "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
                 (self._tenant_id, key, body_json),
             )
+            # CAP-2: absolute-footprint recheck inside the same transaction.
+            self._verify_committed_size(conn)
 
     def get_state(self, key: str) -> dict[str, Any] | None:
         with self._storage.connection() as conn:
@@ -863,6 +963,8 @@ class MemoryClient:
                     _check_json(extra, "extra") if extra is not None else None,
                 ),
             )
+            # CAP-2: absolute-footprint recheck inside the same transaction.
+            self._verify_committed_size(conn)
         return ev_id
 
     def read_events(
@@ -872,6 +974,7 @@ class MemoryClient:
         since: str | None = None,
         until: str | None = None,
     ) -> list[dict[str, Any]]:
+        limit = _clamp_limit(limit)  # CORE-5: negative limit = SQLite unbounded; clamp
         sql = "SELECT id, tenant_id, ts, evaluated, acted, forward, extra FROM journal_events WHERE tenant_id = ?"
         params: list[Any] = [self._tenant_id]
         if since is not None:
@@ -938,6 +1041,8 @@ class MemoryClient:
                 "metadata = excluded.metadata, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
                 (self._tenant_id, key, body, meta_json),
             )
+            # CAP-2: absolute-footprint recheck inside the same transaction.
+            self._verify_committed_size(conn)
 
     def get_reference(self, key: str) -> dict[str, Any] | None:
         with self._storage.connection() as conn:
@@ -963,21 +1068,15 @@ class MemoryClient:
         the body first so we know the actual delta. NotFoundError still
         raised before any cap-gate work.
         """
-        # Read the row first so we can size the archive insert. NotFoundError
-        # propagates as before: no cap-gate side effect for missing entities.
-        with self._storage.connection() as conn:
-            preview = conn.execute(
-                "SELECT id, body FROM entities WHERE tenant_id = ? AND category = ? AND name = ?",
-                (self._tenant_id, category, name),
-            ).fetchone()
-        if preview is None:
-            raise NotFoundError(f"entity {category}/{name} not found")
-        body_bytes = len(preview["body"] or "") if preview["body"] else 0
-        # The archive insert copies the body. Delta = body + name + category
-        # + reason + ~200B SQLite/row overhead. Conservative estimate.
-        delta = body_bytes + len(name) + len(category) + len(reason or "") + 200
-        self._cap_gate.check(proposed_delta_bytes=delta)
-
+        # CORE-9 (2026-06-25 pre-launch audit): read the row, size the insert,
+        # run the cap-check, and perform the archive write all inside ONE
+        # BEGIN IMMEDIATE transaction. The previous two-phase shape (read +
+        # cap-check in a plain connection, then a separate transaction for the
+        # write) had a TOCTOU window: a concurrent writer could grow the DB
+        # between the cap-check and the archive insert, so a free user near the
+        # cap could still push past it. BEGIN IMMEDIATE takes the write lock up
+        # front, closing the window. NotFoundError still propagates before any
+        # write so a missing entity has no side effect.
         with self._storage.transaction() as conn:
             row = conn.execute(
                 "SELECT id, body FROM entities WHERE tenant_id = ? AND category = ? AND name = ?",
@@ -985,6 +1084,13 @@ class MemoryClient:
             ).fetchone()
             if row is None:
                 raise NotFoundError(f"entity {category}/{name} not found")
+            body_bytes = len(row["body"] or "") if row["body"] else 0
+            # The archive insert copies the body. Delta = body + name + category
+            # + reason + ~200B SQLite/row overhead. Conservative estimate.
+            delta = body_bytes + len(name) + len(category) + len(reason or "") + 200
+            # Cap-check holds the write lock (BEGIN IMMEDIATE), so the size it
+            # reads cannot be perturbed by another writer before our INSERT.
+            self._cap_gate.check(proposed_delta_bytes=delta)
             arch_id = new_id()
             conn.execute(
                 "INSERT INTO archived_entities (id, tenant_id, original_entity_id, category, name, body, archive_reason) "
@@ -1066,8 +1172,10 @@ class MemoryClient:
         without needing to call the (gated) linter.
         """
         from .lint import TIER_SOFT_CAPS, DEFAULT_SOFT_CAP_BYTES
-        from pathlib import Path
-        db_size = Path(self._storage.db_path).stat().st_size if Path(self._storage.db_path).exists() else 0
+        # CAP-1: WAL-inclusive sizing so the "% of cap" prompt matches what the
+        # cap gate actually enforces (the main file alone under-reports during
+        # write bursts).
+        db_size = db_size_bytes(self._storage.db_path)
         cap = TIER_SOFT_CAPS.get(self._tier, DEFAULT_SOFT_CAP_BYTES)
         # Paid tier → no cap
         if cap is None:
@@ -1115,13 +1223,22 @@ class MemoryClient:
 
         Raises: StorageError on backend failure; empty list on empty / invalid query.
         """
-        limit = max(0, limit)  # negative limit must not broaden: SQLite LIMIT -1 = unbounded
+        limit = _clamp_limit(limit)  # CORE-5: negative=unbounded; huge=full-scan. Clamp.
         match_q = _sanitize_fts5_query(query, prefix=prefix)
         if not match_q:
             return []
         # external-content FTS5: join by rowid back to base table.
         # _fts_query handles classification (v0.4.0 KAPPA) + corruption
         # containment (poisoned-index DatabaseError self-heals or returns []).
+        #
+        # !!! CORE-3 TENANT-ISOLATION LOCK (2026-06-25 pre-launch audit) !!!
+        # `AND f.tenant_id = ?` is the ONLY thing keeping this query inside the
+        # caller's tenant. tenant_id is UNINDEXED in the FTS5 table (see
+        # schema.sql), so this is a trailing post-filter, NOT index-enforced
+        # isolation. DO NOT remove, reorder, or make this clause conditional.
+        # Index-level enforcement needs an FTS schema migration that would break
+        # existing DBs — FLAGGED for lead review; guarded for now by this lock +
+        # the zero-cross-tenant-leak regression test (test_core3_tenant_isolation).
         cat_clause = " AND e.category = ?" if category else ""
         params = ((match_q, self._tenant_id, category, limit) if category
                   else (match_q, self._tenant_id, limit))
@@ -1202,7 +1319,7 @@ class MemoryClient:
 
         Raises: StorageError on backend failure; ValueError on unknown tier names.
         """
-        limit = max(0, limit)  # negative limit must not broaden: SQLite LIMIT -1 = unbounded
+        limit = _clamp_limit(limit)  # CORE-5: negative=unbounded; huge=full-scan. Clamp.
         match_q = _sanitize_fts5_query(query, prefix=prefix)
         if not match_q:
             return []
@@ -1221,6 +1338,15 @@ class MemoryClient:
             # previous behavior (skip this tier silently, other tiers continue).
             # FTS5 syntax / real backend errors raise: the query is bad for
             # ALL tiers, no point continuing through the union.
+            #
+            # !!! CORE-3 TENANT-ISOLATION LOCK (2026-06-25 pre-launch audit) !!!
+            # EVERY query below carries `AND f.tenant_id = ?` as its ONLY tenant
+            # boundary (tenant_id is UNINDEXED in the FTS5 tables — see
+            # schema.sql — so isolation is a trailing post-filter, not
+            # index-enforced). Dropping the clause from ANY ONE tier leaks that
+            # tier across all tenants. DO NOT remove/reorder/conditionalize.
+            # FLAGGED: index-level enforcement needs an FTS schema migration that
+            # would break existing DBs. Guarded by test_core3_tenant_isolation.
             if "entity" in allowed:
                 for r in _fts_query(
                     conn,
@@ -1229,6 +1355,7 @@ class MemoryClient:
                     "       snippet(entities_fts, 2, '[', ']', '...', 12) AS snip, "
                     "       rank "
                     "FROM entities_fts f JOIN entities e ON e.rowid = f.rowid "
+                    # CORE-3 lock: tenant boundary — do not remove.
                     "WHERE entities_fts MATCH ? AND f.tenant_id = ? "
                     "ORDER BY rank LIMIT ?",
                     (match_q, self._tenant_id, limit),
@@ -1249,6 +1376,7 @@ class MemoryClient:
                     "       rank "
                     "FROM state_documents_fts f JOIN state_documents s "
                     "  ON s.rowid = f.rowid "
+                    # CORE-3 lock: tenant boundary — do not remove.
                     "WHERE state_documents_fts MATCH ? AND f.tenant_id = ? "
                     "ORDER BY rank LIMIT ?",
                     (match_q, self._tenant_id, limit),
@@ -1268,6 +1396,7 @@ class MemoryClient:
                     "       rank "
                     "FROM reference_documents_fts f JOIN reference_documents d "
                     "  ON d.rowid = f.rowid "
+                    # CORE-3 lock: tenant boundary — do not remove.
                     "WHERE reference_documents_fts MATCH ? AND f.tenant_id = ? "
                     "ORDER BY rank LIMIT ?",
                     (match_q, self._tenant_id, limit),
@@ -1300,6 +1429,7 @@ class MemoryClient:
                     "       f.rank AS rank "
                     "FROM journal_events_fts f JOIN journal_events j "
                     "  ON j.id = f.event_id "
+                    # CORE-3 lock: tenant boundary — do not remove.
                     "WHERE journal_events_fts MATCH ? AND f.tenant_id = ? "
                     "ORDER BY f.rank LIMIT ?",
                     (match_q, self._tenant_id, journal_limit),
@@ -1351,6 +1481,27 @@ class MemoryClient:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _verify_committed_size(self, conn: sqlite3.Connection) -> None:
+        """CAP-2: re-check the ABSOLUTE footprint inside the write transaction.
+
+        Called after the INSERT/UPDATE rows are staged but before COMMIT, with
+        the BEGIN IMMEDIATE write lock held. Reads the true logical size
+        (page_count * page_size, which already counts the pending change) and
+        gates on the absolute total rather than the pre-write byte estimate. If
+        the resulting footprint exceeds the cap (and the gate confirms the
+        account is free / over-cap), this raises CapExceededError, and the
+        surrounding transaction rolls back the staged write — so a single
+        near-cap write that would tip the DB over is rejected, not committed.
+        """
+        cap_gate = getattr(self, "_cap_gate", None)
+        if cap_gate is None:
+            return
+        total = self._storage.logical_size_bytes(conn)
+        # check_total_local is LOCAL-ONLY (no network) — it must not block on a
+        # urlopen while we hold the BEGIN IMMEDIATE write lock (2026-06-25 audit
+        # blocker). The pre-write check() already did any server verification.
+        cap_gate.check_total_local(total)
+
     def _row_to_entity(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
             "id": row["id"],

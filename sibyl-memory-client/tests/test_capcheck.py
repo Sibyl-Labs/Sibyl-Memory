@@ -182,25 +182,48 @@ def test_offline_at_cap_with_recent_paid_cache(tmp_path: Path) -> None:
     gate.check(proposed_delta_bytes=10_000)
 
 
-def test_offline_at_cap_no_cache_fails_open_under_ceiling(tmp_path: Path) -> None:
-    """v0.4.14 silent-write-loss fix: no cache + verification unreachable + just
-    over the 2 MB cap but under the 4x safety ceiling = FAIL OPEN (write allowed).
-    Durability beats cap enforcement during an outage; the previous behavior
-    (raise TierVerificationError -> caller may drop the write) was the reported
-    silent data-loss bug."""
-    from sibyl_memory_client._capcheck import FAIL_OPEN_CEILING_MULT, FREE_TIER_CAP_BYTES
+def test_offline_at_cap_no_cache_under_free_cap_allows(tmp_path: Path) -> None:
+    """CAP-4/CORE-1: a no-cache / never-paid account with unreachable
+    verification keeps working as long as it is UNDER the free cap. The outage
+    must not block honest free-tier writes that are within the cap."""
+    from sibyl_memory_client._capcheck import FREE_TIER_CAP_BYTES
     server = FakeServer(offline=True)
     cache = TierCache(tmp_path / "tc.json")
     gate = CapGate(
         account_id="acc-1",
         session_token="sess-1",
-        db_size_fn=lambda: FREE_TIER_CAP_BYTES + 100,  # just over the 2 MB cap
+        db_size_fn=lambda: FREE_TIER_CAP_BYTES - 50_000,  # comfortably under cap
         local_tier_hint="free",
         cache=cache,
         check_fn=server,
     )
-    # No exception: under the fail-open ceiling the write is allowed.
-    gate.check(proposed_delta_bytes=500)
+    gate.check(proposed_delta_bytes=500)  # no exception: under the free cap
+
+
+def test_offline_no_cache_no_paid_grant_fails_closed_at_free_cap(tmp_path: Path) -> None:
+    """CAP-4 + CORE-1 (2026-06-25 pre-launch audit): a no-cache account that
+    never had a verified paid grant must FAIL CLOSED at the 2 MB free cap when
+    verification is unreachable — NOT fail open to 4x. This is the headline
+    revenue fix: blackholing api.sibyllabs.org previously let a free user grow
+    to 8 MB write-after-write. The over-cap state is surfaced as a raised
+    CapExceededError (not just a logger.warning), and the cap on the error is
+    the FREE cap, proving we did not allow the 4x ceiling."""
+    from sibyl_memory_client._capcheck import FREE_TIER_CAP_BYTES
+    server = FakeServer(offline=True)
+    cache = TierCache(tmp_path / "tc.json")
+    gate = CapGate(
+        account_id="acc-1",
+        session_token="sess-1",
+        # Just over the free cap but WELL under the old 4x fail-open ceiling:
+        # the old code allowed this; CAP-4 must reject it.
+        db_size_fn=lambda: FREE_TIER_CAP_BYTES + 100,
+        local_tier_hint="free",
+        cache=cache,
+        check_fn=server,
+    )
+    with pytest.raises(CapExceededError) as exc:
+        gate.check(proposed_delta_bytes=500)
+    assert exc.value.cap == FREE_TIER_CAP_BYTES  # free cap, not 4x ceiling
 
 
 def test_offline_no_cache_past_ceiling_blocks(tmp_path: Path) -> None:

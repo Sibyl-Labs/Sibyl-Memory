@@ -4,6 +4,34 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.15] - 2026-06-25
+
+Pre-launch security audit hardening.
+
+### Security
+- Cap enforcement now counts the full footprint including the `-wal`/`-shm`
+  sidecars (previously only the main DB file, so burst writes under-reported).
+- The cap gates on the absolute resulting footprint, re-read inside the write
+  transaction (CAP-2) rather than per-write estimate. The in-transaction recheck
+  is LOCAL-ONLY (no network call under the write lock).
+- Fail-open now fails CLOSED for a no-account / no-cache user (was: allowed up
+  to 4x the cap when the verify endpoint was unreachable).
+- A 401/403 from tier verification is treated as an authoritative "not entitled"
+  and hard-denies; it is no longer classed as a retryable/transient code.
+- `current_cap()` no longer honors a null-account "uncapped" cache (SEC-13).
+
+### Fixed
+- `json.loads` on every read path now raises a typed `StorageError` on a
+  malformed stored row instead of a raw `JSONDecodeError`.
+- Shared limit clamp on `list_entities`/`read_events`/`search`/`search_entities`
+  (no unbounded or negative limits; `read_events(limit=-1)` is no longer
+  unbounded).
+- `set_tenant` validates the tenant id. `archive_entity` cap-check moved inside
+  its transaction. Cross-thread connections are all closed in `close()`. A
+  failing ROLLBACK no longer masks the original error. `multi_record` corpus
+  count via `COUNT(*)` instead of a full-table scan. Short-identifier recall
+  (q3/v2/k8) restored.
+
 ## [0.4.14] - 2026-06-19
 
 ### Fixed
