@@ -197,7 +197,8 @@ def write_credentials_atomic(creds: dict, path: Path = DEFAULT_CRED_PATH) -> Pat
     import tempfile
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
         os.write(fd, data)
         os.fsync(fd)
     except BaseException:

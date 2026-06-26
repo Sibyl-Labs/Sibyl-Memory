@@ -75,7 +75,7 @@ def test_backup_dir_collision_errors_cleanly(tmp_path):
     assert (res.ok is False) and "backup dir" in (res.error or "")
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permissions")
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="root bypasses file permissions / Windows")
 def test_backup_permission_denied_source_aborts(tmp_path):
     home = tmp_path / "h"; home.mkdir()
     p = home / "CLAUDE.md"; p.write_text("secret")
