@@ -738,7 +738,9 @@ def _detect_co_occurrence(
         toks = _extract_tokens(ev)
         if len(toks) < 2:
             continue
-        toks_sorted = sorted(set(toks))
+        # Cap unique tokens per event to prevent O(n²) combinatorial explosion.
+        # An event with 200 keys generates ~19,900 pairs; cap at 50 keys → 1,225 pairs.
+        toks_sorted = sorted(set(toks))[:50]
         # All 2-combos
         for i in range(len(toks_sorted)):
             for j in range(i + 1, len(toks_sorted)):

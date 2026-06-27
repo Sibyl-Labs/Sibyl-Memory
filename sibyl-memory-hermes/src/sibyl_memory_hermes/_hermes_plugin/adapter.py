@@ -620,6 +620,11 @@ class SibylAdapter(MemoryProvider):
                 # MH-5: same clamp + non-numeric tolerance as sibyl_search.
                 limit = _clamp_limit(args.get("limit"), _DEFAULT_LIST_LIMIT, _MAX_LIST_LIMIT)
                 rows = self._sibyl.list(category=category, status=status, limit=limit)
+                # MH-1/MH-2: fence-scrub + body truncation (same as sibyl_search).
+                # Without this, forged fence markers in stored entity bodies
+                # pass through unscrubbed, allowing prompt injection via sibyl_list.
+                rows = [_truncate_hit_body(r) for r in rows]
+                rows = [_scrub_value(r) for r in rows]
                 return json.dumps({"entities": rows}, default=str)
 
             return tool_error(f"Unknown tool: {tool_name}")
