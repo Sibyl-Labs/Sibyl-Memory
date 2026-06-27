@@ -7,9 +7,11 @@ Source: beta security report (dor_alpha, 2026-06-01).
 """
 import os
 import stat
+import pytest
 from sibyl_memory_cli.cli import write_credentials_atomic
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not stable on Windows")
 def test_preexisting_loose_dir_is_tightened(tmp_path):
     d = tmp_path / ".sibyl-memory"
     d.mkdir()

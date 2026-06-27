@@ -193,11 +193,15 @@ def write_credentials_atomic(creds: dict, path: Path = DEFAULT_CRED_PATH) -> Pat
     # who recreated the path between unlink and open) could collide. mkstemp
     # picks a name no other process holds and opens it O_CREAT|O_EXCL itself,
     # so no unlink is needed. We still enforce mode 0600 (fchmod, since mkstemp
-    # honors the process umask) and fsync before the atomic replace.
+    # honors the process umask where available) and fsync before the atomic replace.
     import tempfile
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):
+            try:
+                os.fchmod(fd, 0o600)
+            except OSError:
+                pass
         os.write(fd, data)
         os.fsync(fd)
     except BaseException:

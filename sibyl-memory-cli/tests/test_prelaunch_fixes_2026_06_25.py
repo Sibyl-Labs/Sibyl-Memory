@@ -56,11 +56,22 @@ def test_cli2_write_credentials_atomic_no_fixed_tmp_and_0600(tmp_path):
     target = tmp_path / ".sibyl-memory" / "credentials.json"
     cli.write_credentials_atomic({"account_id": "a", "session_token": "s"}, path=target)
     assert json.loads(target.read_text())["account_id"] == "a"
-    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    if hasattr(cli.os, "fchmod"):
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
     # No leftover temp files, and specifically NOT the old fixed `.json.tmp` name.
     leftovers = list(target.parent.glob("*.tmp"))
     assert leftovers == [], f"temp files left behind: {leftovers}"
     assert not (target.parent / "credentials.json.tmp").exists()
+
+
+def test_cli2_write_credentials_atomic_without_fchmod(tmp_path, monkeypatch):
+    monkeypatch.delattr(cli.os, "fchmod", raising=False)
+    target = tmp_path / ".sibyl-memory" / "credentials.json"
+
+    cli.write_credentials_atomic({"account_id": "a", "session_token": "s"}, path=target)
+
+    assert json.loads(target.read_text())["session_token"] == "s"
+    assert list(target.parent.glob("*.tmp")) == []
 
 
 def test_cli2_concurrent_writes_do_not_collide(tmp_path):
