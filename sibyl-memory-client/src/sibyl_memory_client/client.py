@@ -106,11 +106,11 @@ def validate_identifier(value: Any, *, field_name: str) -> str:
             f"{field_name} too long ({len(value)} chars, max {_IDENT_MAX_LENGTH})",
             recovery=f"Use a shorter {field_name} (under {_IDENT_MAX_LENGTH} chars).",
         )
-    for ch in value:
+    for idx, ch in enumerate(value):
         if ord(ch) in _IDENT_FORBIDDEN_CODE_POINTS:
             raise ValidationError(
                 f"{field_name} contains a forbidden control character "
-                f"(code point 0x{ord(ch):02x} at index {value.index(ch)})",
+                f"(code point 0x{ord(ch):02x} at index {idx})",
                 recovery=(
                     f"Identifiers must be printable single-line strings. "
                     f"Remove control characters / null bytes / tabs / newlines."
