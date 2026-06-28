@@ -669,7 +669,8 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     db_path = Path(args.db).expanduser()
     if db_path.exists():
-        size = db_path.stat().st_size
+        from sibyl_memory_client.storage import db_size_bytes
+        size = db_size_bytes(db_path)
         # CLI-3 / D3: a path that exists but is not a SQLite DB is labeled
         # explicitly instead of being reported as a normal memory store.
         if not is_sqlite_db(db_path):

@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 from sibyl_memory_client import DEFAULT_TENANT, MemoryClient
+from sibyl_memory_client.storage import db_size_bytes
 from sibyl_memory_client.exceptions import NotFoundError
 
 from .credentials import (
@@ -450,7 +451,7 @@ class SibylMemoryProvider:
             "ok": True,
             "schema_version": self._client.schema_version(),
             "db_path": str(db_path),
-            "db_size_bytes": db_path.stat().st_size if db_path.exists() else 0,
+            "db_size_bytes": db_size_bytes(db_path) if db_path.exists() else 0,
             "tenant_id": self.tenant_id,
             "hermes_bound": False,  # v0.3.0: adapter owns Hermes binding
             "tier": self._credentials.tier if self._credentials else "free",
