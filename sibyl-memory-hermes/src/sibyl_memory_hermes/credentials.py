@@ -105,8 +105,11 @@ def load_credentials(path: str | Path = DEFAULT_CRED_PATH) -> Credentials:
             f"the file may be corrupted. Re-run `sibyl init` to refresh."
         )
 
-    account_id = raw.get("account_id") or raw["tenant_id"]
-    tenant_id = raw.get("tenant_id") or raw["account_id"]
+    # CORE-17: fix KeyError crash + silent value corruption when one ID
+    # key exists but is falsy (empty string). The old `or` fallback would
+    # silently inherit the OTHER key's value, corrupting account_id/tenant_id.
+    account_id = raw.get("account_id") if raw.get("account_id") else raw.get("tenant_id", "")
+    tenant_id = raw.get("tenant_id") if raw.get("tenant_id") else raw.get("account_id", "")
 
     return Credentials(
         account_id=account_id,
@@ -135,6 +138,8 @@ def write_credentials(creds: Credentials, path: str | Path = DEFAULT_CRED_PATH) 
     """
     resolved = Path(path).expanduser().resolve()
     resolved.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # SEC-2: enforce mode post-umask (Python's mkdir applies process umask)
+    os.chmod(resolved.parent, 0o700)
     payload = {
         "account_id": creds.account_id,
         "tenant_id": creds.tenant_id,
