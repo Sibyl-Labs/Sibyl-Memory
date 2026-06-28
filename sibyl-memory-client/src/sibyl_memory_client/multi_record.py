@@ -157,7 +157,11 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
     cand: dict = {}
     df: dict = {}
     for t in toks:
-        hits = client.search(t, limit=_PER_TOKEN_LIMIT)
+        # CORE-16: use _search_strict for DF counting to avoid paraphrase
+        # fallback inflating token frequency. The public search() includes
+        # stopword-stripped and rarest-token relaxation which makes tokens
+        # appear more common than they really are, weakening IDF weighting.
+        hits = client._search_strict(t, limit=_PER_TOKEN_LIMIT)
         df[t] = len(hits)
         if df[t] == 0:
             return []  # abstention: a discriminating term that nothing satisfies
