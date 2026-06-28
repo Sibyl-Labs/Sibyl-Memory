@@ -105,8 +105,11 @@ def load_credentials(path: str | Path = DEFAULT_CRED_PATH) -> Credentials:
             f"the file may be corrupted. Re-run `sibyl init` to refresh."
         )
 
-    account_id = raw.get("account_id") or raw["tenant_id"]
-    tenant_id = raw.get("tenant_id") or raw["account_id"]
+    # CORE-17: fix KeyError crash + silent value corruption when one ID
+    # key exists but is falsy (empty string). The old `or` fallback would
+    # silently inherit the OTHER key's value, corrupting account_id/tenant_id.
+    account_id = raw.get("account_id") if raw.get("account_id") else raw.get("tenant_id", "")
+    tenant_id = raw.get("tenant_id") if raw.get("tenant_id") else raw.get("account_id", "")
 
     return Credentials(
         account_id=account_id,
