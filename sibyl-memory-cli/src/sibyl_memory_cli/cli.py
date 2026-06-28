@@ -615,10 +615,13 @@ def _discover_stores(primary_db: Path) -> list[dict[str, Any]]:
     candidates.append(("hermes adapter", hermes_home / "sibyl" / "memory.db"))
     profiles_dir = hermes_home / "sibyl" / "profiles"
     if profiles_dir.is_dir():
-        for prof in sorted(profiles_dir.iterdir()):
-            db = prof / "memory.db"
-            if db.exists():
-                candidates.append((f"hermes profile · {prof.name}", db))
+        try:
+            for prof in sorted(profiles_dir.iterdir()):
+                db = prof / "memory.db"
+                if db.exists():
+                    candidates.append((f"hermes profile · {prof.name}", db))
+        except PermissionError:
+            pass  # Skip restricted profile directories
 
     mcp_override = os.environ.get("SIBYL_MEMORY_DB")
     if mcp_override:
