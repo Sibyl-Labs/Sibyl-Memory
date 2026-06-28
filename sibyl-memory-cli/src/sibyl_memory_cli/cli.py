@@ -431,6 +431,10 @@ def cmd_init(args: argparse.Namespace) -> int:
             creds = {k: raw_creds[k] for k in _CRED_FIELDS if k in raw_creds}
             creds["session_token"] = bearer
             path = write_credentials_atomic(creds, cred_path)
+            # CORE-15: invalidate stale tier cache after re-activation.
+            # Without this, a paid→free downgrade followed by `sibyl init --force`
+            # keeps the old "paid" cache entry, allowing writes past the 2 MB cap.
+            invalidate_tier_cache(Path(args.tier_cache).expanduser())
             print(f"\r{' ' * 80}\r", end="")  # clear spinner line
             print()
             print(a.success_line("Activated."))

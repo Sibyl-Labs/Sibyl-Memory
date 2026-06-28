@@ -1077,6 +1077,26 @@ class MemoryClient:
         # cap could still push past it. BEGIN IMMEDIATE takes the write lock up
         # front, closing the window. NotFoundError still propagates before any
         # write so a missing entity has no side effect.
+        #
+        # CORE-14 (2026-06-27): the network-capable check() must NOT be called
+        # while holding the BEGIN IMMEDIATE write lock — it can trigger urlopen()
+        # with up to 4s timeout, starving concurrent MCP requests.  Use
+        # check() BEFORE the transaction (network-capable), then re-read +
+        # check_total_local() INSIDE the transaction (local-only recheck).
+        
+        # ── Phase 1: read row + pre-flight cap check (no lock yet) ──
+        with self._storage.connection() as preconn:
+            row = preconn.execute(
+                "SELECT id, body FROM entities WHERE tenant_id = ? AND category = ? AND name = ?",
+                (self._tenant_id, category, name),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(f"entity {category}/{name} not found")
+            body_bytes = len(row["body"] or "") if row["body"] else 0
+            delta = body_bytes + len(name) + len(category) + len(reason or "") + 200
+        self._cap_gate.check(proposed_delta_bytes=delta)
+        
+        # ── Phase 2: write inside BEGIN IMMEDIATE (local-only recheck) ──
         with self._storage.transaction() as conn:
             row = conn.execute(
                 "SELECT id, body FROM entities WHERE tenant_id = ? AND category = ? AND name = ?",
@@ -1084,13 +1104,8 @@ class MemoryClient:
             ).fetchone()
             if row is None:
                 raise NotFoundError(f"entity {category}/{name} not found")
-            body_bytes = len(row["body"] or "") if row["body"] else 0
-            # The archive insert copies the body. Delta = body + name + category
-            # + reason + ~200B SQLite/row overhead. Conservative estimate.
-            delta = body_bytes + len(name) + len(category) + len(reason or "") + 200
-            # Cap-check holds the write lock (BEGIN IMMEDIATE), so the size it
-            # reads cannot be perturbed by another writer before our INSERT.
-            self._cap_gate.check(proposed_delta_bytes=delta)
+            # Local-only recheck inside the write lock (no network)
+            self._cap_gate.check_total_local(self._storage.logical_size_bytes(conn))
             arch_id = new_id()
             conn.execute(
                 "INSERT INTO archived_entities (id, tenant_id, original_entity_id, category, name, body, archive_reason) "
