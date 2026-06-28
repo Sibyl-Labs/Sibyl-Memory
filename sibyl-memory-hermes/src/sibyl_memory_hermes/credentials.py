@@ -138,8 +138,6 @@ def write_credentials(creds: Credentials, path: str | Path = DEFAULT_CRED_PATH) 
     """
     resolved = Path(path).expanduser().resolve()
     resolved.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    # SEC-2: enforce mode post-umask (Python's mkdir applies process umask)
-    os.chmod(resolved.parent, 0o700)
     payload = {
         "account_id": creds.account_id,
         "tenant_id": creds.tenant_id,
