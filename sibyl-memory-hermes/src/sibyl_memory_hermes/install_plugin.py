@@ -337,7 +337,12 @@ def uninstall(hermes_home: Path, dry_run: bool,
 
     # 1) User-plugin path
     print(a.eyebrow("removing · user-plugin path"))
-    user_rc = _remove_plugin_dir(dest, dry_run)
+    try:
+        user_rc = _remove_plugin_dir(dest, dry_run)
+    except PermissionError:
+        print(a.warn_line(f"No write permission for {dest}."))
+        print(a.dim("  Remove it manually or with elevated permissions."))
+        user_rc = 3  # hard refusal
     if user_rc in (3, 4):
         # Hard refusal on the primary path: stop before touching anything else.
         return user_rc
