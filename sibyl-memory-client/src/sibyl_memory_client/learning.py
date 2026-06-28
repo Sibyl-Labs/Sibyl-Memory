@@ -918,16 +918,33 @@ def _build_summarization_prompt(
     events: list[dict[str, Any]],
     hints: dict[str, Any],
 ) -> str:
-    """Build the LLM prompt for BYOK / Venice summarizers. The prompt is
-    deliberately compact; full evidence is included so the model can
-    produce a high-quality skill body."""
+    """Build the LLM prompt for BYOK / Venice summarizers.
+    
+    PRIVACY-1: Only include pattern metadata and field keys in the prompt,
+    NOT the full event content. The module docstring states "the prompt
+    summary leaves the device (never the underlying memory content)" but
+    the full events contain evaluated/acted/forward fields with actual
+    memory content. Redact values to only include keys and counts.
+    """
+    # Redact event content: keep only metadata (keys, timestamps) not values
+    redacted_events = []
+    for ev in events[:10]:
+        redacted = {
+            "timestamp": ev.get("timestamp", ""),
+            "event_type": ev.get("event_type", ""),
+            "field_keys": list(ev.get("evaluated", {}).keys()) if isinstance(ev.get("evaluated"), dict) else [],
+            "field_count": len(ev.get("evaluated", {})) if isinstance(ev.get("evaluated"), dict) else 0,
+            "pattern_hints": ev.get("extra", {}).get("pattern_hints", []) if isinstance(ev.get("extra"), dict) else [],
+        }
+        redacted_events.append(redacted)
+    
     return (
         f"You are summarizing a detected behavioral pattern from a personal "
         f"agent's memory journal.\n"
         f"Pattern kind: {pattern_kind}\n"
         f"Hints: {json.dumps(hints, indent=2)}\n\n"
-        f"Matching journal events (up to 10 shown):\n"
-        f"{json.dumps(events[:10], indent=2)}\n\n"
+        f"Matching journal events (up to 10 shown, content redacted for privacy):\n"
+        f"{json.dumps(redacted_events, indent=2)}\n\n"
         f"Write a concise reusable skill in Markdown. Include: a clear title, "
         f"one-paragraph description of when to apply this skill, an enumerated "
         f"recipe of the steps the agent should follow, and any constraints "
