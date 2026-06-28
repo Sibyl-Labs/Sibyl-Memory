@@ -96,7 +96,15 @@ def scan_memory_files(home: Optional[Path] = None, cwd: Optional[Path] = None) -
 
 
 def _tree_size(p: Path) -> int:
-    return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+    """Calculate tree size, tolerating permission errors on individual files."""
+    total = 0
+    for f in p.rglob("*"):
+        try:
+            if f.is_file():
+                total += f.stat().st_size
+        except OSError:
+            pass  # skip inaccessible files (permission denied, broken symlinks)
+    return total
 
 
 def _fsync_path(p: Path) -> None:
@@ -295,10 +303,13 @@ def verify_new_entries(db_path: Path, baseline_total: int) -> dict:
         out["error"] = "database file exists but is not a readable SQLite database"
         return out
     try:
-        con = sqlite3.connect(str(db_path)); con.row_factory = sqlite3.Row
-        total = con.execute("SELECT COUNT(*) c FROM entities").fetchone()["c"]
-        cats = con.execute("SELECT category, COUNT(*) c FROM entities GROUP BY category ORDER BY c DESC").fetchall()
-        con.close()
+        con = sqlite3.connect(str(db_path))
+        con.row_factory = sqlite3.Row
+        try:
+            total = con.execute("SELECT COUNT(*) c FROM entities").fetchone()["c"]
+            cats = con.execute("SELECT category, COUNT(*) c FROM entities GROUP BY category ORDER BY c DESC").fetchall()
+        finally:
+            con.close()
         out["new_total"] = max(0, int(total) - int(baseline_total))
         out["by_category"] = {r["category"]: int(r["c"]) for r in cats}
         out["ok"] = out["new_total"] > 0
