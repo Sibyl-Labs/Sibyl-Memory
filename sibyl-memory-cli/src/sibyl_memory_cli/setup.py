@@ -248,7 +248,7 @@ class HermesWirer:
     def _backup_config(self) -> Optional[Path]:
         if not self.config_path.exists():
             return None
-        backup = self.config_path.with_suffix(".yaml.bak")
+        import time as _t; backup = self.config_path.with_suffix(".yaml.bak." + _t.strftime("%Y%m%d%H%M%S"))
         shutil.copy2(self.config_path, backup)
         return backup
 
@@ -277,6 +277,43 @@ class HermesWirer:
             yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False)
         os.replace(tmp, self.config_path)
 
+
+# ----------------------------------------------------------------------
+# Standalone smoke-test (used by both ClaudeCodeWirer and CodexWirer)
+# ----------------------------------------------------------------------
+
+def _verify_mcp_starts(binary: str) -> tuple:
+    """Smoke-test: spawn sibyl-memory-mcp and confirm it doesn't crash on startup.
+    
+    Returns (ok: bool, message: str).
+    """
+    import subprocess
+    import time as _t
+
+    binpath = shutil.which(binary)
+    if not binpath:
+        return False, f"'{binary}' not found on PATH"
+    try:
+        proc = subprocess.Popen(
+            [binpath],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        deadline = _t.monotonic() + 3.0
+        rc = None
+        while _t.monotonic() < deadline:
+            rc = proc.poll()
+            if rc is not None:
+                break
+        if rc is None:
+            proc.terminate()
+            proc.wait(timeout=2)
+            return True, f"'{binary}' started OK (still running at deadline)"
+        stderr = proc.stderr.read().decode(errors="replace").strip()
+        return False, f"'{binary}' exited with code {rc}: {stderr[:200]}"
+    except Exception as e:
+        return False, f"Failed to start '{binary}': {e}"
 
 # ----------------------------------------------------------------------
 # ClaudeCodeWirer
@@ -555,7 +592,7 @@ class ClaudeCodeWirer:
     def _backup_settings(self) -> Optional[Path]:
         if not self.settings_path.exists():
             return None
-        backup = self.settings_path.with_suffix(".json.bak")
+        backup = self.settings_path.with_suffix(f".json.bak.{ts}")
         shutil.copy2(self.settings_path, backup)
         return backup
 
@@ -678,8 +715,8 @@ class CodexWirer:
         ]
 
     def verify_mcp_starts(self) -> tuple:
-        # reuse the same stdio smoke-test the Claude wirer uses
-        return ClaudeCodeWirer.verify_mcp_starts(self)  # type: ignore[arg-type]
+        # CORE-18: standalone smoke-test function to avoid fragile cross-class call
+        return _verify_mcp_starts(self.MCP_BINARY)
 
     def wire(self, *, force: bool = False, dry_run: bool = False,
              prompt_fn: Optional[Callable[..., str]] = None) -> WireOutcome:
@@ -707,7 +744,7 @@ class CodexWirer:
     def _backup_config(self) -> Optional[Path]:
         if not self.config_path.exists():
             return None
-        backup = self.config_path.with_suffix(".toml.bak")
+        backup = self.config_path.with_suffix(f".toml.bak.{ts}")
         shutil.copy2(self.config_path, backup)
         return backup
 
