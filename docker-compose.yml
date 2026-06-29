@@ -1,0 +1,17 @@
+services:
+  sibyl-memory-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sibyl-memory-mcp:local
+    container_name: sibyl-memory-mcp
+    stdin_open: true
+    tty: true
+    working_dir: /app
+    volumes:
+      - ./docker-data:/home/sibyl/.sibyl-memory
+    environment:
+      SIBYL_MEMORY_DB: /home/sibyl/.sibyl-memory/memory.db
+      SIBYL_CREDENTIALS: /home/sibyl/.sibyl-memory/credentials.json
+
+    restart: unless-stopped

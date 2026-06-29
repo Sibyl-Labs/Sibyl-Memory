@@ -1,0 +1,12 @@
+.git
+.github
+.pytest_cache
+.venv
+.venv-clean
+.tmp-clean-home*
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.log
+docker-data
