@@ -1,10 +1,10 @@
 <div align="center">
 
 ```
-███████╗██╗██████╗ ██╗   ██╗██╗     
-██╔════╝██║██╔══██╗╚██╗ ██╔╝██║     
-███████╗██║██████╔╝ ╚████╔╝ ██║     
-╚════██║██║██╔══██╗  ╚██╔╝  ██║     
+███████╗██╗██████╗ ██╗   ██╗██╗
+██╔════╝██║██╔══██╗╚██╗ ██╔╝██║
+███████╗██║██████╔╝ ╚████╔╝ ██║
+╚════██║██║██╔══██╗  ╚██╔╝  ██║
 ███████║██║██████╔╝   ██║   ███████╗
 ╚══════╝╚═╝╚═════╝    ╚═╝   ╚══════╝
 
@@ -45,12 +45,12 @@ This is the entire stack as it ships to production agents today.
 
 ## Packages
 
-| Package | PyPI | Description |
-|---|---|---|
+| Package                                        | PyPI                                                                                                        | Description                                                                                                                                                                                          |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`sibyl-memory-client`](./sibyl-memory-client) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-client)](https://pypi.org/project/sibyl-memory-client/) | Local-first agentic memory SDK. SQLite-backed five-tier hierarchical schema, FTS5 search, multi-tenant, with self-learning skill detection and local memory linter. Foundation of the plugin family. |
-| [`sibyl-memory-cli`](./sibyl-memory-cli) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-cli)](https://pypi.org/project/sibyl-memory-cli/) | Command-line interface. `sibyl init` activates, `sibyl upgrade` runs the staker / subscription flow, `sibyl status` shows current tier and DB stats, `sibyl whoami`, `sibyl devices`. |
-| [`sibyl-memory-hermes`](./sibyl-memory-hermes) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-hermes)](https://pypi.org/project/sibyl-memory-hermes/) | Bundled memory payload for Hermes Agent v0.13+ (and any other Python orchestration that wants direct SDK access). |
-| [`sibyl-memory-mcp`](./sibyl-memory-mcp) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-mcp)](https://pypi.org/project/sibyl-memory-mcp/) | MCP server. Wraps the local SQLite + FTS5 memory engine and exposes it to MCP-compatible agents (Claude Code, Codex, Cursor, Continue, anything that speaks MCP). |
+| [`sibyl-memory-cli`](./sibyl-memory-cli)       | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-cli)](https://pypi.org/project/sibyl-memory-cli/)       | Command-line interface. `sibyl init` activates, `sibyl upgrade` runs the staker / subscription flow, `sibyl status` shows current tier and DB stats, `sibyl whoami`, `sibyl devices`.                |
+| [`sibyl-memory-hermes`](./sibyl-memory-hermes) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-hermes)](https://pypi.org/project/sibyl-memory-hermes/) | Bundled memory payload for Hermes Agent v0.13+ (and any other Python orchestration that wants direct SDK access).                                                                                    |
+| [`sibyl-memory-mcp`](./sibyl-memory-mcp)       | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-mcp)](https://pypi.org/project/sibyl-memory-mcp/)       | MCP server. Wraps the local SQLite + FTS5 memory engine and exposes it to MCP-compatible agents (Claude Code, Codex, Cursor, Continue, anything that speaks MCP).                                    |
 
 ---
 
@@ -60,6 +60,26 @@ This is the entire stack as it ships to production agents today.
 pip install sibyl-memory-cli
 sibyl init
 ```
+
+## Docker integration
+
+## Docker
+
+A Docker configuration is included for running the `sibyl-memory-mcp` server locally.
+
+Build the image:
+
+```bash
+docker compose build
+```
+
+Start the server:
+
+```bash
+docker compose up -d
+```
+
+The container uses the project's existing stdio MCP entrypoint (`python -m sibyl_memory_mcp`) and stores persistent data in the mounted `docker-data/` directory.
 
 `sibyl init` opens a browser to activate your account, binds your wallet or email, and writes credentials to `~/.sibyl-memory/credentials.json`. Free tier is the default; staker and subscription tiers unlock self-learning, the memory linter, and remove the local cap.
 
