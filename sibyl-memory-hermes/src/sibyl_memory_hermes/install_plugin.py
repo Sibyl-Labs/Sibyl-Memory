@@ -337,7 +337,18 @@ def uninstall(hermes_home: Path, dry_run: bool,
 
     # 1) User-plugin path
     print(a.eyebrow("removing · user-plugin path"))
-    user_rc = _remove_plugin_dir(dest, dry_run)
+    # MH-9 (audit #18): a read-only user-plugin dir raised an unhandled
+    # PermissionError here (the provider-path call below was already guarded, the
+    # user-path call was not). Mirror the provider-path handling: emit the same
+    # sudo guidance and surface the hard-refusal return code (5) so the caller
+    # sees a clean refusal instead of a traceback.
+    try:
+        user_rc = _remove_plugin_dir(dest, dry_run)
+    except PermissionError:
+        print(a.warn_line(f"No write permission for {dest}."))
+        print(a.dim("  This dir is read-only or owned by another user. Remove it with sudo:"))
+        print(a.dim(f"    sudo rm -rf {dest}"))
+        return 5
     if user_rc in (3, 4):
         # Hard refusal on the primary path: stop before touching anything else.
         return user_rc

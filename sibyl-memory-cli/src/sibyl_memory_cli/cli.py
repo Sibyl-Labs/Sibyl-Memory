@@ -615,7 +615,14 @@ def _discover_stores(primary_db: Path) -> list[dict[str, Any]]:
     candidates.append(("hermes adapter", hermes_home / "sibyl" / "memory.db"))
     profiles_dir = hermes_home / "sibyl" / "profiles"
     if profiles_dir.is_dir():
-        for prof in sorted(profiles_dir.iterdir()):
+        # #15 hygiene: iterdir() raises PermissionError on a restricted
+        # profiles directory (e.g. a 0700 dir owned by another user). Skip the
+        # whole profiles sweep gracefully rather than crashing `sibyl status`.
+        try:
+            profiles = sorted(profiles_dir.iterdir())
+        except (PermissionError, OSError):
+            profiles = []
+        for prof in profiles:
             db = prof / "memory.db"
             if db.exists():
                 candidates.append((f"hermes profile · {prof.name}", db))
@@ -669,13 +676,23 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     db_path = Path(args.db).expanduser()
     if db_path.exists():
-        size = db_path.stat().st_size
         # CLI-3 / D3: a path that exists but is not a SQLite DB is labeled
         # explicitly instead of being reported as a normal memory store.
         if not is_sqlite_db(db_path):
+            # Not a DB: report the raw file size, since the logical SQLite
+            # measure does not apply to an arbitrary file.
+            size = db_path.stat().st_size
             print(a.kv("DB path", str(db_path)))
             print(a.kv("DB size", f"{size:,} bytes (not a SQLite database)", value_color="err"))
         else:
+            # B001 (audit #13): report the same WAL-inclusive logical footprint
+            # the cap gate enforces (sibyl_memory_client.storage.db_size_bytes),
+            # not the raw memory.db st_size. The raw file under-reports during a
+            # write burst (committed pages still in memory.db-wal), so the
+            # displayed size/percentage would otherwise disagree with the gate.
+            from sibyl_memory_client.storage import db_size_bytes
+
+            size = db_size_bytes(db_path)
             pct = size / 2_097_152 * 100
             size_label = f"{size:,} bytes ({size / (1024 * 1024):.2f} MB · {pct:.1f}% of free cap)"
             size_color = "warn" if pct > 80 else "soft"

@@ -116,7 +116,10 @@ class HeartbeatReporter:
             if self._session_token:
                 headers["Authorization"] = f"Bearer {self._session_token}"
             req = urllib.request.Request(self._url, data=body, headers=headers, method="POST")
-            urllib.request.urlopen(req, timeout=_TIMEOUT_S).read()
+            # Context-managed so the underlying HTTP socket closes deterministically
+            # rather than waiting on GC (hygiene #15, 2026-06-30).
+            with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:
+                resp.read()
         except Exception:
             pass  # fire-and-forget: telemetry must never disturb local memory
 

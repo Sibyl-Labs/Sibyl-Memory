@@ -141,7 +141,8 @@ def test_codex_wire_appends_and_preserves(tmp_path):
     txt = cfg.read_text()
     assert 'model = "o4"' in txt and "[other]" in txt           # preserved
     assert "[mcp_servers.sibyl_memory]" in txt                  # appended
-    assert cfg.with_suffix(".toml.bak").exists()
+    # audit #19: timestamped backup suffix, not a fixed .bak
+    assert len(list(tmp_path.glob("config.toml.*.bak"))) == 1
 
 
 def test_codex_wire_idempotent(tmp_path):

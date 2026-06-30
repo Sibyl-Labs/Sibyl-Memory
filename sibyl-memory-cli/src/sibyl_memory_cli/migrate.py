@@ -96,7 +96,21 @@ def scan_memory_files(home: Optional[Path] = None, cwd: Optional[Path] = None) -
 
 
 def _tree_size(p: Path) -> int:
-    return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+    """Sum the byte size of every regular file under ``p``.
+
+    B005 (audit #19): a permission-denied file or a broken symlink raises
+    OSError on ``is_file()``/``stat()``. A single un-statable entry must not
+    abort the whole size estimate, so each entry is guarded independently and
+    the offending one is simply skipped (counted as zero).
+    """
+    total = 0
+    for f in p.rglob("*"):
+        try:
+            if f.is_file():
+                total += f.stat().st_size
+        except OSError:
+            continue
+    return total
 
 
 def _fsync_path(p: Path) -> None:
@@ -269,10 +283,15 @@ def db_baseline(db_path: Path) -> int:
         return 0
     if not _is_readable_db(db_path):
         return DB_UNREADABLE
+    # B001 (audit #19): close the connection on the error path too. If the
+    # COUNT raises (e.g. no `entities` table yet), the bare con.close() below
+    # the query would be skipped and the connection would leak.
     try:
         con = sqlite3.connect(str(db_path)); con.row_factory = sqlite3.Row
-        n = con.execute("SELECT COUNT(*) c FROM entities").fetchone()["c"]
-        con.close()
+        try:
+            n = con.execute("SELECT COUNT(*) c FROM entities").fetchone()["c"]
+        finally:
+            con.close()
         return int(n)
     except sqlite3.Error:
         # Readable SQLite file but no `entities` table yet (fresh schema) —
@@ -294,11 +313,16 @@ def verify_new_entries(db_path: Path, baseline_total: int) -> dict:
         out["unreadable"] = True
         out["error"] = "database file exists but is not a readable SQLite database"
         return out
+    # B001 (audit #19): wrap connect+query in try/finally so the connection is
+    # always closed. The previous bare con.close() ran only after both queries
+    # succeeded — any sqlite3.Error mid-query leaked the open connection.
     try:
         con = sqlite3.connect(str(db_path)); con.row_factory = sqlite3.Row
-        total = con.execute("SELECT COUNT(*) c FROM entities").fetchone()["c"]
-        cats = con.execute("SELECT category, COUNT(*) c FROM entities GROUP BY category ORDER BY c DESC").fetchall()
-        con.close()
+        try:
+            total = con.execute("SELECT COUNT(*) c FROM entities").fetchone()["c"]
+            cats = con.execute("SELECT category, COUNT(*) c FROM entities GROUP BY category ORDER BY c DESC").fetchall()
+        finally:
+            con.close()
         out["new_total"] = max(0, int(total) - int(baseline_total))
         out["by_category"] = {r["category"]: int(r["c"]) for r in cats}
         out["ok"] = out["new_total"] > 0

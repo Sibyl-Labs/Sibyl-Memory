@@ -4,6 +4,33 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.12] - 2026-06-30
+
+Post-launch audit fixes (credentials robustness + diagnostics accuracy).
+
+### Fixed
+- **Credentials ID resolution (#17).** `load_credentials` resolved the two IDs
+  with `raw.get("account_id") or raw["tenant_id"]`, which (a) raised `KeyError`
+  when one ID was present-but-empty and the other key was absent, and (b)
+  silently corrupted identity by letting one ID inherit the other key's value.
+  Each ID now resolves independently: a genuinely missing key still falls back
+  to its sibling (legacy single-key files), but a present-but-empty key is never
+  mirrored and never raises.
+- **Credentials directory permissions (#20).** `write_credentials` requested
+  `mkdir(mode=0o700)`, which the process umask could relax to a
+  world-traversable mode (e.g. 0o755). An `os.chmod(..., 0o700)` now enforces
+  owner-only after the mkdir, regardless of umask. (The credentials file itself
+  was already created 0600 via `O_EXCL|O_NOFOLLOW`.)
+- **`uninstall` PermissionError on the user-plugin path (#18).** The provider
+  path was guarded against a read-only/foreign-owned directory but the
+  user-plugin path was not, so an unwritable `$HERMES_HOME/plugins/sibyl`
+  crashed uninstall with an unhandled `PermissionError`. It now emits the same
+  sudo guidance and returns the same hard-refusal code.
+- **`health()` reports WAL-inclusive size (#13).** `db_size_bytes` was reported
+  as the bare main-file `st_size`, under-reporting during write bursts and
+  diverging from the cap gate. It now uses `db_size_bytes()` (page-count
+  logical size, WAL-inclusive), matching what the free-tier cap measures.
+
 ## [0.3.11] - 2026-06-25
 
 Pre-launch security audit hardening.

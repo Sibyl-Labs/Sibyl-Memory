@@ -202,9 +202,10 @@ def test_hermes_wire_existing_other_provider_with_force(tmp_path, monkeypatch):
     import yaml
     cfg = yaml.safe_load((home / "config.yaml").read_text())
     assert cfg["memory"]["provider"] == "sibyl"
-    # Backup landed
-    assert (home / "config.yaml.bak").exists()
-    assert "mem0" in (home / "config.yaml.bak").read_text()
+    # Backup landed (audit #19: timestamped suffix, not a fixed .bak)
+    backups = list(home.glob("config.yaml.*.bak"))
+    assert len(backups) == 1
+    assert "mem0" in backups[0].read_text()
 
 
 def test_hermes_wire_existing_other_provider_prompt_y_accepts(tmp_path, monkeypatch):
@@ -317,8 +318,8 @@ def test_claude_wire_fresh_preserves_other_mcps(tmp_path):
     assert cfg["mcpServers"]["github"] == {"command": "gh-mcp"}
     assert cfg["mcpServers"]["sibyl-memory"] == {"command": "sibyl-memory-mcp"}
     assert cfg["theme"] == "dark"
-    # backup landed
-    assert (tmp_path / "settings.json.bak").exists()
+    # backup landed (audit #19: timestamped suffix, not a fixed .bak)
+    assert len(list(tmp_path.glob("settings.json.*.bak"))) == 1
 
 
 def test_claude_wire_existing_sibyl_is_noop(tmp_path):
@@ -327,8 +328,8 @@ def test_claude_wire_existing_sibyl_is_noop(tmp_path):
     w = ClaudeCodeWirer(settings_path=p)
     outcome = w.wire()
     assert outcome.status == "already"
-    # No backup written for no-op
-    assert not (tmp_path / "settings.json.bak").exists()
+    # No backup written for no-op (audit #19: timestamped suffix pattern)
+    assert list(tmp_path.glob("settings.json.*.bak")) == []
 
 
 def test_claude_wire_mismatched_sibyl_refused_without_force(tmp_path):

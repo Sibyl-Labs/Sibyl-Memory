@@ -4,6 +4,47 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.17] - 2026-06-30
+
+### Security
+- Self-learning privacy contract enforced on the Sibyl-routed summarizer path
+  (#14, B005). The `VeniceX402Summarizer` relays prompts through Sibyl Labs'
+  inference proxy, so per the module contract "only the prompt summary leaves
+  the device, never the underlying memory content." The prompt builder
+  previously embedded full journal-event payloads (`events[:10]`) regardless of
+  path. The Sibyl-routed path now redacts events to metadata only (keys /
+  counts / timestamps — no raw content) before assembling the prompt. The BYOK
+  path (`BYOKSummarizer`) is unchanged and keeps full fidelity: the user
+  controls their own inference destination.
+- Extended the same redaction to the `hints` dict on the Sibyl-routed path
+  (multi-model audit follow-up, 2026-06-30). `hints` carried content-derived
+  fields (`action_signature`/`pair`/`slug`/`title` — normalized first-N tokens
+  of the raw `acted` string), which the initial #14 fix left serialized verbatim
+  into the prompt. `_redact_hints_for_prompt` now reduces those fields to a shape
+  stub on `redact=True`, while structural hints (`hits`, `cadence_minutes`,
+  `cov`, `confidence`, `shared_keys`=key names) are preserved. The regression
+  test was hardened to assert no `acted`-derived token survives in the prompt.
+
+### Fixed
+- Search fallback: short function words and contraction tails (`us`, `me`, `am`,
+  `re`, `ll`, `ve`) are now excluded from the zero-hit single-token recovery
+  step, so they can no longer trigger a spurious last-resort match now that the
+  CORE-11 (0.4.15) `len>=2` floor admits short tokens. Strict search is
+  unaffected (it keeps every token); this only tightens the relaxation step.
+  Complements CORE-11's short-identifier recall (q3/v2/k8). Operator-directed,
+  benchmark-validated (phrasing-invariance: in-contract recall held at 100%,
+  zero new distractors).
+
+### Hygiene
+- `_heartbeat.py`: the telemetry `urlopen` call is now wrapped in a `with`
+  context manager so the HTTP socket closes deterministically instead of
+  waiting on GC (#15). Behavior unchanged.
+- `client.validate_identifier`: the forbidden-control-character error message
+  now reports the correct character index via `enumerate()` instead of
+  `value.index(ch)`, which returned the first occurrence of the character
+  rather than the position being scanned (#15). Message accuracy only;
+  validation behavior unchanged.
+
 ## [0.4.15] - 2026-06-25
 
 Pre-launch security audit hardening.
