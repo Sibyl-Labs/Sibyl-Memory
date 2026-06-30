@@ -238,7 +238,10 @@ class BYOKSummarizer:
         events: list[dict[str, Any]],
         hints: dict[str, Any],
     ) -> tuple[str, str | None]:
-        prompt = _build_summarization_prompt(pattern_kind, events, hints)
+        # BYOK keeps full event fidelity: the user controls where the
+        # inference call goes (their own key / inference_fn), so raw memory
+        # content never leaves their chosen destination by Sibyl's hand.
+        prompt = _build_summarization_prompt(pattern_kind, events, hints, redact=False)
         try:
             body = self._inference_fn(prompt)
         except Exception as e:  # pragma: no cover
@@ -285,7 +288,13 @@ class VeniceX402Summarizer:
         events: list[dict[str, Any]],
         hints: dict[str, Any],
     ) -> tuple[str, str | None]:
-        prompt = _build_summarization_prompt(pattern_kind, events, hints)
+        # Sibyl-routed path (#14, 2026-06-30): the prompt is relayed through
+        # Sibyl Labs' own inference proxy, so the privacy contract is that
+        # "only the prompt summary leaves the device, never the underlying
+        # memory content." Redact event payloads to metadata only
+        # (keys / counts / timestamps) before assembling the prompt; raw
+        # journal content must not reach the Sibyl-routed prompt.
+        prompt = _build_summarization_prompt(pattern_kind, events, hints, redact=True)
         try:
             body = self._inference_fn(prompt)
         except Exception as e:  # pragma: no cover
@@ -913,21 +922,99 @@ def _intervals_minutes(timestamps: list[str | None]) -> list[float]:
     return [(parsed[i + 1] - parsed[i]).total_seconds() / 60.0 for i in range(len(parsed) - 1)]
 
 
+def _redact_event_for_prompt(ev: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a journal event to metadata only — no raw content.
+
+    Used on the Sibyl-routed (VeniceX402) summarizer path so that only
+    shape (keys / counts / timestamp), never the underlying memory
+    content, is relayed through Sibyl Labs' inference proxy. The model
+    still gets enough structure to describe the pattern; the user's
+    private journal text never leaves the device.
+    """
+
+    def _shape(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {"keys": sorted(str(k) for k in value.keys())}
+        if isinstance(value, list):
+            return {"count": len(value)}
+        if value is None:
+            return None
+        return {"type": type(value).__name__}
+
+    return {
+        "id": ev.get("id"),
+        "ts": ev.get("ts"),
+        "evaluated": _shape(ev.get("evaluated")),
+        "acted": _shape(ev.get("acted")),
+        "forward": _shape(ev.get("forward")),
+        "extra": _shape(ev.get("extra")),
+    }
+
+
+# Hint fields whose values are seeded from raw memory content (the acted /
+# evaluated strings — e.g. action_signature is the first-N normalized tokens of
+# `acted`) and therefore must not reach the Sibyl-routed prompt. shared_keys is
+# excluded on purpose: it carries only evaluated key NAMES (shape), consistent
+# with how _redact_event_for_prompt preserves dict keys.
+_CONTENT_DERIVED_HINTS = ("action_signature", "pair", "slug", "title")
+
+
+def _redact_hints_for_prompt(hints: dict[str, Any]) -> dict[str, Any]:
+    """Reduce content-derived hint fields to a shape descriptor for the
+    Sibyl-routed (VeniceX402) path. Numeric/structural hints (hits,
+    cadence_minutes, cov, confidence, shared_keys) are shape and kept as-is;
+    content-derived fields (action_signature, pair, slug, title) are replaced
+    with a shape stub so no normalized memory fragments leave the device. The
+    original hints dict is left untouched — only the prompt copy is reduced.
+    """
+    out: dict[str, Any] = {}
+    for key, value in hints.items():
+        if key not in _CONTENT_DERIVED_HINTS:
+            out[key] = value
+        elif isinstance(value, list):
+            out[key] = {"count": len(value)}
+        elif isinstance(value, str):
+            out[key] = {"type": "str", "len": len(value)}
+        elif value is None:
+            out[key] = None
+        else:
+            out[key] = {"type": type(value).__name__}
+    return out
+
+
 def _build_summarization_prompt(
     pattern_kind: str,
     events: list[dict[str, Any]],
     hints: dict[str, Any],
+    *,
+    redact: bool = False,
 ) -> str:
     """Build the LLM prompt for BYOK / Venice summarizers. The prompt is
-    deliberately compact; full evidence is included so the model can
-    produce a high-quality skill body."""
+    deliberately compact.
+
+    When ``redact`` is True (the Sibyl-routed VeniceX402 path), event
+    payloads are reduced to metadata only — keys / counts / timestamps,
+    no raw content — to honor the contract that only the prompt summary,
+    never the underlying memory content, leaves the device. When False
+    (BYOK), full evidence is included so the user's own model can produce
+    a high-quality skill body; the user controls that destination.
+    """
+    shown = events[:10]
+    if redact:
+        evidence = [_redact_event_for_prompt(ev) for ev in shown]
+        evidence_label = "Matching journal events (metadata only, up to 10 shown)"
+        hints_for_prompt = _redact_hints_for_prompt(hints)
+    else:
+        evidence = shown
+        evidence_label = "Matching journal events (up to 10 shown)"
+        hints_for_prompt = hints
     return (
         f"You are summarizing a detected behavioral pattern from a personal "
         f"agent's memory journal.\n"
         f"Pattern kind: {pattern_kind}\n"
-        f"Hints: {json.dumps(hints, indent=2)}\n\n"
-        f"Matching journal events (up to 10 shown):\n"
-        f"{json.dumps(events[:10], indent=2)}\n\n"
+        f"Hints: {json.dumps(hints_for_prompt, indent=2)}\n\n"
+        f"{evidence_label}:\n"
+        f"{json.dumps(evidence, indent=2)}\n\n"
         f"Write a concise reusable skill in Markdown. Include: a clear title, "
         f"one-paragraph description of when to apply this skill, an enumerated "
         f"recipe of the steps the agent should follow, and any constraints "

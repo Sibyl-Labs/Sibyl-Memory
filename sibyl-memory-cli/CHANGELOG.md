@@ -4,6 +4,44 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.18] - 2026-06-30
+
+Post-launch quality fixes from external audit reports (#13, #19, #15). All LOW
+severity; diagnostic/robustness only — no behavior change to wiring or the cap
+gate itself.
+
+### Fixed
+- **`status` DB size now matches the cap gate (#13, B001).** `sibyl status`
+  reported the raw `memory.db` file size (`Path.stat().st_size`), but the
+  free-tier cap is enforced against the WAL-inclusive logical size
+  (`sibyl_memory_client.storage.db_size_bytes`). During a write burst the raw
+  file under-reports (committed pages still in `memory.db-wal`), so the displayed
+  size/percentage disagreed with what the gate actually checks. `status` now uses
+  the same `db_size_bytes()` measure.
+- **`migrate` SQLite connections always close (#19, B001).** `verify_new_entries`
+  (and the sibling `db_baseline`) closed the connection only on the success path;
+  a `sqlite3.Error` mid-query leaked the open connection. Both now wrap
+  connect+query in `try/finally`.
+- **`migrate._tree_size` tolerates un-statable entries (#19, B005).** A
+  permission-denied file or broken symlink under the scanned tree raised `OSError`
+  and aborted the whole size estimate. Each entry is now guarded independently and
+  the offending one is skipped.
+- **`setup` config backups are timestamped (#19, B005).** Hermes/Claude/Codex
+  config backups used a fixed `.bak` suffix, so a second `sibyl init` overwrote
+  the first run's backup. Backups now carry a UTC timestamp
+  (`<file>.<YYYYMMDDThhmmssZ>.bak`) via a shared `_timestamped_backup` helper, so
+  every run keeps its own copy. (The timestamp is defined before use — the
+  external report's own patch referenced an undefined variable and raised
+  NameError; that bug is not reproduced.)
+- **`setup` MCP smoke-test no longer cross-class dispatches (#19, B005).**
+  `CodexWirer.verify_mcp_starts` called `ClaudeCodeWirer.verify_mcp_starts(self)`.
+  Extracted a standalone `_verify_mcp_starts(binary)` module helper used by both
+  wirers.
+- **`status` store discovery survives a restricted profiles dir (#15 hygiene).**
+  `_discover_stores` iterated the Hermes `profiles/` directory without guarding
+  `iterdir()`, which raises `PermissionError` on a restricted directory. The sweep
+  now skips gracefully instead of crashing `sibyl status`.
+
 ## [0.3.17] - 2026-06-25
 
 Pre-launch security audit hardening.

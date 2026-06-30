@@ -105,8 +105,31 @@ def load_credentials(path: str | Path = DEFAULT_CRED_PATH) -> Credentials:
             f"the file may be corrupted. Re-run `sibyl init` to refresh."
         )
 
-    account_id = raw.get("account_id") or raw["tenant_id"]
-    tenant_id = raw.get("tenant_id") or raw["account_id"]
+    # B001/B005 (audit #17): resolve each ID independently. The prior
+    # ``raw.get("account_id") or raw["tenant_id"]`` form had two bugs:
+    #   1. it KeyError'd when one ID was present-but-empty and the other key was
+    #      ABSENT (the ``or`` fell through to a subscript on a missing key), and
+    #   2. it silently CORRUPTED identity by inheriting the OTHER key's value
+    #      whenever an ID was present-but-empty.
+    #
+    # Policy, by case:
+    #   - A genuinely MISSING key falls back to the other ID. This preserves the
+    #     documented backward-compat behavior for single-key (legacy schema v1)
+    #     credential files, and is the only mirroring we allow.
+    #   - A PRESENT-but-empty key is a corruption signal: we never mirror over it
+    #     (that would re-introduce bug #2) and never KeyError on it (bug #1).
+    #     ``.get(..., None)`` distinguishes absent (None) from present-empty ("").
+    has_account = "account_id" in raw
+    has_tenant = "tenant_id" in raw
+    raw_account = raw.get("account_id")
+    raw_tenant = raw.get("tenant_id")
+    # Missing -> fall back to the sibling ID; present-but-empty -> stay as-is.
+    account_id = raw_account if has_account else (raw_tenant or "")
+    tenant_id = raw_tenant if has_tenant else (raw_account or "")
+    # Normalize any None/missing remainder to "" so the dataclass stays str-typed
+    # and a downstream comparison never trips over None.
+    account_id = account_id or ""
+    tenant_id = tenant_id or ""
 
     return Credentials(
         account_id=account_id,
@@ -135,6 +158,11 @@ def write_credentials(creds: Credentials, path: str | Path = DEFAULT_CRED_PATH) 
     """
     resolved = Path(path).expanduser().resolve()
     resolved.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # B005 (audit #20): mkdir's mode is masked by the process umask, so the
+    # 0o700 request can land as e.g. 0o755 (world-traversable). chmod after the
+    # fact enforces owner-only regardless of umask. Also re-tightens an existing
+    # dir that was created loosely on a prior run.
+    os.chmod(resolved.parent, 0o700)
     payload = {
         "account_id": creds.account_id,
         "tenant_id": creds.tenant_id,

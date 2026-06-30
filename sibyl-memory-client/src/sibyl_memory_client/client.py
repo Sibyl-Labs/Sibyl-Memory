@@ -106,11 +106,11 @@ def validate_identifier(value: Any, *, field_name: str) -> str:
             f"{field_name} too long ({len(value)} chars, max {_IDENT_MAX_LENGTH})",
             recovery=f"Use a shorter {field_name} (under {_IDENT_MAX_LENGTH} chars).",
         )
-    for ch in value:
+    for idx, ch in enumerate(value):
         if ord(ch) in _IDENT_FORBIDDEN_CODE_POINTS:
             raise ValidationError(
                 f"{field_name} contains a forbidden control character "
-                f"(code point 0x{ord(ch):02x} at index {value.index(ch)})",
+                f"(code point 0x{ord(ch):02x} at index {idx})",
                 recovery=(
                     f"Identifiers must be printable single-line strings. "
                     f"Remove control characters / null bytes / tabs / newlines."
@@ -493,6 +493,10 @@ _SEARCH_STOPWORDS = frozenset({
     "these", "those", "not", "no", "can", "will", "would", "should", "could",
     "may", "might", "just", "also", "all", "any", "some", "more", "most",
     "into", "about", "over", "than", "then", "there", "here",
+    # short function words + contraction tails (operator 2026-06-28): kept out of
+    # the single-token fallback now that the len>=2 floor (CORE-11) lets short
+    # tokens through, so "us"/"re"/"ll" can't trigger a junk last-resort search.
+    "us", "me", "am", "re", "ll", "ve",
 })
 
 

@@ -19,7 +19,8 @@ on the prompt. Fresh adds default to YES. --force overrides destructive guards.
 --yes accepts all defaults (still respects the destructive-default-NO unless
 --force is also passed). --dry-run prints intent without writing.
 
-All config edits are atomic: backup to <file>.bak, write to <file>.tmp, rename.
+All config edits are atomic: backup to <file>.<utc-timestamp>.bak, write to
+<file>.tmp, rename.
 """
 from __future__ import annotations
 
@@ -29,9 +30,91 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
+
+
+def _timestamped_backup(path: Path) -> Optional[Path]:
+    """Copy ``path`` to a timestamped backup beside it, returning the backup
+    path (or None if the source does not exist).
+
+    B005 (audit #19): backups used a FIXED ``.bak`` suffix, so a second
+    ``sibyl init`` overwrote the first run's backup — destroying the only
+    pre-change copy. We append a UTC timestamp to the full filename so every run
+    keeps its own backup, e.g. ``config.yaml`` becomes
+    ``config.yaml.20260630T142530Z.bak`` (the original extension is preserved).
+
+    The timestamp is computed BEFORE it is used in the filename (the external
+    PR that reported this referenced an undefined ``ts`` inside the f-string and
+    raised NameError — that bug is not reproduced here).
+    """
+    if not path.exists():
+        return None
+    ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    backup = path.with_name(f"{path.name}.{ts}.bak")
+    shutil.copy2(path, backup)
+    return backup
+
+
+def _verify_mcp_starts(binary: Optional[str]) -> tuple:
+    """Smoke-test an MCP stdio server binary: spawn it and confirm it does not
+    crash on startup. Returns (ok: bool, message: str).
+
+    B005 (audit #19): this was a method on ClaudeCodeWirer that CodexWirer
+    called via the fragile cross-class dispatch
+    ``ClaudeCodeWirer.verify_mcp_starts(self)``. Pulled out to a standalone
+    helper so both wirers share one implementation cleanly. The only state it
+    needed was the resolved binary path, so it takes that as an argument.
+
+    Catches the common failures: ImportError (missing dep),
+    ModuleNotFoundError, bad credentials file — all of which manifest within
+    the first second as a non-zero exit. A slow-but-alive import is treated as
+    healthy (it is blocking on stdin), not crashed.
+    """
+    if not binary:
+        return False, "MCP binary not found on PATH"
+    try:
+        proc = subprocess.Popen(
+            [binary],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        # CLI-12: MCP stdio servers block on stdin; a crash-on-import exits
+        # quickly with a non-zero code. POLL the exit code over a short window
+        # instead of a fixed sleep — a slow import (cold caches, heavy deps)
+        # that is still alive at the deadline is treated as healthy.
+        deadline = time.monotonic() + 3.0
+        rc = None
+        while time.monotonic() < deadline:
+            rc = proc.poll()
+            if rc is not None:
+                break
+            time.sleep(0.1)
+        if rc is not None and rc != 0:
+            # CLI-12: bound the stderr read so a server that floods stderr
+            # before exiting can't make us block on an unbounded read.
+            try:
+                err = (proc.stderr.read(4096) or b"").decode(errors="replace").strip()
+            except Exception:
+                err = ""
+            return False, f"Server crashed on startup (exit {rc}): {err[:200]}"
+        if rc == 0:
+            # Exited cleanly without blocking — unusual for a stdio server but
+            # not a crash.
+            return True, "MCP server verified (exited cleanly)"
+        # Still running (blocking on stdin) — binary works.
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        return True, "MCP server verified (starts cleanly)"
+    except Exception as e:
+        return False, f"Could not start server: {type(e).__name__}: {e}"
 
 
 def _run(cmd: list[str], *, timeout: float = 20.0) -> tuple[int, str, str]:
@@ -246,11 +329,8 @@ class HermesWirer:
         install(hermes_home=Path(self.hermes_home), force=False, dry_run=False)
 
     def _backup_config(self) -> Optional[Path]:
-        if not self.config_path.exists():
-            return None
-        backup = self.config_path.with_suffix(".yaml.bak")
-        shutil.copy2(self.config_path, backup)
-        return backup
+        # B005 (audit #19): timestamped backup so repeated runs don't clobber it.
+        return _timestamped_backup(self.config_path)
 
     def _write_config_with_sibyl(self, yaml) -> None:
         cfg: dict = {}
@@ -348,57 +428,14 @@ class ClaudeCodeWirer:
     def verify_mcp_starts(self) -> tuple:
         """Smoke-test: spawn sibyl-memory-mcp and confirm it doesn't crash on startup.
 
-        Returns (ok: bool, message: str).  Catches the common failures:
-        ImportError (missing dep), ModuleNotFoundError, bad credentials file.
-        All of those manifest within the first second as a non-zero exit.
+        Returns (ok: bool, message: str). Delegates to the module-level
+        ``_verify_mcp_starts`` helper (audit #19 B005) so the Claude and Codex
+        wirers share one implementation instead of cross-class dispatch.
         """
-        import subprocess
-        import time
-
         binary = shutil.which(self.MCP_BINARY)
         if not binary:
             return False, f"'{self.MCP_BINARY}' not found on PATH"
-        try:
-            proc = subprocess.Popen(
-                [binary],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            # CLI-12: MCP stdio servers block on stdin; a crash-on-import exits
-            # quickly with a non-zero code. POLL the exit code over a short
-            # window instead of a fixed sleep — a slow import (cold caches,
-            # heavy deps) that is still alive at the deadline is treated as
-            # healthy (it's blocking on stdin), not "crashed".
-            deadline = time.monotonic() + 3.0
-            rc = None
-            while time.monotonic() < deadline:
-                rc = proc.poll()
-                if rc is not None:
-                    break
-                time.sleep(0.1)
-            if rc is not None and rc != 0:
-                # CLI-12: bound the stderr read so a server that floods stderr
-                # before exiting can't make us block on an unbounded read.
-                try:
-                    err = (proc.stderr.read(4096) or b"").decode(errors="replace").strip()
-                except Exception:
-                    err = ""
-                return False, f"Server crashed on startup (exit {rc}): {err[:200]}"
-            if rc == 0:
-                # Exited cleanly without blocking — unusual for a stdio server
-                # but not a crash.
-                return True, "MCP server verified (exited cleanly)"
-            # Still running (blocking on stdin) — binary works.
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-            return True, "MCP server verified (starts cleanly)"
-        except Exception as e:
-            return False, f"Could not start server: {type(e).__name__}: {e}"
+        return _verify_mcp_starts(binary)
 
     def current_state(self) -> dict:
         settings_exists = self.settings_path.exists()
@@ -553,11 +590,8 @@ class ClaudeCodeWirer:
         )
 
     def _backup_settings(self) -> Optional[Path]:
-        if not self.settings_path.exists():
-            return None
-        backup = self.settings_path.with_suffix(".json.bak")
-        shutil.copy2(self.settings_path, backup)
-        return backup
+        # B005 (audit #19): timestamped backup so repeated runs don't clobber it.
+        return _timestamped_backup(self.settings_path)
 
     def _write_settings_with_sibyl(self) -> None:
         cfg: dict = {}
@@ -678,8 +712,12 @@ class CodexWirer:
         ]
 
     def verify_mcp_starts(self) -> tuple:
-        # reuse the same stdio smoke-test the Claude wirer uses
-        return ClaudeCodeWirer.verify_mcp_starts(self)  # type: ignore[arg-type]
+        # reuse the same stdio smoke-test via the shared module-level helper
+        # (audit #19 B005 — no more cross-class dispatch).
+        binary = shutil.which(self.MCP_BINARY)
+        if not binary:
+            return False, f"'{self.MCP_BINARY}' not found on PATH"
+        return _verify_mcp_starts(binary)
 
     def wire(self, *, force: bool = False, dry_run: bool = False,
              prompt_fn: Optional[Callable[..., str]] = None) -> WireOutcome:
@@ -705,11 +743,8 @@ class CodexWirer:
             f"Added [mcp_servers.sibyl_memory] to {self.config_path}", backup_path=backup)
 
     def _backup_config(self) -> Optional[Path]:
-        if not self.config_path.exists():
-            return None
-        backup = self.config_path.with_suffix(".toml.bak")
-        shutil.copy2(self.config_path, backup)
-        return backup
+        # B005 (audit #19): timestamped backup so repeated runs don't clobber it.
+        return _timestamped_backup(self.config_path)
 
     def _append_block(self) -> None:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
