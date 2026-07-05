@@ -636,15 +636,20 @@ class MemoryClient:
         # Cap gate: enforces the 2 MB free-tier cap with server-authoritative
         # tier verification at the boundary. See _capcheck.py for the design.
         if cap_gate is None:
-            from ._capcheck import CapGate, TierCache
+            from ._capcheck import CapGate, TierCache, aggregate_db_size
             cap_gate = CapGate(
                 account_id=account_id,
                 session_token=session_token,
-                # CAP-1: WAL-inclusive sizing. Sizing memory.db alone under-counts
-                # writes still sitting in memory.db-wal, letting a free user grow
-                # past the cap during a write burst before the checkpoint folds
-                # the WAL back in. db_size_bytes sums the main file + -wal + -shm.
-                db_size_fn=lambda: db_size_bytes(storage.db_path),
+                # ACCOUNT-level cap (0.4.18): the FREE-tier cap is per account,
+                # not per DB file, so the gate sizes EVERY memory store this
+                # machine resolves (SDK default ~/.sibyl-memory, Hermes adapter
+                # + per-profile stores, SIBYL_MEMORY_DB override, and the active
+                # db_path), deduped by resolved path. Each store is still sized
+                # WAL-inclusively via db_size_bytes (CAP-1: sizing memory.db
+                # alone under-counts writes still sitting in memory.db-wal
+                # during a burst), so this composes with CAP-1 rather than
+                # regressing it.
+                db_size_fn=lambda: aggregate_db_size(storage.db_path),
                 local_tier_hint=tier,
                 cache=TierCache(
                     Path(storage.db_path).parent / "tier_cache.json"

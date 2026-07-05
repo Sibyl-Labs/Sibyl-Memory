@@ -385,3 +385,84 @@ def test_cap_gate_invalidate_cache(tmp_path: Path) -> None:
     )
     gate.invalidate_cache()
     assert cache.load() is None
+
+
+# ----------------------------------------------------------------------
+# Account-level cap aggregation (v0.4.18)
+# ----------------------------------------------------------------------
+
+def test_free_tier_cap_aggregates_sibling_stores(tmp_path: Path) -> None:
+    """The FREE-tier cap is per ACCOUNT: two 1.5 MB stores on the same
+    machine must aggregate to 3 MB and trip the 2 MB cap, even though each
+    store is individually under it (Discord report 2026-06-11: 6.29 MB
+    across 9 stores on one FREE account)."""
+    import os
+    from sibyl_memory_client._capcheck import aggregate_db_size
+
+    # Primary store: 1.5 MB.
+    primary = tmp_path / "workdir" / "memory.db"
+    primary.parent.mkdir()
+    primary.write_bytes(b"\0" * 1_500_000)
+    # Sibling store at the SDK default location under the (isolated) home.
+    sibling = Path(os.environ["HOME"]) / ".sibyl-memory" / "memory.db"
+    sibling.parent.mkdir(parents=True, exist_ok=True)
+    sibling.write_bytes(b"\0" * 1_500_000)
+
+    assert aggregate_db_size(primary) == 3_000_000
+
+    server = FakeServer(tier="free")
+    cache = TierCache(tmp_path / "tc.json")
+    gate = CapGate(
+        account_id="acc-1",
+        session_token="sess-1",
+        db_size_fn=lambda: aggregate_db_size(primary),
+        local_tier_hint="free",
+        cache=cache,
+        check_fn=server,
+    )
+    with pytest.raises(CapExceededError) as exc:
+        gate.check(proposed_delta_bytes=100)
+    assert exc.value.cap == 2 * 1024 * 1024
+    # The boundary check reported the ACCOUNT-level aggregate, not the
+    # single-store size.
+    assert len(server.calls) == 1
+    assert server.calls[0]["current_size_bytes"] == 3_000_000
+
+
+def test_aggregate_db_size_is_wal_inclusive(tmp_path: Path) -> None:
+    """aggregate_db_size must size each store WAL-inclusively (via
+    db_size_bytes: SQLite logical size, page_count x page_size), composing
+    with CAP-1. A revert to plain st_size would under-count a store whose
+    committed data still sits in memory.db-wal — this test fails in that
+    case because the main file's byte size is smaller than the logical
+    size while the WAL holds the data."""
+    import sqlite3
+    from sibyl_memory_client._capcheck import aggregate_db_size
+    from sibyl_memory_client.storage import db_size_bytes
+
+    db = tmp_path / "walstore" / "memory.db"
+    db.parent.mkdir()
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE t (v TEXT)")
+        conn.executemany(
+            "INSERT INTO t VALUES (?)", [("x" * 1024,) for _ in range(200)]
+        )
+        conn.commit()
+        # Keep the connection open: closing it checkpoints the WAL back into
+        # the main file, which is exactly the window CAP-1 exists to cover.
+        wal = db.with_name(db.name + "-wal")
+        assert wal.exists() and wal.stat().st_size > 0
+
+        logical = db_size_bytes(db)
+        # The committed rows live in the WAL, so the main file's raw byte
+        # size under-counts the true footprint...
+        assert logical > db.stat().st_size
+        # ...and the aggregate must report the WAL-inclusive logical size,
+        # not the main file's st_size. (Conftest isolation guarantees no
+        # other candidate store exists, so the aggregate == this one store.)
+        assert aggregate_db_size(db) == logical
+        assert aggregate_db_size(db) != db.stat().st_size
+    finally:
+        conn.close()
