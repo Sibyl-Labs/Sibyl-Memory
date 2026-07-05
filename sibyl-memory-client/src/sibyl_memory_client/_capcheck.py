@@ -211,6 +211,79 @@ class TierCache:
 
 
 # ----------------------------------------------------------------------
+# Account-level size aggregation (v0.4.18)
+# ----------------------------------------------------------------------
+
+def aggregate_db_size(primary_db: str | Path) -> int:
+    """Total WAL-inclusive bytes across every memory.db an agent on this
+    machine resolves.
+
+    The FREE-tier cap is per ACCOUNT, not per DB file. Sizing only the store
+    being written to lets N stores yield N x 2 MB on one free account
+    (Discord report 2026-06-11: 6.29 MB across 9 stores). This walks every
+    store an agent on this machine can resolve and sums them:
+
+      - ``primary_db`` (the store the current client is writing to)
+      - ``~/.sibyl-memory/memory.db`` (SDK default location)
+      - ``$HERMES_HOME/sibyl/memory.db`` (Hermes adapter; ``HERMES_HOME``
+        defaults to ``~/.hermes``)
+      - ``$HERMES_HOME/sibyl/profiles/<p>/memory.db`` for each profile dir
+      - ``$SIBYL_MEMORY_DB`` override, when set
+
+    Candidates are deduped by resolved path. Missing or unreadable
+    candidates contribute 0; this function never raises.
+
+    COMPOSITION WITH CAP-1 (0.4.15): each existing candidate is sized with
+    ``storage.db_size_bytes`` — the SQLite *logical* size (``page_count x
+    page_size``, falling back to main + -wal + -shm file bytes) — NOT a
+    plain ``st_size``. Committed data still living in a store's -wal
+    journal therefore counts toward the account footprint. Summing raw
+    ``st_size`` per file here would silently regress CAP-1 for every store
+    in the walk.
+    """
+    # Local import: keeps the storage<->_capcheck edge lazy so there is no
+    # circular-import risk at module load time.
+    from .storage import db_size_bytes
+
+    candidates: list[Path] = [
+        Path(primary_db).expanduser(),
+        Path.home() / ".sibyl-memory" / "memory.db",
+    ]
+    if os.environ.get("HERMES_HOME"):
+        hermes_home = Path(os.environ["HERMES_HOME"]).expanduser()
+    else:
+        hermes_home = Path.home() / ".hermes"
+    candidates.append(hermes_home / "sibyl" / "memory.db")
+    profiles_dir = hermes_home / "sibyl" / "profiles"
+    try:
+        if profiles_dir.is_dir():
+            for prof in sorted(profiles_dir.iterdir()):
+                candidates.append(prof / "memory.db")
+    except OSError:
+        pass
+    if os.environ.get("SIBYL_MEMORY_DB"):
+        candidates.append(Path(os.environ["SIBYL_MEMORY_DB"]).expanduser())
+
+    seen: set[str] = set()
+    total = 0
+    for path in candidates:
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            resolved = str(path)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            if path.is_file():
+                # WAL-inclusive per-store size (CAP-1), never plain st_size.
+                total += db_size_bytes(path)
+        except OSError:
+            continue
+    return total
+
+
+# ----------------------------------------------------------------------
 # Server check
 # ----------------------------------------------------------------------
 

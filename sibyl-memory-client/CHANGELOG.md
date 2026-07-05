@@ -4,6 +4,32 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.18] - 2026-07-05
+
+### Fixed
+- FREE-tier 2 MB cap now aggregates across every memory store the machine
+  resolves, instead of being enforced per DB file (Discord report 2026-06-11:
+  6.29 MB across 9 stores on one FREE account, each store individually under
+  the cap). New `aggregate_db_size()` in `_capcheck.py` sums the SDK default
+  store (`~/.sibyl-memory/memory.db`), the Hermes adapter store
+  (`$HERMES_HOME/sibyl/memory.db`, `HERMES_HOME` defaulting to `~/.hermes`),
+  every Hermes per-profile store (`$HERMES_HOME/sibyl/profiles/<p>/memory.db`),
+  the `SIBYL_MEMORY_DB` override, and the active `db_path` — deduped by
+  resolved path; missing/unreadable candidates contribute 0 and the walk
+  never raises. Each candidate is sized WAL-inclusively via `db_size_bytes`
+  (SQLite logical size, `page_count x page_size`), so the aggregate COMPOSES
+  with CAP-1 (0.4.15) rather than regressing it — a plain per-file `st_size`
+  sum would have under-counted data still sitting in a store's `-wal`
+  journal. Free accounts already over the aggregate cap are blocked on their
+  next write by design (the boundary check now sees the true account
+  footprint); paid tiers are unaffected (uncapped). Regression tests cover
+  both the sibling-store aggregation (two 1.5 MB stores -> 3 MB -> blocked,
+  with the check-write payload reporting the aggregate) and the
+  WAL-inclusive sizing (fails if the aggregate reverts to `st_size`); a new
+  `tests/conftest.py` autouse fixture isolates HOME/USERPROFILE/HERMES_HOME
+  and clears `SIBYL_MEMORY_DB` so the candidate walk can never leak a real
+  local store into the suite.
+
 ## [0.4.17] - 2026-06-30
 
 ### Security
