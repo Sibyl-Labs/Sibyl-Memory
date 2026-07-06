@@ -45,3 +45,6 @@ Thumbs.db
 
 # Private schema (never publish to public repo)
 sibyl-plugin-schema/
+
+# pip HTTP cache (never commit)
+.pipcache/
