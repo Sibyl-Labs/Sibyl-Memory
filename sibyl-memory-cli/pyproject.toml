@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sibyl-memory-cli"
-version = "0.3.18"
+version = "0.3.19"
 description = "Command-line interface for the Sibyl Memory Plugin. `sibyl init` activates, `sibyl upgrade` runs the staker / subscription flow, `sibyl status` shows current tier and DB stats, `sibyl whoami` gives a one-line account summary, `sibyl devices` lists active devices and supports per-device revoke."
 authors = [{ name = "SIBYL, Sibyl Labs LLC", email = "sibyl@sibyllabs.org" }]
 license = { text = "MIT" }
@@ -25,7 +25,7 @@ classifiers = [
 dependencies = [
   "sibyl-memory-client>=0.4.0",
   "sibyl-memory-hermes>=0.3.2",
-  "pyyaml>=6.0",
+  "pyyaml>=6.0,<7",
 ]
 
 [project.optional-dependencies]
@@ -42,6 +42,7 @@ sibyl = "sibyl_memory_cli.cli:main"
 [project.urls]
 Homepage = "https://sibyllabs.org/plugin"
 Documentation = "https://docs.sibyllabs.org/memory/"
+Repository = "https://github.com/Sibyl-Labs/Sibyl-Memory"
 
 [tool.setuptools.packages.find]
 where = ["src"]

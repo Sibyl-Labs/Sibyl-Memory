@@ -10,12 +10,15 @@ re-learning the model.
 from __future__ import annotations
 
 import functools
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from .exceptions import NotFoundError, StorageError, TenantError, ValidationError
 from .storage import Storage, db_size_bytes, dumps, loads, new_id, _utc_now_iso
+
+_log = logging.getLogger(__name__)
 
 
 # ----------------------------------------------------------------------
@@ -276,6 +279,20 @@ _FTS5_COLUMN_TOKENS = frozenset({"name", "category", "body", "tenant_id",
                                   "payload", "ts", "rowid"})
 
 
+# Hardening #9 (super-patch 2026-07-05, subsumes duplicate R15): upper bound on
+# the raw search query length. _sanitize_fts5_query walks its input char-by-char
+# up to three times and expands EVERY token into an ANDed, phrase-quoted term;
+# that sanitized string is then MATCHed across up to four FTS5 tiers. With no
+# ceiling, a multi-megabyte / ~200k-token query becomes a ~200k-term MATCH
+# executed four times — a CPU + memory DoS reachable from client, MCP, and
+# Hermes alike. Identifiers are already capped at 1024 (_IDENT_MAX_LENGTH) but
+# the free-text query was not. This is the single choke point every search path
+# funnels through, so bounding it here protects all callers at once. 4096 chars
+# is far above any legitimate natural-language query (real queries are a handful
+# of words), so normal use is never truncated; only pathological inputs are.
+MAX_QUERY_CHARS = 4096
+
+
 # v0.4.4 (chainriffs Discord report + KAPPA #4): bare uppercase FTS5 operator
 # keywords typed inside a natural-language query ("auth AND db", "cache NEAR
 # eviction") were being phrase-quoted into REQUIRED LITERAL tokens, so a matched
@@ -327,6 +344,16 @@ def _sanitize_fts5_query(raw: str, *, prefix: bool = False, as_phrase: bool = Fa
     """
     if not raw or not isinstance(raw, str):
         return ""
+    # Hardening #9 (super-patch 2026-07-05): bound the query BEFORE any per-char
+    # walk or tokenization. Truncating here caps the worst case (a multi-MB /
+    # ~200k-token query expanded into a giant MATCH) at a single choke point
+    # shared by client / MCP / Hermes. Truncate rather than raise: search is a
+    # read path, so best-effort matching on the first MAX_QUERY_CHARS characters
+    # is friendlier than forcing every caller to catch a ValidationError, and it
+    # keeps the token count implicitly bounded (<= MAX_QUERY_CHARS tokens). Real
+    # queries are far under the ceiling and pass through untouched.
+    if len(raw) > MAX_QUERY_CHARS:
+        raw = raw[:MAX_QUERY_CHARS]
     s = raw.strip()
     if not s:
         return ""
@@ -1505,11 +1532,65 @@ class MemoryClient:
         cap_gate = getattr(self, "_cap_gate", None)
         if cap_gate is None:
             return
-        total = self._storage.logical_size_bytes(conn)
+        # Hardening #16 (super-patch 2026-07-05): storage.logical_size_bytes
+        # returns 0 on ANY internal error (it catches sqlite3.Error / TypeError /
+        # IndexError and falls back to 0). A 0 here would FAIL OPEN the CAP-2
+        # recheck — check_total_local(0) trivially passes, so a near-cap write
+        # that should tip the DB over the cap would commit silently. But this
+        # method only ever runs INSIDE a write transaction with an INSERT/UPDATE
+        # already staged, so a logical size of 0 is never a legitimate post-write
+        # footprint: it signals the measurement was unavailable. In that case,
+        # fall back to the gate's own db_size_fn (the WAL-inclusive account-level
+        # aggregate_db_size wired in __init__, which never under-counts) before
+        # gating, so the cap is still enforced instead of silently bypassed.
+        try:
+            total = self._storage.logical_size_bytes(conn)
+        except Exception as exc:  # measurement path itself blew up
+            _log.warning(
+                "logical_size_bytes raised during CAP-2 recheck (%s); "
+                "falling back to the cap gate's db_size_fn", exc,
+            )
+            total = 0
+        if not total:  # 0 (or None) => measurement unavailable, DO NOT fail open
+            fallback = self._fallback_committed_size(cap_gate)
+            if fallback is not None:
+                _log.warning(
+                    "CAP-2 recheck got a 0-byte in-transaction size "
+                    "(measurement unavailable); enforcing the cap via the "
+                    "db_size_fn fallback (%d bytes) instead of failing open.",
+                    fallback,
+                )
+                total = fallback
+            else:
+                _log.warning(
+                    "CAP-2 recheck got a 0-byte in-transaction size and no "
+                    "usable db_size_fn fallback; proceeding with 0.",
+                )
         # check_total_local is LOCAL-ONLY (no network) — it must not block on a
         # urlopen while we hold the BEGIN IMMEDIATE write lock (2026-06-25 audit
         # blocker). The pre-write check() already did any server verification.
         cap_gate.check_total_local(total)
+
+    @staticmethod
+    def _fallback_committed_size(cap_gate: Any) -> int | None:
+        """Best-effort WAL-inclusive size from the cap gate's own db_size_fn.
+
+        Hardening #16 fallback for when the in-transaction logical size is
+        unavailable (returned 0 / raised). The gate is constructed with
+        ``db_size_fn=lambda: aggregate_db_size(storage.db_path)`` — the same
+        account-level, WAL-inclusive measurement the pre-write gate uses — so it
+        is a strictly-not-under-counting substitute for the CAP-2 recheck.
+        Returns a positive byte count, or None if no usable size can be obtained
+        (never raises: a broken fallback must not crash the write path).
+        """
+        size_fn = getattr(cap_gate, "_db_size_fn", None)
+        if size_fn is None:
+            return None
+        try:
+            value = int(size_fn())
+        except Exception:
+            return None
+        return value if value > 0 else None
 
     def _row_to_entity(self, row: sqlite3.Row) -> dict[str, Any]:
         return {

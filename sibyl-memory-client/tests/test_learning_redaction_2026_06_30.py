@@ -59,10 +59,12 @@ def test_sibyl_routed_prompt_redacts_raw_content(tmp_path: Path) -> None:
     assert _SECRET_TASK not in prompt
     assert _SECRET_TICKET not in prompt
     assert _SECRET_ACTION not in prompt
-    # Metadata (the evaluated key names) is still relayed so the model can
-    # describe the shape of the pattern.
-    assert "keys" in prompt
-    assert "task" in prompt  # an evaluated key name, not a value
+    # Hardening #1 (super-patch 2026-07-05): dict KEY NAMES are content and must
+    # NOT reach the Sibyl-routed prompt (content can hide in a key name just as
+    # easily as in a value). The evaluated payload is now reduced to a count +
+    # per-key lengths, never the literal key names.
+    assert "key_count" in prompt  # shape marker proves redaction ran
+    assert "ticket" not in prompt  # an evaluated key name -- must not leak
     assert "metadata only" in prompt
     # Strengthened (audit 2026-06-30): the prior version checked only the full
     # raw strings, so normalized hint derivatives (action_signature = first-N

@@ -4,6 +4,50 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.1.12] - 2026-07-05
+
+Super-patch: recovery + adjudication of the remaining Fable 10-lens audit
+findings (`plugin-hardening-superpatch-plan-2026-07-05.md`).
+
+### Fixed
+- **Client-cache rebuild dropped the old `MemoryClient` without closing it
+  (R26).** `_open_client` rebuilds the cached client on a `credentials.json`
+  mtime change (or post-init/post-logout appearance/disappearance), but
+  discarded the previous client directly, stranding every per-thread SQLite
+  connection it had registered. Repeated credential-mtime changes
+  accumulated open connections. The old client's storage is now closed
+  (best-effort — a missing/failing `close()` never blocks serving the newly
+  built client) before the cache is swapped.
+- **`~/.sibyl-memory` could be created world-readable on first touch (R30).**
+  `_build_client` used a bare `mkdir(parents=True, exist_ok=True)` with no
+  mode; on an already-existing directory `mkdir`'s mode argument is a no-op
+  too. The memory directory is now created (and, for the pre-existing case,
+  explicitly `chmod`'d) at `0o700`, mirroring the CLI's credential-writing
+  path and the client `Storage` hardening.
+- **`memory_search` unknown-tier error had no `code` field (R31).** An
+  unknown value in the `tiers` CSV param raised a builtin `ValueError`,
+  which fell through `_err`'s typed exception chain and produced an error
+  envelope with no `code` — inconsistent with every other tool error. It now
+  raises the SDK's `ValidationError`, mapped to `code: "VALIDATION_ERROR"`;
+  `_err` also gained a fallback `payload.setdefault("code", "ERROR")` so no
+  future untyped exception can produce a code-less envelope again.
+- **Tenant resolution had no `account_id` fallback rung (Contract T).**
+  `_build_client` resolved `tenant_id=creds.get("tenant_id") or
+  DEFAULT_TENANT` directly, so an activated account with a missing/empty
+  `tenant_id` (legacy credentials, or a present-but-empty field) fell back
+  straight to the shared `DEFAULT_TENANT` instead of its own account. Now
+  resolves via the canonical ladder shared by every plugin surface:
+  `tenant_id -> account_id -> DEFAULT_TENANT`.
+
+### Metadata
+- `pyproject.toml`'s `Repository` URL pointed at a foreign, nonexistent
+  `sibyllabs` (no hyphen) GitHub org that 404s in live PyPI metadata.
+  Corrected to `https://github.com/Sibyl-Labs/Sibyl-Memory` (R27).
+- Third-party dependency `mcp` was pinned `>=1.0.0` with no upper bound, so
+  a fresh install could auto-pip a future major with breaking changes.
+  Capped to `mcp>=1.0.0,<2` (R29). Internal `sibyl-memory-*` pins are
+  unaffected (stay `>=`, vendor-controlled names).
+
 ## [0.1.11] - 2026-06-25
 
 Pre-launch security audit hardening.

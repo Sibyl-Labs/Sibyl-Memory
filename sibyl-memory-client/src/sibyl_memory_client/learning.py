@@ -61,6 +61,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -78,6 +79,16 @@ logger = logging.getLogger(__name__)
 # routine limit — the watermark (max scanned ts) advances each run, so a large
 # backlog drains across runs instead of in one spike.
 _MAX_EVENTS_PER_RUN = 10000
+
+# R13 (super-patch 2026-07-05): the co-occurrence detector builds every 2-combo
+# of an event's DISTINCT tokens (O(tokens²) per event). A single pathological
+# event (a ≤1 MiB body can hold ~100k short strings → ~5e9 pairs) would hang the
+# run — and spike memory — long before any ``min_hits`` threshold prunes it. Two
+# cheap bounds close this: cap the distinct tokens considered per event, and cap
+# the total distinct pairs tracked across the whole run. Realistic shallow events
+# (a handful of keys / verbs) are far under both caps and behave identically.
+_MAX_TOKENS_PER_EVENT = 64
+_MAX_TRACKED_PAIRS = 100_000
 
 
 # ----------------------------------------------------------------------
@@ -350,9 +361,18 @@ class Learner:
         run_id = new_id()
         started_at = _utc_now_iso()
 
-        # Resolve watermark: explicit `since` wins, otherwise look up last run
-        since_ts = since or self._last_watermark()
-        events = self._load_events(since=since_ts)
+        # Hardening #15 (super-patch 2026-07-05): make sure the rowid-watermark
+        # column exists before we read/write it (idempotent, one-time ALTER on a
+        # pre-super-patch DB).
+        self._ensure_rowid_watermark_column()
+
+        # Resolve watermark. Default path cursors on the monotonic journal
+        # ``rowid`` (Hardening #15) so concurrent / same-timestamp / backdated
+        # events are never skipped by a strict ``ts >`` comparison. An explicit
+        # ``since`` (a timestamp) stays an escape hatch to re-scan from a point in
+        # time; when supplied it filters by ts instead of the rowid watermark.
+        after_rowid = None if since else self._last_watermark_rowid()
+        events = self._load_events(since_ts=since, after_rowid=after_rowid)
         scanned = len(events)
 
         # Skip detection entirely if there's nothing new
@@ -364,7 +384,8 @@ class Learner:
                 completed_at=_utc_now_iso(),
                 events_scanned=0,
                 proposals_made=0,
-                cursor_after_ts=since_ts,
+                cursor_after_ts=since,
+                cursor_after_rowid=after_rowid,
                 notes="no new events since last run",
             )
             return LearningRunReport(
@@ -405,8 +426,11 @@ class Learner:
             pid = self._insert_proposal(c, body=body, title=title)
             proposal_ids.append(pid)
 
-        # Watermark
-        cursor_after = max((ev.get("ts") or "") for ev in events) or since_ts
+        # Watermark: advance on the monotonic rowid so no same-ts row is ever
+        # skipped next run (Hardening #15). Keep the max ts too, for readable logs.
+        max_rowid = max((ev.get("rowid") or 0) for ev in events)
+        cursor_after_rowid = max(max_rowid, after_rowid or 0)
+        cursor_after_ts = max((ev.get("ts") or "") for ev in events) or None
 
         self._log_run(
             run_id=run_id,
@@ -414,7 +438,8 @@ class Learner:
             completed_at=_utc_now_iso(),
             events_scanned=scanned,
             proposals_made=len(proposal_ids),
-            cursor_after_ts=cursor_after,
+            cursor_after_ts=cursor_after_ts,
+            cursor_after_rowid=cursor_after_rowid,
             notes=None,
         )
 
@@ -507,13 +532,35 @@ class Learner:
                     metadata_json,
                 ),
             )
-            conn.execute(
+            # Hardening #8 (super-patch 2026-07-05): in-transaction CAP-2 recheck.
+            # The pre-txn check() above gates on a byte ESTIMATE; this reads the
+            # TRUE logical footprint with the INSERT already staged (write lock
+            # held) and rejects — rolling back the staged rows — if it tips the
+            # DB over the cap. check_total_local is LOCAL-ONLY (no network) so it
+            # is safe to call under the write lock. Skipped for cap gates that do
+            # not implement it (advanced/direct callers, e.g. estimate-only test
+            # doubles); the production CapGate always does.
+            if self._cap_gate is not None:
+                check_total_local = getattr(self._cap_gate, "check_total_local", None)
+                if callable(check_total_local):
+                    check_total_local(self._storage.logical_size_bytes(conn))
+            # Hardening #8: guard the state transition with AND status = 'pending'
+            # so a concurrent double-accept (two callers that both passed the
+            # pre-txn status check) cannot both commit. rowcount == 0 means the
+            # proposal was already reviewed under us — raise so this txn (and its
+            # staged reference_documents write) rolls back.
+            cur = conn.execute(
                 "UPDATE skill_proposals "
                 "SET status = 'accepted', reviewed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), "
                 "review_note = ?, accepted_doc_key = ? "
-                "WHERE id = ? AND tenant_id = ?",
+                "WHERE id = ? AND tenant_id = ? AND status = 'pending'",
                 (note, doc_key, proposal_id, self._tenant_id),
             )
+            if cur.rowcount == 0:
+                raise ValidationError(
+                    f"proposal {proposal_id} is no longer pending, cannot accept",
+                    recovery="It was reviewed concurrently. Re-list with list_proposals(status='pending').",
+                )
         return {"accepted": True, "doc_key": doc_key, "proposal_id": proposal_id}
 
     def reject_proposal(
@@ -529,40 +576,88 @@ class Learner:
                 recovery="Only pending proposals can be rejected.",
             )
         with self._storage.transaction() as conn:
-            conn.execute(
+            # Hardening #8: same status='pending' guard as accept_proposal so a
+            # concurrent reject/accept race cannot clobber an already-reviewed row.
+            cur = conn.execute(
                 "UPDATE skill_proposals "
                 "SET status = 'rejected', reviewed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), "
                 "review_note = ? "
-                "WHERE id = ? AND tenant_id = ?",
+                "WHERE id = ? AND tenant_id = ? AND status = 'pending'",
                 (note, proposal_id, self._tenant_id),
             )
+            if cur.rowcount == 0:
+                raise ValidationError(
+                    f"proposal {proposal_id} is no longer pending, cannot reject",
+                    recovery="It was reviewed concurrently. Re-list with list_proposals(status='pending').",
+                )
         return {"rejected": True, "proposal_id": proposal_id}
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
-    def _last_watermark(self) -> str | None:
-        with self._storage.connection() as conn:
-            row = conn.execute(
-                "SELECT cursor_after_ts FROM learning_runs "
-                "WHERE tenant_id = ? AND completed_at IS NOT NULL "
-                "ORDER BY started_at DESC LIMIT 1",
-                (self._tenant_id,),
-            ).fetchone()
-        return row["cursor_after_ts"] if row else None
+    def _ensure_rowid_watermark_column(self) -> None:
+        """Idempotently add ``learning_runs.cursor_after_rowid`` (Hardening #15).
 
-    def _load_events(self, *, since: str | None) -> list[dict[str, Any]]:
+        The rowid watermark needs a column the shipped v2 schema does not carry.
+        Adding it here (rather than editing schema.sql) keeps the whole fix inside
+        the learner: on the first run against an existing DB the column is created;
+        every later run short-circuits on the PRAGMA check. Guarded so a concurrent
+        process racing the same ALTER is harmless.
+        """
+        with self._storage.connection() as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(learning_runs)").fetchall()}
+        if "cursor_after_rowid" in cols:
+            return
+        with self._storage.transaction() as conn:
+            cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(learning_runs)").fetchall()}
+            if "cursor_after_rowid" not in cols:
+                try:
+                    conn.execute(
+                        "ALTER TABLE learning_runs ADD COLUMN cursor_after_rowid INTEGER")
+                except sqlite3.OperationalError:
+                    # Another process added it between our check and the ALTER.
+                    pass
+
+    def _last_watermark_rowid(self) -> int | None:
+        with self._storage.connection() as conn:
+            try:
+                row = conn.execute(
+                    "SELECT cursor_after_rowid FROM learning_runs "
+                    "WHERE tenant_id = ? AND completed_at IS NOT NULL "
+                    "AND cursor_after_rowid IS NOT NULL "
+                    "ORDER BY started_at DESC LIMIT 1",
+                    (self._tenant_id,),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                # Column not yet present (pre-super-patch DB, before ensure ran).
+                return None
+        if row is None or row["cursor_after_rowid"] is None:
+            return None
+        return int(row["cursor_after_rowid"])
+
+    def _load_events(
+        self,
+        *,
+        since_ts: str | None = None,
+        after_rowid: int | None = None,
+    ) -> list[dict[str, Any]]:
         sql = (
-            "SELECT id, ts, evaluated, acted, forward, extra "
+            "SELECT rowid AS event_rowid, id, ts, evaluated, acted, forward, extra "
             "FROM journal_events WHERE tenant_id = ?"
         )
         params: list[Any] = [self._tenant_id]
-        if since:
+        if since_ts:
             sql += " AND ts > ?"
-            params.append(since)
-        # F6: bound the scan (oldest-first so the watermark can resume). A backlog
-        # over the cap drains across subsequent runs.
-        sql += " ORDER BY ts ASC, id ASC LIMIT ?"
+            params.append(since_ts)
+        if after_rowid is not None:
+            sql += " AND rowid > ?"
+            params.append(after_rowid)
+        # F6 + Hardening #15: order by the monotonic rowid (insertion order) so
+        # the watermark advances without ever skipping a same-ts row, and a
+        # backlog over the cap drains oldest-first across subsequent runs.
+        sql += " ORDER BY rowid ASC LIMIT ?"
         params.append(_MAX_EVENTS_PER_RUN)
         with self._storage.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
@@ -574,6 +669,7 @@ class Learner:
             )
         return [
             {
+                "rowid": r["event_rowid"],
                 "id": r["id"],
                 "ts": r["ts"],
                 "evaluated": loads(r["evaluated"]),
@@ -633,14 +729,16 @@ class Learner:
         events_scanned: int,
         proposals_made: int,
         cursor_after_ts: str | None,
+        cursor_after_rowid: int | None = None,
         notes: str | None,
     ) -> None:
         with self._storage.transaction() as conn:
             conn.execute(
                 "INSERT INTO learning_runs "
                 "(id, tenant_id, started_at, completed_at, summarizer, "
-                " events_scanned, proposals_made, cursor_after_ts, notes) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " events_scanned, proposals_made, cursor_after_ts, "
+                " cursor_after_rowid, notes) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     run_id,
                     self._tenant_id,
@@ -650,6 +748,7 @@ class Learner:
                     events_scanned,
                     proposals_made,
                     cursor_after_ts,
+                    cursor_after_rowid,
                     notes,
                 ),
             )
@@ -747,11 +846,18 @@ def _detect_co_occurrence(
         toks = _extract_tokens(ev)
         if len(toks) < 2:
             continue
+        # R13: bounded by _MAX_TOKENS_PER_EVENT, so this double loop is at most
+        # C(64, 2) = 2016 pairs per event rather than O(len(body)²).
         toks_sorted = sorted(set(toks))
         # All 2-combos
         for i in range(len(toks_sorted)):
             for j in range(i + 1, len(toks_sorted)):
                 pair = (toks_sorted[i], toks_sorted[j])
+                if pair not in pair_counts and len(pair_counts) >= _MAX_TRACKED_PAIRS:
+                    # R13: stop tracking NEW pairs once the ceiling is hit; keep
+                    # counting pairs already seen so established co-occurrences
+                    # still surface. Bounds total memory across a large run.
+                    continue
                 pair_counts[pair] += 1
                 pair_events[pair].append(ev)
 
@@ -871,20 +977,41 @@ def _slug_to_title(slug: str) -> str:
 
 
 def _extract_tokens(ev: dict[str, Any]) -> list[str]:
-    """Pull a coarse bag-of-tokens out of an event for co-occurrence detection."""
+    """Pull a coarse bag-of-tokens out of an event for co-occurrence detection.
+
+    R13 (super-patch 2026-07-05): returns at most ``_MAX_TOKENS_PER_EVENT``
+    DISTINCT tokens. The co-occurrence detector pairs these tokens pairwise
+    (O(n²)); without a cap a single event carrying tens of thousands of unique
+    strings would blow up the pair count. Tokens are de-duplicated as they are
+    collected (previously the detector's ``sorted(set(...))`` did the dedup), so
+    the final token set for a realistic event is unchanged.
+    """
+    seen: set[str] = set()
     out: list[str] = []
+
+    def _add(tok: str) -> None:
+        if tok and tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+
     for field in ("evaluated", "acted"):
+        if len(out) >= _MAX_TOKENS_PER_EVENT:
+            break
         v = ev.get(field)
         if isinstance(v, dict):
             for key in v.keys():
-                out.append(_normalize_phrase(str(key)))
+                _add(_normalize_phrase(str(key)))
+                if len(out) >= _MAX_TOKENS_PER_EVENT:
+                    break
         elif isinstance(v, list):
             for item in v:
                 if isinstance(item, str):
-                    out.append(_normalize_phrase(item))
+                    _add(_normalize_phrase(item))
+                    if len(out) >= _MAX_TOKENS_PER_EVENT:
+                        break
         elif isinstance(v, str):
-            out.append(_normalize_phrase(v))
-    return [t for t in out if t]
+            _add(_normalize_phrase(v))
+    return out
 
 
 def _short_event_snippet(ev: dict[str, Any]) -> str:
@@ -934,7 +1061,12 @@ def _redact_event_for_prompt(ev: dict[str, Any]) -> dict[str, Any]:
 
     def _shape(value: Any) -> Any:
         if isinstance(value, dict):
-            return {"keys": sorted(str(k) for k in value.keys())}
+            # Hardening #1 (super-patch 2026-07-05): NEVER relay literal dict key
+            # NAMES on the Sibyl-routed path — user content can hide in keys
+            # (e.g. {"exfiltrate-secret": 1}), and the prior {"keys": sorted(...)}
+            # shipped them verbatim. Reduce to a count + per-key lengths (sorted,
+            # so ordering leaks nothing). The model still sees the dict's shape.
+            return _key_shape(value.keys())
         if isinstance(value, list):
             return {"count": len(value)}
         if value is None:
@@ -951,34 +1083,61 @@ def _redact_event_for_prompt(ev: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# Hint fields whose values are seeded from raw memory content (the acted /
-# evaluated strings — e.g. action_signature is the first-N normalized tokens of
-# `acted`) and therefore must not reach the Sibyl-routed prompt. shared_keys is
-# excluded on purpose: it carries only evaluated key NAMES (shape), consistent
-# with how _redact_event_for_prompt preserves dict keys.
-_CONTENT_DERIVED_HINTS = ("action_signature", "pair", "slug", "title")
+def _key_shape(keys: Iterable[Any]) -> dict[str, Any]:
+    """Shape descriptor for a set of dict keys / key names (Hardening #1).
+
+    Emits a count + the sorted per-key character lengths — enough structure for
+    the model to reason about the shape, but no literal key text (content can be
+    hidden in a key name just as easily as in a value). Sorting the lengths means
+    even the key ORDER leaks nothing.
+    """
+    ks = [str(k) for k in keys]
+    return {"key_count": len(ks), "key_lens": sorted(len(k) for k in ks)}
+
+
+def _stub_hint(value: Any) -> Any:
+    """Shape stub for a non-allowlisted hint value on the Sibyl-routed path."""
+    if isinstance(value, dict):
+        return _key_shape(value.keys())
+    if isinstance(value, list):
+        return {"count": len(value)}
+    if isinstance(value, str):
+        return {"type": "str", "len": len(value)}
+    if value is None:
+        return None
+    return {"type": type(value).__name__}
+
+
+# Hardening #11 (super-patch 2026-07-05): the hint redaction was a DENYLIST
+# (_CONTENT_DERIVED_HINTS) — anything NOT explicitly named passed through raw, so
+# any future content-derived hint field would leak by default. Inverted to an
+# ALLOWLIST: only these known pure-shape / numeric hint keys survive verbatim.
+# `shared_keys` is handled separately (it carries evaluated key NAMES, which are
+# content per Hardening #1, so it is shaped, not passed through). EVERYTHING else
+# is stubbed. A new hint field now has to be added here deliberately to ship.
+_PURE_SHAPE_HINTS = ("hits", "cadence_minutes", "cov", "confidence")
 
 
 def _redact_hints_for_prompt(hints: dict[str, Any]) -> dict[str, Any]:
-    """Reduce content-derived hint fields to a shape descriptor for the
-    Sibyl-routed (VeniceX402) path. Numeric/structural hints (hits,
-    cadence_minutes, cov, confidence, shared_keys) are shape and kept as-is;
-    content-derived fields (action_signature, pair, slug, title) are replaced
-    with a shape stub so no normalized memory fragments leave the device. The
-    original hints dict is left untouched — only the prompt copy is reduced.
+    """Reduce hints to shape for the Sibyl-routed (VeniceX402) path.
+
+    ALLOWLIST semantics (Hardening #11): only pure-shape / numeric hints
+    (``hits, cadence_minutes, cov, confidence``) are relayed as-is. ``shared_keys``
+    carries evaluated key NAMES, so it is reduced to a count + per-key lengths
+    (Hardening #1), never the literal names. Every other field — including any
+    future content-derived hint — is stubbed to a shape descriptor so no
+    normalized memory fragments leave the device. The original hints dict is left
+    untouched; only the prompt copy is reduced.
     """
     out: dict[str, Any] = {}
     for key, value in hints.items():
-        if key not in _CONTENT_DERIVED_HINTS:
+        if key in _PURE_SHAPE_HINTS:
             out[key] = value
-        elif isinstance(value, list):
-            out[key] = {"count": len(value)}
-        elif isinstance(value, str):
-            out[key] = {"type": "str", "len": len(value)}
-        elif value is None:
-            out[key] = None
+        elif key == "shared_keys":
+            # Hardening #1: shape the key names, do not relay them.
+            out[key] = _key_shape(value) if isinstance(value, list) else _stub_hint(value)
         else:
-            out[key] = {"type": type(value).__name__}
+            out[key] = _stub_hint(value)
     return out
 
 

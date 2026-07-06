@@ -4,6 +4,38 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.19] - 2026-07-05
+
+Super-patch: recovery + adjudication of the remaining Fable 10-lens audit
+findings (`plugin-hardening-superpatch-plan-2026-07-05.md`).
+
+### Fixed
+- **`sibyl logout` never revoked the server-side bearer (Real #4).** The
+  account bearer has no server-side expiry, so a logout that only unlinked
+  local credentials left the token valid forever. `logout` now revokes
+  THIS device's bearer first, reusing the exact endpoint + auth shape
+  `sibyl devices revoke` already uses (`GET /api/plugin/devices` to
+  identify this device via `is_this_device`, then
+  `POST /api/plugin/devices {"bearer_id": ...}`) — no new endpoint. Fully
+  best-effort: any network/HTTP failure, or an inability to identify this
+  device's server record, prints the same offline caveat
+  (`sibyl devices revoke` from another device) instead of blocking local
+  logout, which still proceeds unconditionally.
+- **`credentials.json` dropped the server-issued `tenant_id` (Contract
+  T).** `cmd_init`'s field allowlist (`_CRED_FIELDS`) omitted `tenant_id`,
+  so every activated account silently fell back to the shared
+  `DEFAULT_TENANT` on every surface (client/mcp/hermes/langgraph) instead
+  of resolving to its own tenant. `tenant_id` is now persisted alongside
+  `account_id`, so all surfaces resolve the SAME tenant from one
+  credentials file via the canonical ladder
+  `tenant_id -> account_id -> DEFAULT_TENANT`.
+
+### Changed
+- Packaging: added the `Repository` URL
+  `https://github.com/Sibyl-Labs/Sibyl-Memory` to `[project.urls]`
+  (previously omitted) (R27), and bounded the third-party `pyyaml`
+  dependency to `>=6.0,<7` (R29).
+
 ## [0.3.18] - 2026-06-30
 
 Post-launch quality fixes from external audit reports (#13, #19, #15). All LOW
