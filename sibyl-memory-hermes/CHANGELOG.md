@@ -191,8 +191,8 @@ explicit search-mode coaching to `system_prompt_block()`.
 
 ### Why
 
-The 2026-05-22 LongMemEval 50-Q benchmark in
-`/mnt/sibyl-data/plugin-lme-test/` showed plugin v0.3.4 lost 8.5pp to a
+The 2026-05-22 LongMemEval 50-Q benchmark on an internal benchmark
+harness showed plugin v0.3.4 lost 8.5pp to a
 no-plugin baseline (80.9% vs 89.4%) when used naïvely. The cause was
 isolated to retrieval, not storage. With a runner-side workaround
 matching what v0.3.5 now ships internally, the plugin matched the no-plugin

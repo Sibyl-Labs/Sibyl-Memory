@@ -79,7 +79,7 @@ def test_default_https_sibyllabs_host_gets_bearer(monkeypatch):
 
 def test_env_override_https_sibyllabs_still_allowed(monkeypatch):
     """An https sibyllabs subdomain override is still trusted."""
-    cap = _send_and_capture(monkeypatch, url="https://api.staging.sibyllabs.org/api/plugin/heartbeat")
+    cap = _send_and_capture(monkeypatch, url="https://sync.sibyllabs.org/api/plugin/heartbeat")
     assert cap["headers"].get("authorization", "").startswith("Bearer ")
 
 

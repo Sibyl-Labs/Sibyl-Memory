@@ -14,7 +14,7 @@ Structure:
     bounds but does not eliminate.
 
 Run:
-  cd /mnt/sibyl-data/workspace/tmp/langgraph-adapter && . .venv/bin/activate \
+  cd <repo>/sibyl-memory-langgraph && . .venv/bin/activate \
     && python -m pytest tests/test_adv_security.py -v
 """
 

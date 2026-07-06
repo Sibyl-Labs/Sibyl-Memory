@@ -11,15 +11,28 @@ This pulls in `sibyl-memory-client` (the local SDK) and `sibyl-memory-hermes` (t
 ## Commands
 
 ```
-sibyl init                  Open the browser activation page. Writes ~/.sibyl-memory/credentials.json.
-sibyl migrate               Guided onboarding: back up your existing memory/agent files, wire Sibyl
-                            into every detected harness, populate Sibyl Memory from the backup, and
-                            optionally slim the originals. Backup-first, never destructive.
-sibyl setup [target]        Wire Sibyl as the memory provider for Hermes, Claude Code, and/or Codex.
-                            target is one of: hermes | claude-code | codex (default: detect all).
-sibyl upgrade               Open the upgrade page. Stake $SIBYL or subscribe in USDC.
-sibyl status                Show local credentials, DB size, and the server's view of your tier.
-sibyl health                Run the SibylMemoryProvider self-check (schema version, DB path, tenant).
+sibyl init                    Open the browser activation page. Writes ~/.sibyl-memory/credentials.json.
+sibyl migrate                 Guided onboarding: back up your existing memory/agent files, wire Sibyl
+                              into every detected harness, populate Sibyl Memory from the backup, and
+                              optionally slim the originals. Backup-first, never destructive.
+sibyl setup [target]          Wire Sibyl as the memory provider for Hermes, Claude Code, and/or Codex.
+                              target is one of: hermes | claude-code | codex (default: detect all).
+sibyl status                  Show local credentials, DB size, and the server's view of your tier.
+sibyl whoami                  One-line account summary (masked by default).
+sibyl devices                 List the devices (active tokens) bound to your account.
+sibyl devices revoke N        Revoke a device by index (run `sibyl devices` to see the indexes).
+sibyl dashboard               Open the account dashboard (delegates to `sibyl status` for now).
+sibyl upgrade                 Open the tier/billing flow: stake $SIBYL or subscribe in USDC.
+sibyl update                  Check PyPI for newer sibyl-memory-* package releases.
+sibyl update --apply          Update the installed Sibyl packages in place (pip install -U). This is the
+                              canonical way to update the plugin, distinct from `sibyl upgrade` (which is
+                              the tier/billing flow, not a package update).
+sibyl health                  Run the SibylMemoryProvider self-check (schema version, DB path, tenant).
+sibyl logout                  Remove local credentials (your memory.db is left untouched).
+sibyl memory list [category]  List stored entities, optionally filtered by category (--limit N).
+sibyl memory search <query>   Full-text search across entities, state, reference, and journal (--limit N).
+sibyl memory recall <cat> <name>
+                              Recall a single entity by category + name.
 ```
 
 ## Migrate (guided onboarding)
@@ -119,9 +132,9 @@ If `LOCAL` and `SERVER` tiers diverge, run `sibyl upgrade`.
 For internal testing only:
 
 ```bash
-SIBYL_API_BASE=https://staging.api.sibyllabs.org sibyl init
-SIBYL_ACTIVATE_BASE=https://staging.sibyllabs.org/plugin/activate sibyl init
-SIBYL_UPGRADE_BASE=https://staging.sibyllabs.org/plugin/upgrade sibyl upgrade
+SIBYL_API_BASE=https://staging.example.internal sibyl init
+SIBYL_ACTIVATE_BASE=https://staging.example.internal/plugin/activate sibyl init
+SIBYL_UPGRADE_BASE=https://staging.example.internal/plugin/upgrade sibyl upgrade
 ```
 
 ## Security

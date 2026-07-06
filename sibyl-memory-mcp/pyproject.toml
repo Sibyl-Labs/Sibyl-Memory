@@ -31,7 +31,7 @@ dependencies = [
 sibyl-memory-mcp = "sibyl_memory_mcp.__main__:main"
 
 [project.urls]
-Homepage = "https://sibyllabs.org/memory"
+Homepage = "https://sibyllabs.org/plugin"
 Documentation = "https://docs.sibyllabs.org/memory/integrations"
 Repository = "https://github.com/Sibyl-Labs/Sibyl-Memory"
 

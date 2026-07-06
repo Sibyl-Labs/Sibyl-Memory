@@ -17,6 +17,7 @@
 [![PyPI · cli](https://img.shields.io/pypi/v/sibyl-memory-cli?label=cli&color=8a6a2a)](https://pypi.org/project/sibyl-memory-cli/)
 [![PyPI · hermes](https://img.shields.io/pypi/v/sibyl-memory-hermes?label=hermes&color=8a6a2a)](https://pypi.org/project/sibyl-memory-hermes/)
 [![PyPI · mcp](https://img.shields.io/pypi/v/sibyl-memory-mcp?label=mcp&color=8a6a2a)](https://pypi.org/project/sibyl-memory-mcp/)
+[![PyPI · langgraph](https://img.shields.io/pypi/v/sibyl-memory-langgraph?label=langgraph&color=8a6a2a)](https://pypi.org/project/sibyl-memory-langgraph/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-15110a.svg)](./LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-15110a.svg)](https://www.python.org/downloads/)
 [![LongMemEval](https://img.shields.io/badge/LongMemEval-95.6%25%20%23%E2%80%832-2e6b3a.svg)](https://blog.sibylcap.com/longmemeval-v2)
@@ -29,13 +30,13 @@
 
 ## What this is
 
-Four PyPI packages, one schema family, one architecture.
+Five PyPI packages, one schema family, one architecture.
 
 `sibyl-memory-client` is a local-first agentic memory SDK. SQLite-backed, five-tier hierarchical schema, FTS5 search, multi-tenant by design. No vector database. No embedding model. No external retrieval service. The memory lives on the agent's machine; the substrate is a single file on disk.
 
 > **Privacy disclosure.** Your memory content never leaves the machine. The only outbound network call is tier verification: when an activated account writes past its tier cap, the client calls `api.sibyllabs.org/api/plugin/check-write` with account metadata only (account id, session token, and the database's byte size and proposed delta) — never the contents of your memory. Verified against the source in `sibyl-memory-client/src/sibyl_memory_client/_capcheck.py`. Free, unactivated use makes no network calls at all.
 
-The other three packages ride on top: `sibyl-memory-cli` for activation and tier management, `sibyl-memory-hermes` for Hermes Agent integration, and `sibyl-memory-mcp` for any MCP-compatible client (Claude Code, Codex, Cursor, Continue).
+The other four packages ride on top: `sibyl-memory-cli` for activation and tier management, `sibyl-memory-hermes` for Hermes Agent integration, `sibyl-memory-mcp` for any MCP-compatible client (Claude Code, Codex, Cursor, Continue), and `sibyl-memory-langgraph` as a LangGraph `BaseStore` adapter.
 
 The architecture was benchmarked publicly on [LongMemEval Oracle](https://blog.sibylcap.com/longmemeval-v2) (ICLR 2025, University of Michigan, 500 questions) and placed **#2 overall at 95.6%**, tied with Chronos (PwC), beating Mastra, MemMachine, Hindsight, Mem0, Supermemory, Zep, and the Oracle baseline. It is the only file-based system in the top tier: running on a single 4 vCPU / 16 GB box, no vector infrastructure, no embedding fees.
 
@@ -51,6 +52,7 @@ This is the entire stack as it ships to production agents today.
 | [`sibyl-memory-cli`](./sibyl-memory-cli) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-cli)](https://pypi.org/project/sibyl-memory-cli/) | Command-line interface. `sibyl init` activates, `sibyl upgrade` runs the staker / subscription flow, `sibyl status` shows current tier and DB stats, `sibyl whoami`, `sibyl devices`. |
 | [`sibyl-memory-hermes`](./sibyl-memory-hermes) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-hermes)](https://pypi.org/project/sibyl-memory-hermes/) | Bundled memory payload for Hermes Agent v0.13+ (and any other Python orchestration that wants direct SDK access). |
 | [`sibyl-memory-mcp`](./sibyl-memory-mcp) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-mcp)](https://pypi.org/project/sibyl-memory-mcp/) | MCP server. Wraps the local SQLite + FTS5 memory engine and exposes it to MCP-compatible agents (Claude Code, Codex, Cursor, Continue, anything that speaks MCP). |
+| [`sibyl-memory-langgraph`](./sibyl-memory-langgraph) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-langgraph)](https://pypi.org/project/sibyl-memory-langgraph/) | LangGraph `BaseStore` adapter. Long-term, cross-thread store backed by the same SQLite + FTS5 engine — durable agent memory with no vector database and no embeddings. |
 
 ---
 
@@ -94,19 +96,22 @@ Full documentation at [docs.sibyllabs.org/memory](https://docs.sibyllabs.org/mem
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  sibyl-memory-cli       sibyl-memory-mcp                │
-│  ┌──────────────┐       ┌──────────────┐                │
-│  │ sibyl init   │       │ MCP server   │                │
-│  │ sibyl status │       │ (stdio)      │                │
-│  │ sibyl whoami │       └──────┬───────┘                │
-│  └──────┬───────┘              │                        │
-│         │     sibyl-memory-hermes                       │
-│         │     ┌──────────────┐                          │
-│         │     │ Hermes hook  │                          │
-│         │     └──────┬───────┘                          │
-│         │            │                                  │
-│         └──────┬─────┘                                  │
-│                ▼                                        │
+│  sibyl-memory-cli               sibyl-memory-mcp        │
+│  ┌──────────────┐               ┌──────────────┐        │
+│  │ sibyl init   │               │ MCP server   │        │
+│  │ sibyl status │               │ (stdio)      │        │
+│  │ sibyl whoami │               └──────┬───────┘        │
+│  └──────┬───────┘                      │                │
+│         └────────────┬─────────────────┘                │
+│  sibyl-memory-hermes │     sibyl-memory-langgraph       │
+│  ┌──────────────┐    │     ┌────────────────┐           │
+│  │ Hermes hook  │    │     │ LangGraph      │           │
+│  └──────┬───────┘    │     │ BaseStore      │           │
+│         │            │     └───────┬────────┘           │
+│         │            │             │                    │
+│         │            │             │                    │
+│         └────────────┼─────────────┘                    │
+│                      ▼                                  │
 │         sibyl-memory-client (SDK)                       │
 │         ┌────────────────────────┐                      │
 │         │ SQLite + FTS5          │                      │
