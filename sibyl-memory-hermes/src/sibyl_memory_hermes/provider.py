@@ -79,7 +79,9 @@ class SibylMemoryProvider:
                         ~/.sibyl-memory/memory.db (the path `sibyl init`
                         creates).
         tenant_id:      explicit tenant override. If None, credentials.json
-                        is loaded; if also missing, DEFAULT_TENANT is used.
+                        is loaded and tenant resolves via the canonical ladder
+                        tenant_id -> account_id -> DEFAULT_TENANT; DEFAULT_TENANT
+                        is used only when credentials are genuinely absent.
         credentials_path: override for credentials.json discovery.
         require_credentials: if True, raise CredentialsNotFoundError when
                         the file is missing. Default False: degrade to
@@ -97,14 +99,26 @@ class SibylMemoryProvider:
         require_credentials: bool = False,
         autoload_credentials: bool = True,
     ) -> None:
-        # Resolve tenant: explicit > credentials > default
+        # Resolve tenant: explicit > credentials (tenant_id > account_id) > default
         resolved_tenant = tenant_id
         creds: Credentials | None = None
 
         if resolved_tenant is None and autoload_credentials:
             try:
                 creds = load_credentials(credentials_path)
-                resolved_tenant = creds.tenant_id
+                # Contract T (super-patch 2026-07-05): ONE canonical tenant
+                # ladder shared by every surface (client / mcp / hermes /
+                # langgraph) -- tenant_id -> account_id -> DEFAULT_TENANT.
+                # An activated user whose credentials.json carries an account
+                # but a missing-or-empty tenant_id (legacy schema-v1 files, or
+                # a present-but-empty tenant field the loader does not mirror)
+                # must resolve to their OWN account, never the shared
+                # DEFAULT_TENANT constant. `or` collapses both the absent and
+                # the present-but-empty cases; DEFAULT_TENANT is reached only
+                # when credentials are genuinely absent (the except arms below).
+                resolved_tenant = (
+                    creds.tenant_id or creds.account_id or DEFAULT_TENANT
+                )
             except CredentialsNotFoundError:
                 if require_credentials:
                     raise
@@ -139,6 +153,11 @@ class SibylMemoryProvider:
                 "account_id": creds.account_id,
                 "tenant_id": creds.tenant_id,
                 "tier": creds.tier,
+                # Contract PII (super-patch 2026-07-05): email/wallet stay on the
+                # wire. Dropping them is POLICY-GATED on a backend re-sign over
+                # server-stored PII (plan §3/§6) -- removing them here first would
+                # break server-side signature verification. Do NOT strip until
+                # the backend signing set is PII-free.
                 "email": creds.email,
                 "wallet": creds.wallet,
                 "issued_at": creds.issued_at,

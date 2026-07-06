@@ -426,7 +426,11 @@ def cmd_init(args: argparse.Namespace) -> int:
             # CLI-15: build the persisted dict from an explicit allowlist of
             # known fields, not the raw server blob. This keeps unexpected /
             # hostile server-supplied keys out of credentials.json.
-            _CRED_FIELDS = ("account_id", "tier", "wallet", "email", "issued_at",
+            # Contract T (tenant resolution, Real #1): persist the server-issued
+            # tenant_id so mcp/hermes/langgraph all resolve the SAME tenant from
+            # this credentials.json. Without it the CLI dropped tenant_id on
+            # activation and every surface silently fell back to DEFAULT_TENANT.
+            _CRED_FIELDS = ("account_id", "tenant_id", "tier", "wallet", "email", "issued_at",
                             "bearer_token", "expires_at")
             creds = {k: raw_creds[k] for k in _CRED_FIELDS if k in raw_creds}
             creds["session_token"] = bearer
@@ -975,10 +979,82 @@ def cmd_devices(args: argparse.Namespace) -> int:
 
 # ---- `sibyl logout` ----------------------------------------------------
 
+# Real #4 (audit): the same offline caveat wherever a logout revoke can't be
+# confirmed — mirrors the `sibyl devices revoke` remediation path.
+_LOGOUT_REVOKE_CAVEAT = (
+    "remote session may still be active; run `sibyl devices revoke` from another device"
+)
+
+
+def _logout_revoke_bearer(creds: dict) -> str | None:
+    """Best-effort revoke THIS device's server bearer before local logout.
+
+    Real #4 (audit): `sibyl logout` used to unlink local credentials only, so
+    the bearer — which has no server-side expiry — stayed valid forever after
+    logout. This revokes it first, reusing the EXACT endpoint + auth shape of
+    `sibyl devices revoke` (no new endpoint invented):
+
+        GET  /api/plugin/devices?account_id=...   (Authorization: Bearer <token>)
+        POST /api/plugin/devices  {"bearer_id": ...}  (same Bearer auth)
+
+    credentials.json stores only the bearer TOKEN, not its server-side
+    bearer_id, so we list devices to find THIS one (``is_this_device``) and
+    revoke it by id — identical to the interactive revoke flow.
+
+    Returns None on a confirmed revoke (or when there is nothing to revoke);
+    otherwise a caveat string to surface. Network failure is swallowed but
+    reported (never crashes logout).
+    """
+    account_id = creds.get("account_id")
+    session_token = creds.get("session_token")
+    if not account_id or not session_token:
+        # Pre-activation / malformed creds: nothing server-side to revoke.
+        return None
+    auth = {"Authorization": f"Bearer {session_token}"}
+    try:
+        resp = http_request(
+            "GET",
+            f"/api/plugin/devices?account_id={urllib.parse.quote(account_id)}",
+            headers=auth,
+            timeout=10.0,
+        )
+        devices = resp.get("devices", []) if isinstance(resp, dict) else []
+        this = next(
+            (d for d in devices if isinstance(d, dict) and d.get("is_this_device")),
+            None,
+        )
+        bearer_id = this.get("bearer_id") if this else None
+        if not bearer_id:
+            # Couldn't identify this device's server record — can't confirm.
+            return _LOGOUT_REVOKE_CAVEAT
+        revoke_resp = http_request(
+            "POST",
+            "/api/plugin/devices",
+            body={"bearer_id": bearer_id},
+            headers=auth,
+            timeout=10.0,
+        )
+        if isinstance(revoke_resp, dict) and revoke_resp.get("revoked"):
+            return None
+        return _LOGOUT_REVOKE_CAVEAT
+    except Exception:
+        # Best-effort: swallow ANY network/HTTP failure, but report it so the
+        # user knows the remote bearer may still be live.
+        return _LOGOUT_REVOKE_CAVEAT
+
+
 def cmd_logout(args: argparse.Namespace) -> int:
     """Delete credentials.json + tier_cache.json. memory.db stays — that's your data."""
     cred_path = Path(args.credentials).expanduser()
     tier_cache = Path(args.tier_cache).expanduser()
+
+    # Real #4: revoke THIS device's server bearer BEFORE unlinking local creds
+    # (once credentials.json is gone we no longer have the token to authorize
+    # the revoke). Best-effort; a failure only produces a printed caveat.
+    revoke_caveat = None
+    creds = read_credentials(cred_path)
+    if creds:
+        revoke_caveat = _logout_revoke_bearer(creds)
 
     deleted = []
     if cred_path.exists():
@@ -999,6 +1075,8 @@ def cmd_logout(args: argparse.Namespace) -> int:
             print(f"  {a.dim('removed')} {a.color(path, a.INK)}")
         print()
         print(a.dim("  memory.db untouched. run `sibyl init` to activate a fresh account."))
+    if revoke_caveat:
+        print(a.warn_line(revoke_caveat))
     print()
     return 0
 

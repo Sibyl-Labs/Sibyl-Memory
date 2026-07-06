@@ -28,6 +28,7 @@ import json
 import os
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 _DEFAULT_URL = "https://api.sibyllabs.org/api/plugin/heartbeat"
@@ -35,10 +36,39 @@ _FLUSH_EVERY_OPS = 15
 _FLUSH_INTERVAL_S = 600.0
 _TIMEOUT_S = 4.0
 
+# The account bearer may be attached to the heartbeat ONLY when the resolved
+# URL is https AND its host is an allowlisted sibyllabs domain. The URL is
+# env-overridable (SIBYL_MEMORY_HEARTBEAT_URL); without this gate, any
+# scheme/host injected via env would still receive the long-lived account
+# bearer, turning the heartbeat into a token-exfil channel (Hardening #12,
+# 2026-07-05). The server's soft cap-gate genuinely requires the bearer for a
+# heartbeat to be accepted (a missing session token is a hard 401), so we
+# cannot simply drop the header — we gate it to the trusted host instead.
+_HEARTBEAT_AUTH_HOST = "sibyllabs.org"
+
 
 def _telemetry_enabled() -> bool:
     val = os.environ.get("SIBYL_MEMORY_TELEMETRY", "1").strip().lower()
     return val not in ("0", "false", "no", "off")
+
+
+def _auth_allowed_for_url(url: str | None) -> bool:
+    """True only when *url* is https AND its host is the sibyllabs domain (or a
+    subdomain of it). Any non-https scheme or non-allowlisted host — including
+    an attacker-controlled SIBYL_MEMORY_HEARTBEAT_URL override — returns False,
+    so the account bearer is never attached to it. Uses ``hostname`` (not raw
+    string matching) so ``https://api.sibyllabs.org@evil.com/`` resolves to the
+    real host ``evil.com`` and is correctly rejected."""
+    try:
+        parsed = urllib.parse.urlparse(url or "")
+    except Exception:
+        return False
+    if (parsed.scheme or "").lower() != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    return host == _HEARTBEAT_AUTH_HOST or host.endswith("." + _HEARTBEAT_AUTH_HOST)
 
 
 class HeartbeatReporter:
@@ -57,6 +87,9 @@ class HeartbeatReporter:
         self._account_id = account_id
         self._session_token = session_token
         self._url = url or os.environ.get("SIBYL_MEMORY_HEARTBEAT_URL", _DEFAULT_URL)
+        # Gate the bearer to the trusted host (see _auth_allowed_for_url). An
+        # env-injected override URL never receives the account bearer.
+        self._attach_auth = _auth_allowed_for_url(self._url)
         self._flush_every = max(1, int(flush_every))
         self._flush_interval_s = float(flush_interval_s)
         self._enabled = bool(account_id) and enabled and _telemetry_enabled()
@@ -113,7 +146,9 @@ class HeartbeatReporter:
                 {"account_id": self._account_id, "event_type": "heartbeat", "heartbeat_count": int(ops)}
             ).encode("utf-8")
             headers = {"Content-Type": "application/json", "User-Agent": "sibyl-memory-client-heartbeat"}
-            if self._session_token:
+            # Attach the account bearer ONLY to the allowlisted https sibyllabs
+            # host — never to a non-https or env-overridden host (Hardening #12).
+            if self._session_token and self._attach_auth:
                 headers["Authorization"] = f"Bearer {self._session_token}"
             req = urllib.request.Request(self._url, data=body, headers=headers, method="POST")
             # Context-managed so the underlying HTTP socket closes deterministically

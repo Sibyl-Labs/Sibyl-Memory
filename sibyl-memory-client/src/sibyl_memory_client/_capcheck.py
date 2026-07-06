@@ -20,15 +20,25 @@ Design (v0.3.0):
     5. Offline at the cap boundary with NO cache: hard block with a clear
        error pointing at the upgrade URL.
 
-The local-first promise is preserved: no memory content ever crosses the
-network. Only (account_id, current_size_bytes, proposed_delta_bytes) is sent
-to the check-write endpoint.
+The local-first promise is preserved: no memory *content* ever crosses the
+network. The check-write endpoint receives only account/verification
+identifiers, never entity bodies. The full request payload is:
+``account_id``, ``session_token``, ``current_size_bytes``,
+``proposed_delta_bytes`` and — when a signed credentials claim is present —
+``credentials_signature`` plus ``credentials_claim``. The claim currently
+carries the account email + wallet that the server signed at activation
+(Contract PII / Hardening #6): dropping those from the wire is a policy-gated
+follow-up that requires the backend to re-sign over its own stored PII, so it
+stays out of scope for the client until then. This docstring is the honest
+enumeration — the earlier "only (account_id, current_size_bytes,
+proposed_delta_bytes)" claim under-stated the payload.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -139,8 +149,25 @@ class TierCache:
     """File-backed tier cache. Mode 0600. Single entry per file."""
 
     def __init__(self, path: str | Path = DEFAULT_CACHE_PATH) -> None:
-        self.path = Path(path).expanduser().resolve()
+        raw = Path(path).expanduser()
+        # Hardening #3: resolve only the PARENT directory and keep the final
+        # component literal. A full ``.resolve()`` follows a symlinked cache
+        # file, which made the ``is_symlink()`` guard in load()/store() dead
+        # code (SEC-11 was silently defeated — a swapped symlink was followed).
+        # Resolving just the parent still canonicalizes a relocated/
+        # containerized home while leaving the cache file itself detectable as
+        # a symlink.
+        self.path = raw.parent.resolve() / raw.name
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Hardening #4a: ``mkdir(mode=0o700)`` is a no-op when the directory
+        # already exists, so a pre-existing 0o755 dir keeps its loose mode under
+        # the process umask. Tighten explicitly (best-effort; guarded for
+        # platforms without POSIX chmod).
+        if hasattr(os, "chmod"):
+            try:
+                os.chmod(self.path.parent, 0o700)
+            except OSError:
+                pass
 
     def load(self) -> TierCacheEntry | None:
         """Load the cache entry. v0.3.3 hardens against symlink swapping:
@@ -172,10 +199,29 @@ class TierCache:
     def store(self, entry: TierCacheEntry) -> None:
         """Atomic store with mode 0o600 set at creation (not after the fact).
 
-        SEC-2 hardening (v0.3.3): the previous write_text() + chmod() pattern
-        left a world-readable window between the syscalls. Now we open with
-        O_CREAT|O_EXCL|O_WRONLY and mode 0o600: the kernel sets mode at the
-        moment of creation, no race window."""
+        SEC-2 hardening (v0.3.3): open-with-mode (not write_text() + chmod())
+        avoids a world-readable window between syscalls.
+
+        Real #5 (0.4.19): the temp file now gets a UNIQUE name via
+        ``tempfile.mkstemp`` instead of a fixed ``<name>.tmp``. Two cap checks
+        running concurrently — Hermes opens a fresh thread per turn, and
+        multiple processes can share ``~/.sibyl-memory`` — previously unlinked
+        each other's in-flight ``<name>.tmp`` and crashed ``os.replace`` with a
+        FileNotFoundError, so a cache-persist attempt could fail the caller's
+        memory write. mkstemp creates the file O_CREAT|O_EXCL with mode 0o600
+        (no fixed-name collision, no world-readable window); we write + fsync,
+        then atomically rename over the destination.
+
+        Hardening #3: a symlinked destination is refused (never written
+        THROUGH). The raw literal path preserved in __init__ makes this
+        ``is_symlink()`` check meaningful again.
+        """
+        # Hardening #3: never persist THROUGH a symlinked cache path. os.replace
+        # would swap the link itself rather than follow it, but refusing keeps
+        # load()/store() symmetric and avoids writing under an attacker-planted
+        # link at all.
+        if self.path.is_symlink():
+            return
         payload = {
             "account_id": entry.account_id,
             "tier": entry.tier,
@@ -187,23 +233,25 @@ class TierCache:
             "cache_token": entry.cache_token,
         }
         data = json.dumps(payload, indent=2).encode("utf-8")
-        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
-        # Clean any leftover tmp from a crashed prior write so O_EXCL can succeed.
+        # Unique temp name in the SAME directory: the atomic os.replace stays a
+        # same-filesystem rename, and no two writers can collide on one name.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(self.path.parent), prefix=self.path.name + ".", suffix=".tmp"
+        )
         try:
-            os.unlink(tmp_path)
-        except FileNotFoundError:
-            pass
-        # Atomic create-with-mode. O_NOFOLLOW rejects symlink targets.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        fd = os.open(str(tmp_path), flags, 0o600)
-        try:
-            os.write(fd, data)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.replace(str(tmp_path), str(self.path))
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_name, str(self.path))
+        except BaseException:
+            # Never leave a stray temp file behind on any failure (the successful
+            # path has already renamed tmp_name away, so this only fires on error).
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
     def clear(self) -> None:
         if self.path.exists():
@@ -552,25 +600,36 @@ class CapGate:
         a SQLite write lock. The in-transaction recheck uses check_total_local()
         instead. Retained for any out-of-transaction absolute-footprint check.
 
-        Temporarily overrides db_size_fn so _refresh_and_check evaluates the
-        provided absolute total (delta 0). This keeps the auth-deny / fail-open /
-        cache logic single-sourced rather than duplicated.
+        Passes the absolute total to _refresh_and_check via the explicit
+        ``absolute_total`` argument (delta 0). This keeps the auth-deny /
+        fail-open / cache logic single-sourced rather than duplicated.
+
+        Hardening #13 (0.4.19): the previous implementation swapped
+        ``self._db_size_fn`` for a lambda and restored it in a ``finally``.
+        That instance-state mutation was NOT thread-safe — two threads calling
+        check_total concurrently could observe each other's swapped size fn (a
+        crossed total), or leave a patched fn behind if the restore was ever
+        skipped. Threading the size through as a local argument removes the
+        shared mutable state entirely.
         """
-        prev = self._db_size_fn
-        self._db_size_fn = lambda: total_size_bytes
-        try:
-            self._refresh_and_check(0)
-        finally:
-            self._db_size_fn = prev
+        self._refresh_and_check(0, absolute_total=total_size_bytes)
 
     # ------------------------------------------------------------------
     # Network refresh
     # ------------------------------------------------------------------
-    def _refresh_and_check(self, proposed_delta_bytes: int) -> None:
+    def _refresh_and_check(
+        self, proposed_delta_bytes: int, *, absolute_total: int | None = None
+    ) -> None:
+        # Hardening #13: ``absolute_total`` lets the CAP-2 absolute-footprint
+        # path (_refresh_and_check_total) supply the exact size to evaluate
+        # WITHOUT swapping self._db_size_fn. When None, size comes from the
+        # gate's configured db_size_fn (the pre-write delta path).
         if not self.account_id or not self.session_token:
             # Pre-activation user trying to write past the cap. They never
             # had a binding; we can't verify a tier they don't have.
-            current = self._db_size_fn()
+            current = (
+                absolute_total if absolute_total is not None else self._db_size_fn()
+            )
             new_size = current + proposed_delta_bytes
             if new_size <= self._cap:
                 return
@@ -583,7 +642,9 @@ class CapGate:
                 proposed_delta=proposed_delta_bytes,
             )
 
-        current = self._db_size_fn()
+        current = (
+            absolute_total if absolute_total is not None else self._db_size_fn()
+        )
         payload = {
             "account_id": self.account_id,
             "session_token": self.session_token,
@@ -728,7 +789,18 @@ class CapGate:
             # cross-check on next /check-write call.
             cache_token=self._credentials_signature,
         )
-        self._cache.store(entry)
+        # Real #5: a cache-persist failure (disk full, permissions, a lost
+        # rename race) must degrade to "skip caching", never fail the caller's
+        # memory write. The authoritative server decision below has already been
+        # obtained; losing the local cache only costs one extra server
+        # round-trip on the next at-cap write.
+        try:
+            self._cache.store(entry)
+        except OSError as e:
+            logger.warning(
+                "Tier cache could not be persisted (%s); continuing without a "
+                "cached tier result.", type(e).__name__,
+            )
 
         if ok:
             return  # server permitted the write

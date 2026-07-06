@@ -4,6 +4,171 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.19] - 2026-07-05
+
+Super-patch: recovery + adjudication of the remaining Fable 10-lens audit
+findings (`plugin-hardening-superpatch-plan-2026-07-05.md`), covering
+`storage.py`, `client.py`, `learning.py`, `_capcheck.py`, and `_heartbeat.py`.
+These fixes compose with the FREE-tier account-level cap aggregation shipped
+in 0.4.18 rather than regressing it.
+
+### Fixed
+- **Per-thread SQLite connection registry leaked one fd per dead thread (Real
+  #2).** `Storage` tracked opened connections in a plain list so `close()`
+  could reap connections opened by other threads, but nothing pruned an
+  entry once its owning thread exited — a long-lived `Storage` under Hermes
+  (fresh thread per turn) accumulated one open connection per finished
+  thread until the process hit `EMFILE`. The registry now holds
+  `(weakref-to-owning-thread, conn)` pairs; every new registration sweeps
+  and closes entries whose owning thread is dead or exited. A cached
+  per-thread connection is also liveness-probed (`total_changes` read) on
+  reuse, so a handle closed by another thread's `close()` call is detected
+  and transparently reopened instead of raising.
+- **FTS5 v2->v3 migration was not crash-atomic (Real #3).** The old migration
+  ran as three separately-committed steps (drop / recreate / rebuild) with
+  no marker; a crash between the drop and the rebuild committing left a
+  v3-shaped but empty FTS index, and the shape check then read that as
+  "already migrated" — search returned nothing forever. The rebuild now
+  stamps a marker (`PRAGMA user_version = 3`) in the same transaction as
+  the FTS rebuild, so the marker exists iff the rebuild committed; on open,
+  a v3-shaped store whose marker is unset is rebuilt from the intact base
+  tables before use. **Note:** this means every existing healthy database
+  does a one-time, idempotent FTS rebuild on its first open under 0.4.19
+  (the marker was never set by any prior version) — this is expected and
+  safe, not a sign of corruption.
+- **`TierCache.store()` used a fixed `<name>.tmp` name (Real #5).** Two
+  concurrent cap checks — Hermes opens a fresh thread per turn, and
+  multiple processes can share `~/.sibyl-memory` — could unlink each
+  other's in-flight temp file and crash `os.replace` with a
+  `FileNotFoundError`, failing the caller's memory write. `store()` now
+  uses `tempfile.mkstemp()` for a unique 0600 temp name in the same
+  directory, and a persist failure (disk full, permissions, a lost rename
+  race) degrades to "skip caching" — logged, never raised into the
+  caller's write path.
+- **`accept_proposal`/`reject_proposal` had no in-transaction cap recheck
+  or concurrent-review guard (Hardening #8).** Two callers could both pass
+  the pre-transaction pending-status check and both commit an accept, and
+  accepting a large proposal had no cap enforcement inside the write
+  transaction that stages the new `reference_documents` row. Both methods
+  now call the cap gate's local (no-network) `check_total_local` with the
+  in-transaction logical size before committing, and the `UPDATE` is
+  guarded with `AND status = 'pending'`; a `rowcount == 0` (already
+  reviewed by a concurrent call) raises `ValidationError` and rolls back
+  the whole transaction, including the staged reference-doc write. Skipped
+  only for cap gates that don't implement `check_total_local` (advanced/
+  estimate-only test doubles) — the production `CapGate` always does.
+- **In-transaction CAP-2 recheck could fail open on a 0-byte size read
+  (Hardening #16).** `_maybe_recheck_cap` used `storage.logical_size_bytes`
+  directly, which returns 0 on any internal error; since this recheck only
+  ever runs with a write already staged, a 0 is never a real post-write
+  footprint — it means the measurement was unavailable, and passing it to
+  `check_total_local(0)` would trivially clear the cap. A 0/failed read now
+  falls back to the cap gate's own WAL-inclusive `db_size_fn` (the same
+  account-level aggregate the pre-write check uses) before gating, so the
+  cap is enforced instead of silently bypassed.
+- **CAP-2 absolute-total check swapped shared instance state (Hardening
+  #13).** `check_total` previously monkey-patched `self._db_size_fn` with a
+  lambda and restored it in a `finally` — not thread-safe: two concurrent
+  callers could observe each other's swapped size fn (a crossed total) or
+  leave a patched fn behind if the restore was skipped. The absolute size
+  is now threaded through as an explicit keyword argument, removing the
+  shared mutable state entirely.
+- **A failed `COMMIT` poisoned the persistent per-thread connection
+  (Hardening #14).** Only the pre-commit path had rollback-on-error
+  handling; a `COMMIT` failure itself (disk full, I/O error) left the
+  connection mid-transaction, so the next write on that thread raised
+  "cannot start a transaction within a transaction" for the rest of the
+  session. `COMMIT` is now wrapped: on failure a guarded `ROLLBACK` returns
+  the connection to autocommit (chained as `__context__`) and the original
+  `COMMIT` error is re-raised.
+- **Learner watermark could skip same-timestamp journal rows (Hardening
+  #15).** `_last_watermark` cursored on `MAX(ts)`, so two events sharing a
+  timestamp (or a backdated event) could be skipped on the next run. The
+  learner now cursors on the monotonic journal `rowid`
+  (`learning_runs.cursor_after_rowid`, added via an idempotent one-time
+  `ALTER TABLE` on existing databases) with the timestamp kept only for
+  readable logs; an explicit `since=` timestamp remains a valid escape
+  hatch for a manual re-scan.
+- **Search query string had no length ceiling (Hardening #9, subsumes
+  duplicate finding R15).** `_sanitize_fts5_query` expands every token in
+  the input into an ANDed, phrase-quoted term and MATCHes it across up to
+  four FTS5 tiers; with no bound, a multi-megabyte / ~200k-token query
+  became a ~200k-term MATCH executed four times — a CPU/memory DoS
+  reachable from the client, MCP, and Hermes alike. Queries are now
+  truncated to 4096 characters before any tokenization (best-effort
+  truncate, not a raised error, since search is a read path); real
+  natural-language queries are far under the ceiling and are never
+  affected.
+- **Co-occurrence learner had no bound on per-event tokens or tracked pairs
+  (R13).** The co-occurrence detector built every 2-combination of an
+  event's distinct tokens (O(tokens²) per event); a single pathological
+  event could hold tens of thousands of unique strings and hang the run.
+  `_extract_tokens` now caps distinct tokens per event at 64, and the
+  detector caps total tracked pairs across a run at 100,000 (already-seen
+  pairs keep accumulating hits; new pairs beyond the ceiling are dropped).
+  Adjudicated low severity: the learner runs locally over the agent's own
+  journal on a paid-tier feature, so the primary threat model is
+  self-inflicted, not third-party.
+
+### Security
+- **Dict key names leaked verbatim to the Sibyl-routed summarizer prompt
+  (Hardening #1).** `_redact_event_for_prompt`'s shape reducer preserved
+  literal dict key names (`{"keys": sorted(...)}`) — content can hide in a
+  key name as easily as in a value. Dict values are now reduced to a
+  `{"key_count", "key_lens"}` shape descriptor (sorted lengths only, no
+  literal text or ordering signal) via a shared `_key_shape` helper.
+- **Hint redaction was a denylist, not an allowlist (Hardening #11).**
+  `_redact_hints_for_prompt` only stripped four explicitly-named
+  content-derived fields, so any future content-derived hint field would
+  leak by default. Inverted to an allowlist: only known pure-shape/numeric
+  fields (`hits`, `cadence_minutes`, `cov`, `confidence`) pass through
+  as-is; `shared_keys` is shaped via `_key_shape` (Hardening #1, it carries
+  key names); every other field is stubbed to a shape descriptor.
+- **Usage heartbeat could leak the account bearer to a non-Sibyl host
+  (Hardening #12).** The heartbeat URL is env-overridable
+  (`SIBYL_MEMORY_HEARTBEAT_URL`); without a check, an injected override
+  would still receive the `Authorization: Bearer` header. The bearer is
+  now attached only when the resolved URL is `https` and its host is
+  `sibyllabs.org` or a subdomain (checked via `urlparse().hostname`, not
+  string matching, so a userinfo-spoofed URL like
+  `https://api.sibyllabs.org@evil.com/` resolves to the real host and is
+  rejected). Any other scheme/host still gets the heartbeat POST, just
+  without the bearer.
+- **`TierCache`'s symlink guard was dead code (Hardening #3).** `__init__`
+  called `Path(path).expanduser().resolve()`, which follows a symlinked
+  cache file before the later `is_symlink()` checks in `load()`/`store()`
+  ever run, silently defeating the SEC-11 guard. Only the parent directory
+  is resolved now; the cache file's final path component stays literal, so
+  a symlinked cache path is detected and refused (never written through)
+  while a relocated/containerized home is still canonicalized correctly.
+- **Storage and cache directories could persist at a loose mode (Hardening
+  #4).** `mkdir(mode=0o700)` is a no-op on an already-existing directory,
+  so a pre-existing 0o755 `~/.sibyl-memory` or cache dir kept its umask-
+  derived mode. Both `Storage.__init__` and `TierCache.__init__` now
+  explicitly `chmod` the directory to `0o700` after `mkdir`, best-effort
+  and guarded for chmod-less platforms.
+- **WAL/SHM sidecar files had no symlink/hardlink guard (Hardening #10).**
+  SQLite opens `<db>-wal`/`<db>-shm` at fixed paths beside the main file; a
+  planted symlink there could redirect the write-ahead log (which holds
+  committed rows before checkpoint) to an attacker-chosen file, and the
+  perms-tightening chmod could retarget through it. `Storage` now rejects
+  a symlinked or hardlinked sidecar before opening, and the perms-
+  tightening pass uses `follow_symlinks=False` where the platform supports
+  it (skipping entirely where it doesn't) so a sidecar planted after open
+  is never chmod'd through.
+
+### Changed
+- Corrected the `_capcheck.py` module docstring to enumerate the real
+  check-write payload (`account_id`, `session_token`, `current_size_bytes`,
+  `proposed_delta_bytes`, and, when a signed claim is present,
+  `credentials_signature` + `credentials_claim`); the prior "only
+  (account_id, current_size_bytes, proposed_delta_bytes)" wording
+  under-stated it (Contract PII, code half). The wire payload is unchanged;
+  dropping the claim's `email`/`wallet` is the policy-gated follow-up.
+- Packaging: added the `Repository` URL
+  `https://github.com/Sibyl-Labs/Sibyl-Memory` to `[project.urls]`
+  (previously omitted) (R27).
+
 ## [0.4.18] - 2026-07-05
 
 ### Fixed

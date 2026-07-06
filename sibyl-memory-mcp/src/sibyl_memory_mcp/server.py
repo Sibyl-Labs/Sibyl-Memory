@@ -124,7 +124,20 @@ def _open_client() -> MemoryClient:
         # Rebuild if no cached client, or credentials.json mtime changed,
         # or credentials.json appeared / disappeared (post-init / post-logout).
         if client is None or cur_mtime != cached_mtime or cur_exists != cached_exists:
+            old = client
             client = _build_client()
+            # R26 (audit): the previous code discarded the OLD MemoryClient
+            # without closing it, stranding every per-thread SQLite connection
+            # it had registered. Repeated credential-mtime changes (or
+            # post-init / post-logout) then accumulated open connections. Close
+            # the old storage BEFORE swapping the new client into the cache.
+            # Best-effort: a missing/failing close must never block serving the
+            # freshly built client.
+            if old is not None:
+                try:
+                    getattr(old.storage, "close", lambda: None)()
+                except Exception:
+                    pass
             _client_cache["client"] = client
             _client_cache["creds_mtime"] = cur_mtime
             _client_cache["creds_path_exists"] = cur_exists
@@ -144,13 +157,31 @@ def _build_client() -> MemoryClient:
     succeed, matching sibyl-memory-hermes' provider behavior.
     """
     creds = _load_credentials()
-    DEFAULT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # R30 (audit): create ~/.sibyl-memory at 0o700 so a first-touch by the MCP
+    # server does not leave the memory dir world-readable. mkdir's mode is
+    # ignored when the dir already exists, so chmod belt-and-suspenders to cover
+    # the pre-existing-directory case (mirrors the CLI's write_credentials_atomic
+    # and the client Storage hardening).
+    parent = DEFAULT_DB_PATH.parent
+    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(parent, 0o700)
+    except OSError:
+        pass
     return MemoryClient.local(
         str(DEFAULT_DB_PATH),
-        tenant_id=creds.get("tenant_id") or DEFAULT_TENANT,
+        # Contract T (tenant resolution ladder, Real #1): the server-issued
+        # tenant_id wins; fall back to account_id, then DEFAULT_TENANT only when
+        # credentials are genuinely absent. Keeps mcp/hermes/langgraph resolving
+        # the SAME tenant for one credentials.json.
+        tenant_id=creds.get("tenant_id") or creds.get("account_id") or DEFAULT_TENANT,
         account_id=creds.get("account_id"),
         session_token=creds.get("session_token"),
         tier=creds.get("tier", "free"),
+        # Contract PII (POLICY-GATED): email/wallet stay in the claim because the
+        # backend signature is computed over them; the server must re-sign over
+        # its own stored PII before these can drop. Do NOT remove until then —
+        # dropping them here breaks signature verification. (audit Hardening #6)
         credentials_claim={
             "account_id": creds.get("account_id"),
             "tenant_id": creds.get("tenant_id"),
@@ -194,6 +225,10 @@ def _err(e: Exception) -> NoReturn:
         payload["code"] = "NOT_FOUND"
     elif isinstance(e, ValidationError):
         payload["code"] = "VALIDATION_ERROR"
+    else:
+        # R31 belt-and-suspenders: any exception that falls through the typed
+        # chain still gets a `code` so the error envelope is never code-less.
+        payload.setdefault("code", "ERROR")
     raise ToolError(json.dumps(payload, ensure_ascii=False))
 
 
@@ -506,7 +541,11 @@ def build_server() -> FastMCP:
                 tier_tuple = tuple(t.strip() for t in tiers.split(",") if t.strip())
                 unknown = sorted(set(tier_tuple) - {"entity", "state", "reference", "journal"})
                 if unknown:
-                    raise ValueError(
+                    # R31 (audit): raise the SDK's ValidationError (not a builtin
+                    # ValueError) so `_err` maps it to code=VALIDATION_ERROR. A
+                    # builtin ValueError fell through the typed chain and produced
+                    # an error envelope with no `code` field.
+                    raise ValidationError(
                         f"unknown tiers: {', '.join(unknown)}; "
                         "valid: entity, state, reference, journal"
                     )

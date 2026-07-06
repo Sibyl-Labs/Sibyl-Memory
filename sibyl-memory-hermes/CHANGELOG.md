@@ -4,6 +4,28 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.13] - 2026-07-05
+
+Super-patch: recovery + adjudication of the remaining Fable 10-lens audit
+findings (`plugin-hardening-superpatch-plan-2026-07-05.md`).
+
+### Fixed
+- **Tenant resolution used `tenant_id` alone, with no fallback (Contract
+  T).** `SibylMemoryProvider.__init__` resolved `resolved_tenant =
+  creds.tenant_id` directly, so an activated account whose credentials
+  carried an `account_id` but a missing-or-empty `tenant_id` (a legacy
+  schema-v1 credentials file, or a present-but-empty field) silently
+  resolved to the shared `DEFAULT_TENANT` instead of its own account.
+  Tenant resolution now walks the canonical ladder shared by every plugin
+  surface (client/mcp/hermes/langgraph): `tenant_id -> account_id ->
+  DEFAULT_TENANT`. `or` collapses both the absent and the present-but-
+  empty cases at each rung, so `DEFAULT_TENANT` is reached only when
+  credentials are genuinely absent.
+- Metadata: `pyproject.toml`'s `Repository` URL pointed at a foreign,
+  nonexistent `sibyllabs` (no hyphen) GitHub org that 404s. Corrected to
+  `https://github.com/Sibyl-Labs/Sibyl-Memory`, the org Sibyl Labs
+  controls (R27).
+
 ## [0.3.12] - 2026-06-30
 
 Post-launch audit fixes (credentials robustness + diagnostics accuracy).

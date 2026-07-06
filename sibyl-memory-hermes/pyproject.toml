@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sibyl-memory-hermes"
-version = "0.3.12"
+version = "0.3.13"
 description = "Sibyl Memory SDK + bundled Hermes plugin payload. Local-first, SQLite-backed, structured-tier memory for Hermes v0.13+ (and any other Python orchestration that wants direct SDK access)."
 authors = [{ name = "SIBYL, Sibyl Labs LLC", email = "sibyl@sibyllabs.org" }]
 license = { text = "MIT" }
@@ -47,7 +47,7 @@ sibyl-memory-hermes = "sibyl_memory_hermes.install_plugin:main"
 [project.urls]
 Homepage = "https://sibyllabs.org/memory"
 Documentation = "https://docs.sibyllabs.org/memory/integrations"
-Repository = "https://github.com/sibyllabs/sibyl-memory-plugin"
+Repository = "https://github.com/Sibyl-Labs/Sibyl-Memory"
 
 [tool.setuptools.packages.find]
 where = ["src"]
