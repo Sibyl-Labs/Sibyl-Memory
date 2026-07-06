@@ -1,8 +1,20 @@
 # sibyl-memory-langgraph
 
+[![PyPI](https://img.shields.io/pypi/v/sibyl-memory-langgraph?label=pypi&color=8a6a2a)](https://pypi.org/project/sibyl-memory-langgraph/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-15110a.svg)](./LICENSE)
+
 A [LangGraph](https://langchain-ai.github.io/langgraph/) `BaseStore` backed by
 [Sibyl Memory](https://sibyllabs.org) — durable, long-term, cross-thread memory
 for your agents on SQLite + FTS5. No vector database, no embeddings.
+
+## Install
+
+```bash
+pip install sibyl-memory-langgraph
+```
+
+Part of the [Sibyl Memory](https://github.com/Sibyl-Labs/Sibyl-Memory) plugin
+family. See the [CHANGELOG](./CHANGELOG.md) for release notes.
 
 ```python
 from sibyl_memory_langgraph import SibylStore

@@ -20,7 +20,7 @@ dependencies = [
 test = ["pytest>=8.0"]
 
 [project.urls]
-Homepage = "https://sibyllabs.org/memory"
+Homepage = "https://sibyllabs.org/plugin"
 Repository = "https://github.com/Sibyl-Labs/Sibyl-Memory"
 
 [tool.hatch.build.targets.wheel]

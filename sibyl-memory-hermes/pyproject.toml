@@ -45,7 +45,7 @@ hermes = [
 sibyl-memory-hermes = "sibyl_memory_hermes.install_plugin:main"
 
 [project.urls]
-Homepage = "https://sibyllabs.org/memory"
+Homepage = "https://sibyllabs.org/plugin"
 Documentation = "https://docs.sibyllabs.org/memory/integrations"
 Repository = "https://github.com/Sibyl-Labs/Sibyl-Memory"
 
