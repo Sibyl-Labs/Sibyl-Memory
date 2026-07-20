@@ -4,6 +4,16 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.14] - 2026-07-20
+
+### Added
+- The bundled Hermes adapter now accepts the non-secret `SIBYL_TENANT_ID`
+  environment variable. This lets self-hosted Hermes and local read-only
+  services use the same existing tenant without generating credentials or
+  moving records. The override follows the SDK's explicit-tenant precedence;
+  absent or blank values preserve credential auto-loading and the existing
+  default tenant behavior.
+
 ## [0.3.13] - 2026-07-05
 
 Super-patch: recovery + adjudication of the remaining Fable 10-lens audit

@@ -22,8 +22,10 @@ Install location:
 Configuration:
     Credentials live in ~/.sibyl-memory/credentials.json (managed by the
     `sibyl init` CLI). This adapter does not duplicate that: it lets the
-    SDK auto-load credentials. The only Hermes-side option is `db_path`,
-    which defaults to <HERMES_HOME>/sibyl/memory.db so each profile has
+    SDK auto-load credentials. Self-hosted deployments can set the non-secret
+    `SIBYL_TENANT_ID` environment variable to align Hermes with an existing
+    tenant used by another local service, such as a read-only Cockpit API.
+    The database defaults to <HERMES_HOME>/sibyl/memory.db so each profile has
     its own database.
 
 v0.3.1 hardening (audit-remediation):
@@ -41,6 +43,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import secrets
 import threading
@@ -85,6 +88,7 @@ _MAX_LIST_LIMIT = 200             # MH-5: hard ceiling on sibyl_list limit
 _BUSY_RETRY_ATTEMPTS = 3          # sync_turn retry-on-busy attempts
 _BUSY_RETRY_BACKOFF = 0.2         # base seconds between retries
 _MAX_PROFILE_LEN = 256            # MH-9: cap active_profile content at read time
+_TENANT_ID_ENV = "SIBYL_TENANT_ID"
 
 
 def _clamp_limit(value: Any, default: int, maximum: int) -> int:
@@ -350,12 +354,16 @@ class SibylAdapter(MemoryProvider):
         db_dir.mkdir(parents=True, exist_ok=True)
         db_path = db_dir / "memory.db"
         self._db_path = db_path
+        tenant_id = os.environ.get(_TENANT_ID_ENV, "").strip() or None
 
         # autoload_credentials=True picks up ~/.sibyl-memory/credentials.json
         # (created by `sibyl init`). require_credentials=False so we degrade
         # to DEFAULT_TENANT pre-activation rather than crash on first run.
+        # An explicit environment tenant wins over credentials, matching the
+        # SDK constructor's documented precedence for explicit tenant_id.
         self._sibyl = SibylMemoryProvider(
             db_path=db_path,
+            tenant_id=tenant_id,
             autoload_credentials=True,
             require_credentials=False,
         )
@@ -727,19 +735,20 @@ class SibylAdapter(MemoryProvider):
     # -- config ------------------------------------------------------------
 
     def get_config_schema(self) -> list[dict[str, Any]]:
-        """No Hermes-side config: prerequisite is the `sibyl init` CLI.
+        """No secret Hermes-side config: prerequisite is the `sibyl init` CLI.
 
         Sibyl manages its own credentials and identity outside Hermes:
         running `sibyl init` writes ~/.sibyl-memory/credentials.json,
-        which the SDK auto-loads at construction time. We deliberately
-        return [] here so `hermes memory setup` does NOT double-prompt
-        for credentials that already live in the Sibyl native file -
-        running both flows would diverge tenant ids and confuse users.
+        which the SDK auto-loads at construction time. Self-hosted deployments
+        may set the non-secret `SIBYL_TENANT_ID` environment variable when a
+        local service already owns the canonical tenant identifier. We
+        deliberately return [] here so `hermes memory setup` does NOT
+        double-prompt for credentials that already live in the Sibyl native
+        file - running both flows would diverge tenant ids and confuse users.
 
-        If a future version needs Hermes-side overrides (alt db_path,
-        explicit tenant_id for testing), add them here as non-secret
-        fields: keep secrets in credentials.json so there's one
-        source of truth.
+        If a future version needs interactive Hermes-side overrides, add them
+        here as non-secret fields. Keep secrets in credentials.json so there
+        is one source of truth.
         """
         return []
 

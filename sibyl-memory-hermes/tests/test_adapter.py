@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from sibyl_memory_client import DEFAULT_TENANT
 from sibyl_memory_hermes import SibylMemoryProvider
 from sibyl_memory_hermes._hermes_plugin import adapter as adapter_module
 from sibyl_memory_hermes._hermes_plugin.adapter import (
@@ -102,6 +103,40 @@ def _make_initialized_adapter(tmp_path: Path) -> SibylAdapter:
     adapter._session_id = "test-session"
     adapter._hermes_home = tmp_path
     return adapter
+
+
+def test_initialize_uses_explicit_environment_tenant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SIBYL_TENANT_ID", "lugarno-simon")
+    adapter = SibylAdapter()
+
+    adapter.initialize(
+        "test-session",
+        hermes_home=str(tmp_path),
+        agent_identity="default",
+    )
+
+    assert adapter._sibyl.tenant_id == "lugarno-simon"
+
+
+def test_initialize_ignores_blank_environment_tenant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SIBYL_TENANT_ID", "   ")
+    adapter = SibylAdapter()
+
+    adapter.initialize(
+        "test-session",
+        hermes_home=str(tmp_path),
+        agent_identity="default",
+    )
+
+    assert adapter._sibyl.tenant_id == DEFAULT_TENANT
 
 
 def test_handle_tool_call_uninitialized_returns_error() -> None:

@@ -31,6 +31,18 @@ Restart Hermes. Four tools become available to the agent:
 - `sibyl_search(query)`. FTS5 search across **all four tiers** (entities, state, journal, reference); hits are tier-tagged
 - `sibyl_list(category?, status?)`: browse what's remembered
 
+Self-hosted deployments that already have a canonical local tenant can align
+Hermes explicitly without creating credentials:
+
+```bash
+export SIBYL_TENANT_ID="client-instance"
+```
+
+`SIBYL_TENANT_ID` is a non-secret identifier. When it is set, it takes
+precedence over the tenant in `~/.sibyl-memory/credentials.json`. When it is
+absent or blank, credential auto-loading and the existing default behavior are
+unchanged.
+
 Optional: lift the 2 MB free-tier cap by binding your account:
 
 ```bash
