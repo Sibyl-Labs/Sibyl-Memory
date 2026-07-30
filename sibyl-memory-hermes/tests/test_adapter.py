@@ -15,6 +15,7 @@ directly in pytest without mocking the Hermes runtime.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -248,3 +249,77 @@ def test_stable_key_with_prefix() -> None:
     k = _stable_key("hello", prefix="mem-")
     assert k.startswith("mem-")
     assert len(k) == len("mem-") + 12
+
+
+# ----------------------------------------------------------------------
+# SIBYL_TENANT_ID env override (initialize)
+# ----------------------------------------------------------------------
+def _init_adapter_with_env(tmp_path, monkeypatch, tenant_env):
+    """Initialize a SibylAdapter through the real initialize() path with
+    credentials autoload isolated to an empty HOME, optionally setting
+    SIBYL_TENANT_ID. Returns the adapter."""
+    # Isolate credentials: HOME -> empty tmp dir so ~/.sibyl-memory/credentials.json
+    # expands into a location with no file, and tenant falls to DEFAULT_TENANT
+    # unless SIBYL_TENANT_ID overrides. (The hermes provider expands the literal
+    # "~/..." DEFAULT_CRED_PATH via Path.expanduser(); it does NOT read
+    # SIBYL_CREDENTIALS, so HOME is the correct isolation lever here.)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if tenant_env is None:
+        monkeypatch.delenv("SIBYL_TENANT_ID", raising=False)
+    else:
+        monkeypatch.setenv("SIBYL_TENANT_ID", tenant_env)
+    adapter = SibylAdapter()
+    adapter.initialize("test-session", hermes_home=str(tmp_path),
+                       agent_identity="default")
+    return adapter
+
+
+def test_initialize_honors_tenant_env(tmp_path, monkeypatch):
+    adapter = _init_adapter_with_env(tmp_path, monkeypatch, "tenant-from-env")
+    assert adapter._sibyl.tenant_id == "tenant-from-env"
+
+
+def test_initialize_without_tenant_env_uses_default(tmp_path, monkeypatch):
+    from sibyl_memory_client import DEFAULT_TENANT
+    adapter = _init_adapter_with_env(tmp_path, monkeypatch, None)
+    # No env, no credentials on the isolated HOME -> provider resolves to
+    # the shared default tenant, exactly as before this change.
+    assert adapter._sibyl.tenant_id == DEFAULT_TENANT
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_initialize_blank_tenant_env_treated_as_unset(tmp_path, monkeypatch, blank):
+    from sibyl_memory_client import DEFAULT_TENANT
+    adapter = _init_adapter_with_env(tmp_path, monkeypatch, blank)
+    assert adapter._sibyl.tenant_id == DEFAULT_TENANT
+
+
+def test_initialize_trims_surrounding_whitespace_to_inner_value(tmp_path, monkeypatch):
+    # A set value with surrounding whitespace resolves to the inner value only:
+    # confirms .strip() yields the trimmed identifier, not the padded string and
+    # not a false unset. Distinct from the blank case, which strips to empty.
+    adapter = _init_adapter_with_env(tmp_path, monkeypatch, "  tenant-x  ")
+    assert adapter._sibyl.tenant_id == "tenant-x"
+
+
+def test_initialize_never_logs_tenant_value(tmp_path, monkeypatch, caplog):
+    # The init log must record the boolean state ("set") but never the tenant
+    # identifier itself, and it must say "unset" when the env is absent.
+    secret_like_value = "tenant-should-not-appear"
+    with caplog.at_level(logging.INFO, logger="sibyl_memory_hermes._hermes_plugin.adapter"):
+        _init_adapter_with_env(tmp_path, monkeypatch, secret_like_value)
+    init_lines = [r for r in caplog.records if "Sibyl memory initialized" in r.getMessage()]
+    assert init_lines, "expected an init log line"
+    for record in init_lines:
+        rendered = record.getMessage()
+        assert "tenant_override=set" in rendered
+        assert secret_like_value not in rendered
+        # Belt-and-suspenders: the raw value is absent from the record args too.
+        assert secret_like_value not in repr(record.args)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="sibyl_memory_hermes._hermes_plugin.adapter"):
+        _init_adapter_with_env(tmp_path, monkeypatch, None)
+    unset_lines = [r for r in caplog.records if "Sibyl memory initialized" in r.getMessage()]
+    assert unset_lines, "expected an init log line"
+    assert all("tenant_override=unset" in r.getMessage() for r in unset_lines)

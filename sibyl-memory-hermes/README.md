@@ -54,6 +54,14 @@ provider.save_context(
 provider.search("v0.3.1")                # FTS5 across entities + state + reference + journal
 ```
 
+## Environment overrides
+
+| Var | Default | What it does |
+|-----|---------|--------------|
+| `SIBYL_TENANT_ID` | unset | Non-secret tenant override. When set to a non-empty value it becomes the active tenant and wins over the tenant in `credentials.json`. Blank or unset leaves tenant resolution untouched. This is an identifier, not a secret. |
+
+Precedence: explicit `SIBYL_TENANT_ID` > `credentials.json` (`tenant_id` then `account_id`) > the shared default tenant. Set it when one machine or container needs to target a specific tenant without editing the credential file.
+
 ## Why "local-first"?
 
 Mem0, Zep, Honcho, and most other agent-memory products centralize user context on their servers. The Sibyl Memory Plugin keeps the data on the user's disk. Our cloud schema has no memory-content tables. Even with admin DB access we cannot read what users have written. That's the difference between *"we promise we don't"* and *"we structurally can't."*
