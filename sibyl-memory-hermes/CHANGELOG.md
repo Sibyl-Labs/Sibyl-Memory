@@ -4,6 +4,21 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.14] - 2026-07-30
+
+### Added
+- **`SIBYL_TENANT_ID` env override in the Hermes adapter.** `initialize()` now
+  reads the non-secret `SIBYL_TENANT_ID` environment variable (stripped;
+  empty-or-absent means unset) and passes it as the explicit `tenant_id` to
+  `SibylMemoryProvider`. An explicit env tenant wins over anything in
+  `credentials.json`, matching the SDK provider's documented precedence
+  (explicit `tenant_id` > credentials(`tenant_id` > `account_id`) >
+  `DEFAULT_TENANT`). Absent or blank preserves current behavior exactly: the
+  provider still auto-loads `credentials.json` and resolves tenant as before.
+  `get_config_schema()` still returns `[]` (no double-prompt); the override is
+  an env var, not a Hermes setup field. The tenant value is never logged; the
+  init log records only whether an override was set.
+
 ## [0.3.13] - 2026-07-05
 
 Super-patch: recovery + adjudication of the remaining Fable 10-lens audit

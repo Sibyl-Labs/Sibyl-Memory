@@ -44,6 +44,68 @@ command = "sibyl-memory-mcp"
 
 Restart Codex.
 
+## Run with Docker
+
+A first-party image is provided at the repo root (`Dockerfile`,
+`docker-compose.yml`, `.dockerignore`). The image is non-root, runs on a
+pinned slim Python base, and bakes in no secrets. Memory lives on a mounted
+volume so it survives container recreation.
+
+The MCP server speaks stdio, not HTTP. It is not a daemon you leave running.
+Run it attached to an MCP client's stdin, or via `docker compose run`.
+
+Build:
+
+```bash
+docker build -t sibyl-memory-mcp:local .
+```
+
+First, activate on the host so the mounted volume carries your credentials:
+
+```bash
+sibyl init
+```
+
+Run attached, mounting your host `~/.sibyl-memory` for `memory.db` and
+`credentials.json`:
+
+```bash
+docker run -i --rm \
+  -v "$HOME/.sibyl-memory:/home/app/.sibyl-memory" \
+  sibyl-memory-mcp:local
+```
+
+Note the `-i` (keep STDIN open) and the absence of `-t` (no TTY): the MCP
+client drives stdin programmatically.
+
+Wire it into Claude Code by pointing the command at the container:
+
+```json
+{
+  "mcpServers": {
+    "sibyl-memory": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-v", "/absolute/path/to/your/.sibyl-memory:/home/app/.sibyl-memory",
+        "sibyl-memory-mcp:local"
+      ]
+    }
+  }
+}
+```
+
+Using Compose (note `run`, not `up`, because it is a stdio server):
+
+```bash
+docker compose run --rm sibyl-memory-mcp
+```
+
+Environment overrides (`SIBYL_MEMORY_DB`, `SIBYL_CREDENTIALS`,
+`SIBYL_TENANT_ID`) are passed through when set on the host. No secret is ever
+written into the image or the compose file. Credentials arrive only through
+the mounted volume.
+
 ## Tools exposed
 
 | Tool | What it does |

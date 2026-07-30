@@ -1,0 +1,26 @@
+# Compose file for the Sibyl Memory MCP server (stdio transport).
+# This is a stdio server, NOT a network service. Do NOT `docker compose up`:
+# the server reads MCP over stdin and exits on EOF. Run it attached:
+#   docker compose run --rm sibyl-memory-mcp
+# or point an MCP client's command at a `docker run -i --rm` wrapper (see
+# sibyl-memory-mcp/README.md "Docker"). No secrets live in this file:
+# credentials.json arrives only through the mounted volume at runtime.
+services:
+  sibyl-memory-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sibyl-memory-mcp:local
+    # stdio server: keep STDIN open, no TTY. Client drives stdin.
+    stdin_open: true
+    tty: false
+    # Env passthrough only. No values are set here. Uncomment and set on the
+    # host env (or an untracked .env) if you need to override defaults.
+    environment:
+      - SIBYL_MEMORY_DB
+      - SIBYL_CREDENTIALS
+      - SIBYL_TENANT_ID
+    volumes:
+      - sibyl-memory-data:/home/app/.sibyl-memory
+volumes:
+  sibyl-memory-data:
