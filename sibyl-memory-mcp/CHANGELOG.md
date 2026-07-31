@@ -36,6 +36,32 @@ MCP surface. Default OFF — existing hosts are unchanged.
   never changes when tools are added). This makes the version bump actually
   invalidate clients' version-keyed tool caches so the new schema is picked up.
 
+### Security
+- **Prefetch fence-forge via the per-hit LABEL + whitespace-mutated markers.**
+  The prefetch line `label` (built from a stored `category` / `key` / `name`,
+  which `validate_identifier` permits to contain `[`, `]`, `:` and spaces) was
+  interpolated raw while only the body was scrubbed, so a stored key that IS a
+  canonical `[UNTRUSTED MEMORY CONTEXT END:…]` marker surfaced intact and could
+  close/forge the untrusted-context fence. The label is now fence-scrubbed like
+  the body, and the fence regex was made whitespace-tolerant (double space, tab,
+  newline, `\xa0`).
+- **Zero-width / format-character fence-scrubber bypass (red-team follow-up).**
+  The whitespace-tolerant regex uses `\s`, which does NOT match zero-width /
+  format characters — U+200B ZWSP, U+200C/U+200D ZWNJ/ZWJ, U+2060 WORD JOINER,
+  U+FEFF BOM, U+00AD SOFT HYPHEN, and the bidi controls (U+200E/U+200F,
+  U+202A–U+202E, U+2066–U+206F). A forged marker wearing those chars after `[`,
+  between the words, or inside a word rendered visually identical to a real fence
+  close yet slipped `_strip_fence_markers` intact — via a stored body, a stored
+  name/key surfaced in the prefetch label, and the `memory_search` /
+  `memory_recall` / `memory_list` / `memory_get_state` outputs. `_strip_fence_
+  markers` now removes invisible/format chars before matching (a new
+  `_INVISIBLE_MARKER_RE`) and the inter-word separators are `\s*` so an
+  all-invisible-separator marker that collapses away is still caught. The
+  de-invisibled form is committed only when it actually exposes a marker, so
+  benign content (including legitimate ZWJ emoji sequences) is left byte-for-byte
+  untouched (no over-redaction; JSON stays valid). One helper covers all four
+  read paths (prefetch body, prefetch label, search/recall/list/get_state).
+
 ## [0.1.12] - 2026-07-05
 
 Super-patch: recovery + adjudication of the remaining Fable 10-lens audit

@@ -270,11 +270,46 @@ def _coerce_body(body: Any) -> Any:
 # this — the unpatched twin. This block ports both layers.
 # Whitespace-tolerant so odd spacing inside the marker (double spaces, tabs,
 # newlines, non-breaking spaces) cannot smuggle a forgeable marker past the
-# scrubber — ``\s+`` between the fixed words + ``\s*`` after the opening bracket.
-# ``\s`` is unicode-aware for str patterns (covers U+00A0 etc.). The fixed marker
-# text is distinctive enough that this never over-strips legitimate memory.
+# scrubber. ``\s`` is unicode-aware for str patterns (covers U+00A0 etc.);
+# re.UNICODE is set explicitly to document intent.
+#
+# Red-team follow-up (2026-07-31): ``\s`` does NOT match zero-width / format
+# characters — U+200B ZERO WIDTH SPACE, U+200C/U+200D ZWNJ/ZWJ, U+2060 WORD
+# JOINER, U+FEFF BOM, U+00AD SOFT HYPHEN, the bidi controls, etc. An attacker
+# could wear the marker in those chars right after ``[``, between the words, or
+# *inside* a word (``U<zwsp>NTRUSTED``) so it renders visually identical to a
+# real fence marker yet slipped the whitespace-only pattern intact — via a
+# stored body, a stored name/key surfaced in the prefetch label, or the
+# memory_search / memory_recall / memory_list / memory_get_state outputs (all of
+# which scrub through _strip_fence_markers). Neutralize two ways: (a) delete the
+# invisible/format chars before matching (closes leading + in-word insertion),
+# and (b) tolerate ZERO separators between the words (``\s*`` rather than
+# ``\s+``) so a marker whose separators were all invisible — and therefore
+# collapse away in step (a) — is still caught. De-invisibling is committed only
+# when it actually EXPOSES a marker, so ordinary content (incl. legitimate ZWJ
+# emoji sequences) is left byte-for-byte untouched (no over-redaction; JSON
+# stays valid).
+#
+# Residual (accepted): a marker corrupted with a *visible* separator inside a
+# word (e.g. ``[U NTRUSTED ...]``) is not redacted, but it renders as visibly
+# broken text a model is unlikely to honor as a fence; matching per-letter
+# whitespace would massively over-match benign prose, so it is out of scope.
+_INVISIBLE_MARKER_CHARS = (
+    "­"          # SOFT HYPHEN
+    "؜"          # ARABIC LETTER MARK
+    "᠎"          # MONGOLIAN VOWEL SEPARATOR
+    "​-‏"   # ZWSP, ZWNJ, ZWJ, LRM, RLM
+    "‪-‮"   # bidi embeddings / overrides
+    "⁠-⁤"   # WORD JOINER + invisible math operators
+    "⁦-⁯"   # bidi isolates + deprecated format chars
+    "﻿"          # ZERO WIDTH NO-BREAK SPACE / BOM
+    "￹-￻"   # interlinear annotation anchors
+)
+_INVISIBLE_MARKER_RE = re.compile(f"[{_INVISIBLE_MARKER_CHARS}]")
+
 _FENCE_MARKER_RE = re.compile(
-    r"\[\s*UNTRUSTED\s+MEMORY\s+CONTEXT\s+(?:BEGIN|END)[^\]]*\]", re.IGNORECASE
+    r"\[\s*UNTRUSTED\s*MEMORY\s*CONTEXT\s*(?:BEGIN|END)[^\]]*\]",
+    re.IGNORECASE | re.UNICODE,
 )
 
 # MH-2: per-hit body cap (mirror adapter._SEARCH_HIT_BODY_MAX) + a total output
@@ -294,9 +329,20 @@ _MIN_QUERY_LEN = 3
 
 def _strip_fence_markers(text: str) -> str:
     """Neutralize literal untrusted-context fence markers embedded in surfaced
-    memory text so a stored payload can't close/forge the fence (MH-1)."""
+    memory text so a stored payload can't close/forge the fence (MH-1).
+
+    Zero-width / format characters (see ``_INVISIBLE_MARKER_CHARS``) are removed
+    before matching so a marker mutated with invisible separators — which render
+    identically to the real marker but are not matched by ``\\s`` — is still
+    caught. To avoid over-redacting benign content, the de-invisibled form is
+    only committed when it actually exposes a marker (so legitimate ZWJ emoji
+    sequences and other benign invisibles are left byte-for-byte untouched)."""
     if not text:
         return text
+    if _INVISIBLE_MARKER_RE.search(text):
+        deinvisibled = _INVISIBLE_MARKER_RE.sub("", text)
+        if _FENCE_MARKER_RE.search(deinvisibled):
+            return _FENCE_MARKER_RE.sub("[redacted-marker]", deinvisibled)
     return _FENCE_MARKER_RE.sub("[redacted-marker]", text)
 
 
