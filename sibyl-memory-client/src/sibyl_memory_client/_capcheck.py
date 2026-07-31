@@ -39,6 +39,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -99,6 +100,15 @@ CHECK_WRITE_RETRY_BACKOFF = 0.4  # seconds, exponential: 0.4, 0.8
 # still only grow to FAIL_OPEN_CEILING_MULT x the cap before hard-blocking, so
 # the concession can't be abused indefinitely.
 FAIL_OPEN_CEILING_MULT = 4
+
+# Async write-path refresh (v0.4.20). ``check_async`` never blocks a write on a
+# urlopen; when ``check`` would have escalated to the network it schedules an
+# opportunistic BACKGROUND refresh instead. To keep a sustained at-cap workload
+# from stampeding the server, a background refresh is single-flight (at most one
+# in flight) AND rate-limited: no new refresh starts within
+# ``REFRESH_MIN_INTERVAL_SECONDS`` of the previous one FINISHING. Interval, not
+# wall-clock timestamp, so we use ``time.monotonic()`` to measure it.
+REFRESH_MIN_INTERVAL_SECONDS = 5.0
 
 
 # ----------------------------------------------------------------------
@@ -472,14 +482,35 @@ class CapGate:
         self._credentials_claim = credentials_claim
         self._credentials_signature = credentials_signature
 
+        # Async refresh state (v0.4.20). ``check_async`` schedules an
+        # opportunistic background tier refresh instead of blocking the hot
+        # write path on the network. These guard single-flight + rate-limiting.
+        self._refresh_lock = threading.Lock()
+        self._refresh_in_flight = False
+        self._last_refresh_monotonic: float | None = None
+        # Most-recently STARTED background refresh thread. Exposed for tests
+        # (deterministic join with timeout) and diagnostics; always a daemon.
+        self._refresh_thread: threading.Thread | None = None
+
     # ------------------------------------------------------------------
-    # Public entry point: called by every write path
+    # Local decision (shared by check / check_async)
     # ------------------------------------------------------------------
-    def check(self, proposed_delta_bytes: int = 0) -> None:
-        """Verify that the proposed write is permitted. Raises
-        CapExceededError if not."""
-        # Fast path 1: locally hinted as paid AND we have a fresh cache
-        # that agrees → allow without network.
+    def _local_fast_path_allows(self, proposed_delta_bytes: int = 0) -> bool:
+        """The purely-LOCAL decision shared by ``check`` and ``check_async``.
+
+        Returns True when a local fast path permits the write with NO network
+        call (fresh account-matched paid cache; fresh cached free cap still
+        under cap; free credentials-hint still under the local cap). Returns
+        False for exactly the cases where ``check`` would escalate to the
+        server via ``_refresh_and_check`` — at/over the cap boundary, or a paid
+        credentials hint that still needs server verification.
+
+        Makes no network call and never raises. Single-sourcing this keeps
+        ``check`` and ``check_async`` in exact agreement about *when* the
+        network would be consulted, so their only difference is what they do at
+        that point (block-and-verify vs schedule-and-return).
+        """
+        # Fast path 1: a fresh, account-matched cache.
         cached = self._cache.load()
         if cached and cached.is_fresh and cached.account_id == self.account_id:
             if cached.cap_bytes is None:
@@ -490,32 +521,70 @@ class CapGate:
                 # would otherwise spoof an uncapped account (SEC-13). A
                 # legitimately uncapped tier always carries a real account_id.
                 if self.account_id is not None:
-                    return
+                    return True
                 # Forged/null-account uncapped claim: distrust the cache and
-                # fall through to the credentials-hint + server path below.
+                # fall through to the credentials-hint path below.
             else:
                 # Cached as free with a cap. Enforce locally.
                 new_size = self._db_size_fn() + proposed_delta_bytes
                 if new_size <= cached.cap_bytes:
-                    return
-                # Over the cached cap. Try to refresh (user may have upgraded).
-                return self._refresh_and_check(proposed_delta_bytes)
+                    return True
+                # Over the cached cap → check() would refresh (possible upgrade).
+                return False
 
-        # No fresh cache. Use the credentials.json hint as a fast path
-        # for the "obviously under cap" case to avoid a server call for
-        # every brand-new user's first writes.
-        current = self._db_size_fn()
-        new_size = current + proposed_delta_bytes
+        # No fresh cache. Use the credentials.json hint as a fast path for the
+        # "obviously under cap" case to avoid a server call for every brand-new
+        # user's first writes.
         if self._local_hint in PAID_TIERS:
-            # Credentials say paid; verify with server then cache the result.
-            # If user genuinely paid: server confirms, we cache, done. If
-            # credentials are tampered: server says free, we cache, enforce.
-            return self._refresh_and_check(proposed_delta_bytes)
+            # Credentials say paid; check() verifies with the server.
+            return False
+        new_size = self._db_size_fn() + proposed_delta_bytes
         if new_size <= self._cap:
             # Free + under cap. Trust the credentials hint, no server call.
+            return True
+        # Free + at/past cap → check() must call the server.
+        return False
+
+    # ------------------------------------------------------------------
+    # Public entry points: called by every write path
+    # ------------------------------------------------------------------
+    def check(self, proposed_delta_bytes: int = 0) -> None:
+        """Verify that the proposed write is permitted. Raises
+        CapExceededError if not.
+
+        BLOCKING: at the cap boundary (or with a paid credentials hint that
+        still needs verifying) this makes a SYNCHRONOUS network call via
+        ``_refresh_and_check``. The hot write path uses ``check_async`` instead
+        so it never blocks; ``check`` is retained for callers/tests that want
+        the authoritative synchronous decision (and remains part of the public
+        API)."""
+        if self._local_fast_path_allows(proposed_delta_bytes):
             return
-        # Free + at/past cap → must call server.
+        # A purely-local fast path did not clear the write → escalate to the
+        # server exactly as before.
         return self._refresh_and_check(proposed_delta_bytes)
+
+    def check_async(self, proposed_delta_bytes: int = 0) -> None:
+        """Non-blocking cap check for the hot write path (v0.4.20).
+
+        Runs the SAME purely-local fast paths as ``check`` (fresh
+        account-matched paid cache; fresh cached free cap under cap; free
+        credentials-hint under the local cap). For any case where ``check``
+        would escalate to the network (``_refresh_and_check`` — i.e. at/over the
+        cap boundary, or a paid credentials hint that still needs server
+        verification), this does NOT urlopen. It schedules an opportunistic
+        BACKGROUND refresh and RETURNS without raising.
+
+        This never blocks and never raises. Authoritative local enforcement is
+        left to the in-transaction ``check_total_local``, which runs (with no
+        network) after the write is staged and rolls the transaction back on a
+        real cap violation. The background refresh's only job is to keep the
+        tier cache current so a just-upgraded account converges to "allowed",
+        and a just-revoked/expired one converges to "blocked", on a subsequent
+        write."""
+        if self._local_fast_path_allows(proposed_delta_bytes):
+            return
+        self._schedule_refresh(proposed_delta_bytes)
 
     def check_total(self, total_size_bytes: int) -> None:
         """Gate on an ABSOLUTE resulting footprint (CAP-2).
@@ -814,6 +883,82 @@ class CapGate:
             proposed_delta=proposed_delta_bytes,
             upgrade_url=resp.get("upgrade_url", DEFAULT_UPGRADE_URL),
         )
+
+    # ------------------------------------------------------------------
+    # Background refresh (v0.4.20): keeps the write path off the network
+    # ------------------------------------------------------------------
+    def _schedule_refresh(self, proposed_delta_bytes: int) -> None:
+        """Opportunistically refresh the tier cache OFF the write path.
+
+        Contract:
+          - Single-flight: at most one refresh in flight at a time. A burst of
+            concurrent at-cap writes spawns ONE thread, not N — the in-flight
+            flag is set under a lock BEFORE the thread starts, so concurrent
+            schedulers observe it regardless of thread progress.
+          - Rate-limited: no new refresh starts within
+            ``REFRESH_MIN_INTERVAL_SECONDS`` of the previous one FINISHING
+            (measured with ``time.monotonic``), so a sustained at-cap workload
+            cannot stampede the server.
+          - Runs ``_refresh_and_check`` in a daemon thread and swallows EVERY
+            exception (``CapExceededError`` / ``TierAuthError`` /
+            ``TierVerificationError`` included). The refresh's only job is to
+            update the tier cache; it must never propagate to the caller or
+            crash the thread noisily. The authoritative gate is the
+            in-transaction ``check_total_local``, not this refresh.
+          - Daemon thread: interpreter exit is never blocked by an in-flight
+            refresh.
+        """
+        now = time.monotonic()
+        with self._refresh_lock:
+            if self._refresh_in_flight:
+                return  # single-flight: one refresh already running
+            if (
+                self._last_refresh_monotonic is not None
+                and now - self._last_refresh_monotonic < REFRESH_MIN_INTERVAL_SECONDS
+            ):
+                return  # rate-limited: refreshed too recently
+            self._refresh_in_flight = True
+
+        def _run() -> None:
+            try:
+                self._refresh_and_check(proposed_delta_bytes)
+            except (CapExceededError, TierAuthError, TierVerificationError) as exc:
+                # Expected cap/auth outcomes of a refresh: the cache has been
+                # updated (paid confirmed, free-over-cap recorded, or a hard
+                # auth deny observed). Nothing to surface — the write path's
+                # authoritative gate is check_total_local.
+                logger.debug(
+                    "Background tier refresh resolved to a block (%s); tier "
+                    "cache updated, not surfaced to the caller.",
+                    type(exc).__name__,
+                )
+            except Exception as exc:  # noqa: BLE001 — a bg thread must never crash noisily
+                # Anything unexpected (disk, JSON, a transport bug): log and
+                # move on. A background refresh must never take down the app.
+                logger.warning(
+                    "Background tier refresh failed unexpectedly (%s).",
+                    type(exc).__name__,
+                )
+            finally:
+                with self._refresh_lock:
+                    self._refresh_in_flight = False
+                    # "Finished" time gates the rate limiter for the next burst.
+                    self._last_refresh_monotonic = time.monotonic()
+
+        thread = threading.Thread(
+            target=_run, name="sibyl-capgate-refresh", daemon=True
+        )
+        with self._refresh_lock:
+            self._refresh_thread = thread
+        try:
+            thread.start()
+        except RuntimeError as exc:
+            # Could not start a thread (e.g. resource limits). Clear the
+            # in-flight flag so a later write can retry; the write itself is
+            # unaffected (check_total_local remains the authoritative gate).
+            logger.warning("Could not start background tier refresh (%s).", exc)
+            with self._refresh_lock:
+                self._refresh_in_flight = False
 
     # ------------------------------------------------------------------
     # Helpers

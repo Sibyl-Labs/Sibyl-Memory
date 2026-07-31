@@ -861,7 +861,7 @@ class MemoryClient:
         _require_container(body)
         body_json = _check_json(body)
         # Cap gate: rough byte estimate (FTS5 + indexes add overhead)
-        self._cap_gate.check(proposed_delta_bytes=len(body_json) + len(name) + len(category) + 200)
+        self._cap_gate.check_async(proposed_delta_bytes=len(body_json) + len(name) + len(category) + 200)
         with self._storage.transaction() as conn:
             existing = conn.execute(
                 "SELECT id FROM entities WHERE tenant_id = ? AND category = ? AND name = ?",
@@ -942,7 +942,7 @@ class MemoryClient:
         validate_identifier(key, field_name="key")
         _require_container(body)
         body_json = _check_json(body)
-        self._cap_gate.check(proposed_delta_bytes=len(body_json) + len(key) + 150)
+        self._cap_gate.check_async(proposed_delta_bytes=len(body_json) + len(key) + 150)
         with self._storage.transaction() as conn:
             conn.execute(
                 "INSERT INTO state_documents (tenant_id, document_key, body) VALUES (?, ?, ?) "
@@ -983,7 +983,7 @@ class MemoryClient:
                     delta += len(dumps(payload))
                 except (TypeError, ValueError):
                     delta += 100  # estimate; the JSON check below will catch real failures
-        self._cap_gate.check(proposed_delta_bytes=delta)
+        self._cap_gate.check_async(proposed_delta_bytes=delta)
         ev_id = new_id()
         with self._storage.transaction() as conn:
             conn.execute(
@@ -1069,7 +1069,7 @@ class MemoryClient:
             )
         meta_json = _check_json(metadata, "metadata") if metadata is not None else None
         delta = len(body) + len(key) + (len(meta_json) if meta_json else 0) + 200
-        self._cap_gate.check(proposed_delta_bytes=delta)
+        self._cap_gate.check_async(proposed_delta_bytes=delta)
         with self._storage.transaction() as conn:
             conn.execute(
                 "INSERT INTO reference_documents (tenant_id, doc_key, body, metadata) VALUES (?, ?, ?, ?) "
@@ -1124,9 +1124,16 @@ class MemoryClient:
             # The archive insert copies the body. Delta = body + name + category
             # + reason + ~200B SQLite/row overhead. Conservative estimate.
             delta = body_bytes + len(name) + len(category) + len(reason or "") + 200
-            # Cap-check holds the write lock (BEGIN IMMEDIATE), so the size it
-            # reads cannot be perturbed by another writer before our INSERT.
-            self._cap_gate.check(proposed_delta_bytes=delta)
+            # v0.4.20: async, non-blocking cap check so the hot write path never
+            # blocks on a urlopen while holding the BEGIN IMMEDIATE write lock
+            # (the old synchronous check() could starve concurrent writers here).
+            # This never raises; it only nudges a background tier refresh at the
+            # boundary. Archiving is net-neutral for footprint (the body is
+            # copied into archived_entities and the original row is DELETEd in
+            # this same transaction), so it cannot grow the committed footprint,
+            # and any subsequent growing write is still hard-gated locally by
+            # check_total_local (_verify_committed_size) on that write.
+            self._cap_gate.check_async(proposed_delta_bytes=delta)
             arch_id = new_id()
             conn.execute(
                 "INSERT INTO archived_entities (id, tenant_id, original_entity_id, category, name, body, archive_reason) "

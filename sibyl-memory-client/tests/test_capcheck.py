@@ -283,27 +283,44 @@ def test_no_account_id_at_cap_blocks(tmp_path: Path) -> None:
 # ----------------------------------------------------------------------
 
 def test_e2e_free_tier_blocked_at_cap(tmp_path: Path) -> None:
-    """Writing past the 2 MB cap raises CapExceededError when the server
-    confirms free tier."""
-    server = FakeServer(tier="free")
+    """A free-tier user is blocked from writing past the cap, end-to-end.
+
+    v0.4.20 (async cap verification): the write path no longer blocks on the
+    network. ``set_entity`` calls ``check_async`` (non-blocking, never raises)
+    before the transaction, so the AUTHORITATIVE gate is the in-transaction
+    ``check_total_local`` (CAP-2), which reads the TRUE committed footprint and
+    rolls back the single write that would tip the DB over the cap. We drive
+    real DB growth against a small cap and prove: (a) the over-cap write is
+    rejected, (b) the COMMITTED footprint never exceeds the cap, and (c) no
+    synchronous server call happens on the write path (verify is unreachable
+    here, yet the local gate still blocks — the revenue-critical property).
+    """
+    from sibyl_memory_client._capcheck import CapGate
+    from sibyl_memory_client.storage import db_size_bytes
+
+    # Verify endpoint unreachable: proves the block is purely LOCAL and no
+    # network round-trip poisons the enforced cap. (An offline check_fn also
+    # guarantees the background refresh caches nothing, so the gate's own small
+    # cap governs check_total_local throughout.)
+    server = FakeServer(offline=True)
     cache = TierCache(tmp_path / "tc.json")
     db_path = tmp_path / "memory.db"
+    storage = __import__("sibyl_memory_client").Storage(str(db_path))
 
-    # Build a custom gate using a synthetic large db_size to skip the slow
-    # path of actually writing 2 MB of data.
-    from sibyl_memory_client._capcheck import CapGate
-    fake_size = [100]  # mutable, lets us simulate growth
+    baseline = db_size_bytes(db_path)
+    cap = baseline + 40 * 1024  # tiny cap: a handful of 4 KB writes tip it over
 
     gate = CapGate(
         account_id="acc-1",
         session_token="sess-1",
-        db_size_fn=lambda: fake_size[0],
+        db_size_fn=lambda: db_size_bytes(db_path),  # REAL, WAL-inclusive size
         local_tier_hint="free",
         cache=cache,
         check_fn=server,
+        cap_bytes=cap,
     )
     client = MemoryClient(
-        storage=__import__("sibyl_memory_client").Storage(str(db_path)),
+        storage=storage,
         tenant_id="alice",
         tier="free",
         account_id="acc-1",
@@ -311,18 +328,23 @@ def test_e2e_free_tier_blocked_at_cap(tmp_path: Path) -> None:
         cap_gate=gate,
     )
 
-    # Under the cap: works fine
+    # Under the cap: works fine.
     client.set_entity("project", "atlas", {"status": "active"})
 
-    # Simulate being near the cap
-    fake_size[0] = 2 * 1024 * 1024 - 100
-
-    # Next write would push over → server-checked → blocked
+    payload = "y" * 4000
+    committed: list[int] = []
     with pytest.raises(CapExceededError):
-        client.set_entity("project", "borealis", {"status": "active", "x": "y" * 500})
+        for i in range(500):
+            client.set_entity("project", f"row-{i}", {"status": "active", "x": payload})
+            committed.append(db_size_bytes(db_path))
 
-    # Server was consulted
-    assert len(server.calls) >= 1
+    assert committed, "no write committed before rejection"
+    # The over-cap write rolled back: the COMMITTED footprint never exceeds the
+    # cap (bounded by cap + ~one SQLite page of slack).
+    assert max(committed) <= cap + 8192, max(committed)
+    # The write path made NO successful synchronous server call: the offline
+    # transport never records one, and the authoritative gate is local.
+    assert server.calls == []
 
 
 def test_e2e_paid_tier_no_cap(tmp_path: Path) -> None:
