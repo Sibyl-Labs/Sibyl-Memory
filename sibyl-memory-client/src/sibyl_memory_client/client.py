@@ -1141,6 +1141,17 @@ class MemoryClient:
                 (arch_id, self._tenant_id, row["id"], category, name, row["body"], reason),
             )
             conn.execute("DELETE FROM entities WHERE id = ?", (row["id"],))
+            # v0.4.20 hardening: archiving is NOT footprint-neutral. SQLite does
+            # not return freed pages to the OS on DELETE (no auto_vacuum), so the
+            # INSERT into archived_entities grows page_count while the DELETE only
+            # moves the original's pages onto the freelist — the committed logical
+            # footprint (page_count * page_size) grows. With the switch to the
+            # non-blocking check_async above (which never raises), archive lost
+            # its only cap gate and could push the COMMITTED footprint past the
+            # cap. Re-run the authoritative in-transaction recheck (LOCAL-only, no
+            # network) so an archive that would tip the DB over the cap rolls back
+            # here, exactly like every other write path (restores CORE-9 / T1-3).
+            self._verify_committed_size(conn)
         return {"archived_id": arch_id, "original_id": row["id"]}
 
     # ------------------------------------------------------------------

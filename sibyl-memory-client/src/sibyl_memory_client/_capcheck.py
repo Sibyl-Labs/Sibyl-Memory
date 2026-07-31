@@ -193,17 +193,30 @@ class TierCache:
                 return None
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             server_exp = raw.get("server_expires_at")
+            # Hardening (v0.4.20): COERCE every typed field, don't just read it.
+            # ``cap_bytes`` in particular was previously stored verbatim
+            # (``raw.get("cap_bytes")``), so a booby-trapped cache file with a
+            # non-numeric ``cap_bytes`` (e.g. "big", [1,2], {}) produced a
+            # TierCacheEntry whose ``cap_bytes`` was a str/list/dict. The later
+            # ``new_size <= cached.cap_bytes`` comparison in the fast paths then
+            # raised a TypeError that escaped ``check_async`` — which is on the
+            # hot write path and is contractually "never raises", so a single
+            # planted cache file DoS'd every write. Coerce to int-or-None here
+            # (and catch TypeError below) so any unparseable value degrades to
+            # "corrupted cache, treat as missing" instead of crashing a caller.
+            cap_bytes_raw = raw.get("cap_bytes")
+            cap_bytes = int(cap_bytes_raw) if cap_bytes_raw is not None else None
             return TierCacheEntry(
                 account_id=raw["account_id"],
                 tier=raw["tier"],
                 checked_at=float(raw["checked_at"]),
-                cap_bytes=raw.get("cap_bytes"),
+                cap_bytes=cap_bytes,
                 last_known_size=int(raw.get("last_known_size", 0)),
                 grace_seconds=int(raw.get("grace_seconds", GRACE_PERIOD_SECONDS)),
                 server_expires_at=(float(server_exp) if server_exp is not None else None),
                 cache_token=raw.get("cache_token"),
             )
-        except (OSError, KeyError, ValueError, json.JSONDecodeError):
+        except (OSError, KeyError, ValueError, TypeError, json.JSONDecodeError):
             return None  # corrupted cache, treat as missing
 
     def store(self, entry: TierCacheEntry) -> None:
@@ -637,7 +650,31 @@ class CapGate:
         if (cached and cached.account_id == self.account_id
                 and self.account_id is not None):
             if cached.cap_bytes is None:
-                return None              # account-matched paid grant -> uncapped
+                # Account-matched paid grant. Uncapped ONLY while the grant is
+                # still fresh. v0.4.20 hardening: the write path now uses
+                # check_async (never blocks, never raises), so the SYNCHRONOUS
+                # server verification that ``check()`` used to perform on the hot
+                # path — which enforced subscription expiry and the bounded 4x
+                # fail-open ceiling via _refresh_and_check — no longer runs
+                # before the write. That made check_total_local the ONLY
+                # authoritative gate, and an unconditional "paid cache ->
+                # uncapped" here let a previously-paid account whose grant had
+                # gone STALE (grace elapsed) or whose subscription had EXPIRED
+                # ride the cached uncapped grant to UNBOUNDED footprint growth
+                # offline. Mirror the network fail-open bounds locally instead:
+                if cached.is_fresh:
+                    return None          # fresh account-matched paid grant -> uncapped
+                # Stale paid grant, cannot be re-verified here (no network).
+                if (cached.server_expires_at is not None
+                        and time.time() >= cached.server_expires_at):
+                    # Subscription genuinely ended per the server's own record:
+                    # no fail-open concession, enforce the free cap.
+                    return self._cap
+                # Grace elapsed but not provably expired: bound to the same 4x
+                # offline ceiling the network path (_refresh_and_check) uses, so
+                # the concession stays finite until the background refresh
+                # reconciles the tier.
+                return self._cap * FAIL_OPEN_CEILING_MULT
             if cached.is_fresh:
                 return cached.cap_bytes  # fresh cached free cap
         return self._cap                 # free default
