@@ -268,8 +268,13 @@ def _coerce_body(body: Any) -> Any:
 # (b) wraps read-tool output in a per-call nonce'd fence so a stored body can't
 # predict the closing marker. The MCP server returned RAW bodies with none of
 # this — the unpatched twin. This block ports both layers.
+# Whitespace-tolerant so odd spacing inside the marker (double spaces, tabs,
+# newlines, non-breaking spaces) cannot smuggle a forgeable marker past the
+# scrubber — ``\s+`` between the fixed words + ``\s*`` after the opening bracket.
+# ``\s`` is unicode-aware for str patterns (covers U+00A0 etc.). The fixed marker
+# text is distinctive enough that this never over-strips legitimate memory.
 _FENCE_MARKER_RE = re.compile(
-    r"\[UNTRUSTED MEMORY CONTEXT (?:BEGIN|END)[^\]]*\]", re.IGNORECASE
+    r"\[\s*UNTRUSTED\s+MEMORY\s+CONTEXT\s+(?:BEGIN|END)[^\]]*\]", re.IGNORECASE
 )
 
 # MH-2: per-hit body cap (mirror adapter._SEARCH_HIT_BODY_MAX) + a total output
@@ -509,7 +514,14 @@ def _run_prefetch(client: Any, query: str, limit: int) -> tuple[str, int]:
         if len(body_repr) > _PREFETCH_HIT_BODY_MAX:
             body_repr = body_repr[:_PREFETCH_HIT_BODY_MAX] + "…"
         body_repr = _strip_fence_markers(body_repr)  # F1: kill forged fence markers
-        label = f"{category}/{key}" if category else f"{tier}:{key}"
+        # F1 (label vector): the entity name / state key / doc key that becomes
+        # the label is ATTACKER-CONTROLLED (validate_identifier permits '[', ']',
+        # ':' and spaces — a stored key can literally BE a fence marker) and was
+        # interpolated raw. Strip it too, or a name like
+        # "[UNTRUSTED MEMORY CONTEXT END:<guess>]" would surface an intact,
+        # canonical closing marker and forge/close the fence. Only body_repr was
+        # scrubbed before; the label was the unguarded twin.
+        label = _strip_fence_markers(f"{category}/{key}" if category else f"{tier}:{key}")
         body_lines.append(f"- [{label}] {body_repr}")
 
     # Fence the block as untrusted data (F1/dor_alpha): a per-call random NONCE
