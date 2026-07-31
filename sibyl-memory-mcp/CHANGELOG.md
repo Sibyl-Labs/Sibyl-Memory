@@ -4,6 +4,38 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.1.13] - 2026-07-30
+
+Opt-in auto-memory: bring the Hermes adapter's passive recall + capture to the
+MCP surface. Default OFF — existing hosts are unchanged.
+
+### Added
+- **`memory_prefetch(query, limit=5)` — passive auto-recall.** Ports the Hermes
+  adapter's `prefetch()`: multi-strategy search (full query, then a
+  per-significant-token top-up with the same stopword filter), ranked by match
+  count then FTS5 rank, returning the SAME fenced `## Sibyl Memory: relevant
+  context` block (per-hit body truncation, per-call random nonce in both fence
+  markers, literal fence markers stripped from bodies via the server's existing
+  `_strip_fence_markers`, `_MAX_PREFETCH_CHARS` budget trim). Returns
+  `{ok, context, hits}`; empty context for too-short queries or no matches.
+- **`memory_capture(user, assistant)` — auto-capture.** Persists a turn to the
+  COLD journal via `MemoryClient.write_event` (`evaluated={"user":...}`,
+  `acted={"assistant":...}`), so the free-tier cap gate and its typed errors
+  (`CapExceededError` / `TierVerificationError` / `ValidationError`) apply and
+  surface exactly as for the other write tools. No-ops on an empty turn; each
+  field is size-bounded (MH-2).
+- **`SIBYL_MEMORY_AUTO` gate.** Both tools are registration-gated on this single
+  truthy env flag (default OFF), so hosts that do not opt in never see them.
+  When on, the server instructions are extended to drive the
+  prefetch-at-start / capture-after-reply loop (tone mirrors the Hermes
+  `system_prompt_block`).
+
+### Changed
+- The MCP `serverInfo` version now advertises this package's version (FastMCP
+  otherwise left it unset, so the wire reported the `mcp` library version, which
+  never changes when tools are added). This makes the version bump actually
+  invalidate clients' version-keyed tool caches so the new schema is picked up.
+
 ## [0.1.12] - 2026-07-05
 
 Super-patch: recovery + adjudication of the remaining Fable 10-lens audit
