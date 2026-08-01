@@ -26,6 +26,13 @@ Configuration:
     which defaults to <HERMES_HOME>/sibyl/memory.db so each profile has
     its own database.
 
+Environment overrides:
+    SIBYL_TENANT_ID (non-secret): when set to a non-empty value, it becomes
+    the active tenant and wins over any tenant in credentials.json, matching
+    the SDK provider precedence (explicit > credentials > default). Absent or
+    blank leaves tenant resolution untouched. This is an identifier, not a
+    secret, and is never logged as a value.
+
 v0.3.1 hardening (audit-remediation):
     - Hermes ABC + tool_error imports are guarded: module imports cleanly
       outside Hermes (tests, dry-run tooling). Off-Hermes the adapter
@@ -41,6 +48,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import secrets
 import threading
@@ -329,6 +337,15 @@ class SibylAdapter(MemoryProvider):
         from sibyl_memory_hermes import SibylMemoryProvider
 
         self._session_id = session_id
+
+        # Non-secret env override for the active tenant. An explicit SIBYL_TENANT_ID
+        # wins over anything in credentials.json, matching the SDK provider's
+        # documented precedence (explicit tenant_id > credentials > DEFAULT_TENANT).
+        # Absent or blank leaves tenant resolution untouched: the provider still
+        # auto-loads credentials.json and resolves tenant the same way it does today.
+        env_tenant = os.environ.get("SIBYL_TENANT_ID", "").strip()
+        tenant_override = env_tenant or None
+
         hermes_home_raw = kwargs.get("hermes_home") or str(_hermes_home())
         self._hermes_home = Path(hermes_home_raw)
         self._agent_context = kwargs.get("agent_context", "primary") or "primary"
@@ -356,11 +373,13 @@ class SibylAdapter(MemoryProvider):
         # to DEFAULT_TENANT pre-activation rather than crash on first run.
         self._sibyl = SibylMemoryProvider(
             db_path=db_path,
+            tenant_id=tenant_override,
             autoload_credentials=True,
             require_credentials=False,
         )
-        logger.info("Sibyl memory initialized: db=%s session=%s profile=%s",
-                    db_path, session_id, self._profile)
+        logger.info("Sibyl memory initialized: db=%s session=%s profile=%s tenant_override=%s",
+                    db_path, session_id, self._profile,
+                    "set" if tenant_override else "unset")
 
     @staticmethod
     def _safe_profile(name: str) -> str:
@@ -736,10 +755,11 @@ class SibylAdapter(MemoryProvider):
         for credentials that already live in the Sibyl native file -
         running both flows would diverge tenant ids and confuse users.
 
-        If a future version needs Hermes-side overrides (alt db_path,
-        explicit tenant_id for testing), add them here as non-secret
-        fields: keep secrets in credentials.json so there's one
-        source of truth.
+        Tenant selection has a non-secret env override, SIBYL_TENANT_ID, read in
+        initialize(). It is deliberately NOT surfaced as a config-schema field: it
+        is an env var, not a Hermes setup prompt, so `hermes memory setup` still
+        returns [] and never double-prompts. Secrets stay in credentials.json as the
+        single source of truth.
         """
         return []
 
