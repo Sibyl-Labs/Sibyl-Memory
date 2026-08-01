@@ -4,6 +4,17 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **First-party Docker packaging (repo-root `Dockerfile`,
+  `docker-compose.yml`, `.dockerignore`) and a README "Run with Docker"
+  section.** Non-root user, pinned slim Python base, no secrets baked in,
+  memory on a mounted volume. These are repo-level infra and docs only: the
+  published wheel contents are unchanged, so there is no version bump and no
+  new PyPI release for this addition. The Docker files ship via the GitHub
+  source sync.
+
 ## [0.1.12] - 2026-07-05
 
 Super-patch: recovery + adjudication of the remaining Fable 10-lens audit
