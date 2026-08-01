@@ -19,6 +19,14 @@ follows [SemVer](https://semver.org/).
   an env var, not a Hermes setup field. The tenant value is never logged; the
   init log records only whether an override was set.
 
+### Verified
+- **Runtime compatibility: hermes-agent 0.19.0** (current). The bundled adapter loads via
+  the live `agent.memory_provider.MemoryProvider` ABC (`_HERMES_AVAILABLE` true) and
+  instantiates cleanly (all four abstract methods implemented); the `SIBYL_TENANT_ID`
+  override is honored on `initialize()`. Three optional hooks added since v0.13
+  (`on_turn_start`, `on_session_end`, `backup_paths`) are not yet wired and inherit no-op
+  defaults (non-breaking; tracked as a follow-up).
+
 ## [0.3.13] - 2026-07-05
 
 Super-patch: recovery + adjudication of the remaining Fable 10-lens audit
