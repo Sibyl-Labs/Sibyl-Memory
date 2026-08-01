@@ -39,15 +39,25 @@ jobs:
           git add README.md
           git commit -q -m "hf: model-card frontmatter for the mirror" || echo "README unchanged"
 
-      - name: Push to Hugging Face Hub (retry on transient 429)
+      - name: Push snapshot to Hugging Face Hub (retry on transient 429)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           # Token via credential helper (read from env at call time): never in the
           # remote URL, argv, or any error message git might print.
           git config credential.helper '!f() { echo "username=sibyllabs"; echo "password=${HF_TOKEN}"; }; f'
+          # HF is a read-only distribution mirror; its pre-receive hook rejects binary
+          # blobs found ANYWHERE in git history (e.g. the pip-cache blobs that briefly
+          # entered history in 2026-07). Push a single flattened SNAPSHOT of the current
+          # tree instead of full history: permanently immune to any historical blob, and
+          # history has no value on a mirror (canonical source + full git history live on
+          # GitHub; install is via PyPI). The snapshot carries the README frontmatter
+          # committed above.
+          git checkout -q --orphan hf-snapshot
+          git add -A
+          git commit -q -m "Snapshot mirror of Sibyl-Labs/Sibyl-Memory@${GITHUB_SHA:-main}"
           for i in 1 2 3 4 5; do
-            if git push --force "https://huggingface.co/SibylLabsLLC/Sibyl-Memory" HEAD:main; then
+            if git push --force "https://huggingface.co/SibylLabsLLC/Sibyl-Memory" hf-snapshot:main; then
               echo "mirror pushed on attempt $i"; exit 0
             fi
             echo "attempt $i failed (likely transient HF 429); backing off"; sleep $((i*15))
