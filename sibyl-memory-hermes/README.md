@@ -90,7 +90,7 @@ Different intents, different lookups, no embedding model required. FTS5 covers f
 
 ## Hermes contract
 
-The Hermes plugin is implemented by a bundled adapter at `_hermes_plugin/adapter.py`. The adapter is copied into `$HERMES_HOME/plugins/sibyl/` by the `install-plugin` console script and is what Hermes' filesystem loader picks up. The adapter implements Hermes v0.13's `MemoryProvider` ABC and delegates every call to `SibylMemoryProvider`.
+The Hermes plugin is implemented by a bundled adapter at `_hermes_plugin/adapter.py`. The adapter is copied into `$HERMES_HOME/plugins/sibyl/` by the `install-plugin` console script and is what Hermes' filesystem loader picks up. The adapter implements Hermes v0.13's `MemoryProvider` ABC and delegates every call to `SibylMemoryProvider`. Verified against `hermes-agent` through **0.19.0** (current): the adapter loads via the live ABC and instantiates cleanly.
 
 The SDK class itself (`SibylMemoryProvider`) is framework-agnostic: it does not inherit from any framework ABC. This is the v0.3.0 architecture shift. v0.2.x and earlier attempted soft-inheritance via a broken import path; that path was removed and the adapter pattern replaced it.
 
