@@ -4,6 +4,39 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.4.20] - 2026-08-04
+
+### Fixed
+- **Any query containing a non-ASCII letter silently returned zero results on
+  the default search path.** Reported via Discord ticket 2026-08-04 as "Polish
+  diacritics break full-text search" (`search("Bełżyce")` -> 0 hits, the ASCII
+  spelling -> 3). The reported cause — FTS5 not folding diacritics — was not
+  the issue: `porter unicode61` folds ż ó ę ą ś ć ń ö ä ü é ñ č correctly, and a
+  direct `entities_fts MATCH` on the accented spelling returns the right rows.
+  The fault was in `multi_record._significant_tokens`, which tokenized with the
+  ASCII-only class `[A-Za-z0-9]+`. Any word containing a non-ASCII letter
+  shattered into fragments present nowhere in the index (`Bełżyce` -> `['yce']`,
+  `Gedenkstätte` -> `['gedenkst','tte']`), and `multi_record_search` abstains
+  (`return []`) as soon as one token has df=0 — so a single accented word zeroed
+  the entire cross-tier result. Now tokenizes with the Unicode-aware `\w+`,
+  which also matches the alnum+underscore tokenization already used by
+  `_sanitize_fts5_query` and `_match_tokens`, so all three tokenizers agree.
+
+  Scope was wider than reported: German was affected too (`Gedenkstätte` -> 0),
+  and every fully non-Latin query (Cyrillic, CJK, Greek, Arabic) produced no
+  tokens at all and returned `[]` unconditionally. The linker is only reached on
+  the untiered path, so passing `tiers=` explicitly was — and remains — a valid
+  workaround. `MemoryClient.search()` was never affected; the reachable callers
+  were `sibyl-memory-mcp`'s untiered `memory_search` and the Hermes provider.
+
+### Known limitation
+- `ł ß ø æ đ ı` have no canonical Unicode decomposition, so no `unicode61`
+  `remove_diacritics` setting folds them (verified against both `=1` and `=2`).
+  `Belzyce` therefore still does not match a stored `Bełżyce`. Fixing this needs
+  an explicit fold map applied at write **and** query time plus an index
+  rebuild, and is deliberately not bundled here. Pinned by a strict `xfail` in
+  `tests/test_unicode_query_tokens_2026_08_04.py` so the follow-up trips it.
+
 ## [0.4.19] - 2026-07-05
 
 Super-patch: recovery + adjudication of the remaining Fable 10-lens audit

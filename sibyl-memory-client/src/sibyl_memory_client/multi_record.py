@@ -81,8 +81,19 @@ _PER_TOKEN_LIMIT = 200         # recall depth per token
 _TIER_PRIORITY = {"entity": 0, "state": 0, "reference": 0, "journal": 1}
 
 
+# v0.4.20 (Discord ticket 2026-08-04): tokenize with the Unicode-aware `\w`,
+# not the ASCII-only `[A-Za-z0-9]`. The old class split any word containing a
+# non-ASCII letter into fragments that exist nowhere in the index
+# ("Bełżyce" -> ['yce'], "Gedenkstätte" -> ['gedenkst','tte']), and
+# multi_record_search abstains as soon as one token has df=0 — so a single
+# accented word silently zeroed the entire cross-tier result. Non-Latin scripts
+# (Cyrillic, CJK, Greek, Arabic) tokenized to [] and returned [] unconditionally.
+# FTS5 itself was never at fault: `porter unicode61` folds the decomposable
+# diacritics correctly. `\w` also matches the alnum+underscore tokenization
+# already used by _sanitize_fts5_query and _match_tokens, so all three
+# tokenizers now agree. Guarded by test_unicode_query_tokens_2026_08_04.py.
 def _significant_tokens(query: str):
-    return [t for t in re.findall(r"[A-Za-z0-9]+", query.lower())
+    return [t for t in re.findall(r"\w+", query.lower())
             if len(t) > 2 and t not in _STOP]
 
 
