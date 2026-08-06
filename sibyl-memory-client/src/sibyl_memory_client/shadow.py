@@ -69,6 +69,23 @@ SHADOW_TABLE = "search_shadow"
 # The four searchable tiers this shadow mirrors.
 _TIERS = ("entity", "state", "reference", "journal")
 
+# The complete set of shadow-maintenance triggers (single source of truth,
+# consumed by drop_shadow + the migration fast-path completeness check). entity/
+# state/reference each get AI/AU/AD (3x3=9); journal is append-only (AI only) =
+# 10 total. F1 (Fable hardening 2026-08-06): the v4 migration fast path must
+# require ALL 10 to be present, not just the shadow TABLE — an out-of-band
+# trigger drop would otherwise pass the table-only precondition and leave the
+# shadow silently un-maintained (writes stop propagating). Mirrors how the v3
+# FTS triggers self-heal on every open.
+SHADOW_TRIGGER_NAMES = (
+    "entities_ai_shadow", "entities_au_shadow", "entities_ad_shadow",
+    "state_documents_ai_shadow", "state_documents_au_shadow",
+    "state_documents_ad_shadow",
+    "reference_documents_ai_shadow", "reference_documents_au_shadow",
+    "reference_documents_ad_shadow",
+    "journal_events_ai_shadow",
+)
+
 
 def fold_sql(expr: str) -> str:
     """SQL expression applying ASCII ``lower()`` + FOLD_MAP to ``expr``.
@@ -269,6 +286,35 @@ def shadow_table_exists(conn: sqlite3.Connection) -> bool:
     return row is not None
 
 
+def shadow_trigger_count(conn: sqlite3.Connection) -> int:
+    """Count how many of the canonical shadow triggers currently exist.
+
+    Cheap ``sqlite_master`` lookup restricted to the known trigger names, so a
+    stray user trigger can never inflate the count. Returns 0 on any read error
+    (the safe direction: it forces the migration to re-run apply_shadow_migration
+    rather than short-circuit on a bad read)."""
+    placeholders = ", ".join("?" for _ in SHADOW_TRIGGER_NAMES)
+    try:
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM sqlite_master "
+            f"WHERE type='trigger' AND name IN ({placeholders})",
+            SHADOW_TRIGGER_NAMES,
+        ).fetchone()
+    except sqlite3.Error:
+        return 0
+    return int(row[0]) if row else 0
+
+
+def shadow_triggers_complete(conn: sqlite3.Connection) -> bool:
+    """True iff ALL 10 shadow-maintenance triggers are present (F1).
+
+    The v4 migration fast path uses this alongside ``shadow_table_exists`` so an
+    out-of-band trigger drop self-heals: a mismatch (count != 10) falls through
+    to the idempotent ``apply_shadow_migration``, which recreates every trigger
+    (CREATE TRIGGER IF NOT EXISTS) and re-backfills the shadow to consistency."""
+    return shadow_trigger_count(conn) == len(SHADOW_TRIGGER_NAMES)
+
+
 def apply_shadow_migration(conn: sqlite3.Connection) -> None:
     """Create the shadow table + triggers and (re)backfill all four tiers.
 
@@ -305,14 +351,7 @@ def drop_shadow(conn: sqlite3.Connection) -> None:
     """Drop the shadow table + all its triggers. Used by the portability heal and
     documented as the rollback recovery (restores exact v3 behaviour when paired
     with ``PRAGMA user_version = 3``). Base-table data is never touched."""
-    for name in (
-        "entities_ai_shadow", "entities_au_shadow", "entities_ad_shadow",
-        "state_documents_ai_shadow", "state_documents_au_shadow",
-        "state_documents_ad_shadow",
-        "reference_documents_ai_shadow", "reference_documents_au_shadow",
-        "reference_documents_ad_shadow",
-        "journal_events_ai_shadow",
-    ):
+    for name in SHADOW_TRIGGER_NAMES:
         conn.execute(f"DROP TRIGGER IF EXISTS {name}")
     conn.execute(f"DROP TABLE IF EXISTS {SHADOW_TABLE}")
 
@@ -505,7 +544,16 @@ def shadow_search(conn: sqlite3.Connection, tenant_id: str, query: str,
         if tier == "journal":
             if journal_used >= journal_cap:
                 continue
-        shaped = _shape_hit(conn, tenant_id, tier, k1, k2, txt, rank)
+        # F3 (Fable robustness 2026-08-06): shape ONE row at a time behind a
+        # try/except so a single undecodable base-table JSON body (corrupt row,
+        # partial write, manual edit — _shape_hit calls json.loads) is SKIPPED,
+        # not allowed to void the entire fallback result set. Mirrors the §4.2
+        # containment stance: a broken row must never take down search. Skips on
+        # any per-row error (decode or a transient row-level sqlite error).
+        try:
+            shaped = _shape_hit(conn, tenant_id, tier, k1, k2, txt, rank)
+        except Exception:
+            continue
         if shaped is None:
             continue
         if tier == "journal":

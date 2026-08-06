@@ -178,7 +178,9 @@ def test_free_tier_status_visible_without_gate(tmp_path: Path) -> None:
     free = MemoryClient.local(str(tmp_path / "f.db"))
     status = free.free_tier_status()
     assert status["tier"] == "free"
-    assert status["soft_cap_bytes"] == 2 * 1024 * 1024
+    # Free soft cap raised 2 MiB → 5 MiB (2026-08-06) to absorb the search shadow.
+    from sibyl_memory_client.lint import DEFAULT_SOFT_CAP_BYTES
+    assert status["soft_cap_bytes"] == DEFAULT_SOFT_CAP_BYTES == 5 * 1024 * 1024
     assert "upgrade_url" in status
     assert status["uncapped"] is False
 

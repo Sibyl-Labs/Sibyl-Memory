@@ -12,6 +12,14 @@ follows [SemVer](https://semver.org/).
   CJK / Thai / compound-token queries that previously returned nothing
   (100-language sweep: 21/100 → 100/100). No `SibylStore` code change. See
   `sibyl-memory-client` 0.5.0.
+- **Free-tier storage cap raised 2 MiB → 5 MiB (inherited).** The 0.5.0
+  folded-trigram search shadow roughly doubles on-disk footprint; the client's
+  default free cap (`FREE_TIER_CAP_BYTES`) was raised to 5 MiB (5,242,880 bytes)
+  to compensate, and `SibylStore(tier="free")` inherits it — no `SibylStore` code
+  change. `test_adv_fidelity.py::test_body_cap_boundary_no_truncation` (a ~1 MiB
+  value that occupies ~2.3 MB once the shadow mirrors it) now stores under the
+  5 MiB cap on its own merit rather than tripping `CapExceededError`; its cap
+  expectation was updated to the 5 MiB boundary. See `sibyl-memory-client` 0.5.0.
 
 ## [0.1.0] - 2026-07-05
 

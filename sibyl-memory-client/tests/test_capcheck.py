@@ -1,9 +1,14 @@
 """Tests for the v0.3.0 hard-cap enforcement.
 
 Three concerns covered:
-  1. Free-tier writes are blocked once the DB crosses 2 MB
+  1. Free-tier writes are blocked once the DB crosses the free cap (5 MiB as of
+     2026-08-06; was 2 MiB — raised to absorb the v0.5.0 search-shadow footprint)
   2. The server check fires at the boundary and updates the local tier cache
   3. The 7-day grace cache works (paid → uncapped writes without phoning home)
+
+Boundaries here reference ``FREE_TIER_CAP_BYTES`` rather than a hardcoded number
+so the cap value lives in exactly one place (the SDK constant) and these tests
+track it automatically.
 """
 from __future__ import annotations
 
@@ -20,6 +25,7 @@ from sibyl_memory_client import (
     TierCacheEntry,
     TierVerificationError,
 )
+from sibyl_memory_client._capcheck import FREE_TIER_CAP_BYTES
 
 
 # ----------------------------------------------------------------------
@@ -44,7 +50,7 @@ class FakeServer:
             return {"ok": True, "tier": self.tier, "cap_bytes": None}
         # Free tier → check size
         new = payload["current_size_bytes"] + payload["proposed_delta_bytes"]
-        cap = 2 * 1024 * 1024
+        cap = FREE_TIER_CAP_BYTES  # server simulates the current free cap (5 MiB)
         if new <= cap:
             return {"ok": True, "tier": "free", "cap_bytes": cap,
                     "remaining_bytes": cap - new}
@@ -79,14 +85,14 @@ def test_at_cap_server_says_no(tmp_path: Path) -> None:
     gate = CapGate(
         account_id="acc-1",
         session_token="sess-1",
-        db_size_fn=lambda: 2 * 1024 * 1024 - 100,  # 100 bytes below cap
+        db_size_fn=lambda: FREE_TIER_CAP_BYTES - 100,  # 100 bytes below cap
         local_tier_hint="free",
         cache=cache,
         check_fn=server,
     )
     with pytest.raises(CapExceededError) as exc:
         gate.check(proposed_delta_bytes=500)  # would push past cap
-    assert exc.value.cap == 2 * 1024 * 1024
+    assert exc.value.cap == FREE_TIER_CAP_BYTES
     assert "sibyllabs.org" in exc.value.upgrade_url
     assert len(server.calls) == 1  # one boundary check
 
@@ -99,7 +105,7 @@ def test_at_cap_server_upgrades_user(tmp_path: Path) -> None:
     gate = CapGate(
         account_id="acc-1",
         session_token="sess-1",
-        db_size_fn=lambda: 2 * 1024 * 1024 + 1000,  # past free cap
+        db_size_fn=lambda: FREE_TIER_CAP_BYTES + 1000,  # past free cap
         local_tier_hint="free",  # cached credentials say free
         cache=cache,
         check_fn=server,
@@ -269,7 +275,7 @@ def test_no_account_id_at_cap_blocks(tmp_path: Path) -> None:
     gate = CapGate(
         account_id=None,
         session_token=None,
-        db_size_fn=lambda: 2 * 1024 * 1024 + 100,
+        db_size_fn=lambda: FREE_TIER_CAP_BYTES + 100,
         local_tier_hint="free",
         cache=cache,
         check_fn=server,
@@ -283,7 +289,7 @@ def test_no_account_id_at_cap_blocks(tmp_path: Path) -> None:
 # ----------------------------------------------------------------------
 
 def test_e2e_free_tier_blocked_at_cap(tmp_path: Path) -> None:
-    """Writing past the 2 MB cap raises CapExceededError when the server
+    """Writing past the free cap raises CapExceededError when the server
     confirms free tier."""
     server = FakeServer(tier="free")
     cache = TierCache(tmp_path / "tc.json")
@@ -315,7 +321,7 @@ def test_e2e_free_tier_blocked_at_cap(tmp_path: Path) -> None:
     client.set_entity("project", "atlas", {"status": "active"})
 
     # Simulate being near the cap
-    fake_size[0] = 2 * 1024 * 1024 - 100
+    fake_size[0] = FREE_TIER_CAP_BYTES - 100
 
     # Next write would push over → server-checked → blocked
     with pytest.raises(CapExceededError):
@@ -363,7 +369,7 @@ def test_cache_file_is_0600(tmp_path: Path) -> None:
         account_id="acc-1",
         tier="free",
         checked_at=time.time(),
-        cap_bytes=2 * 1024 * 1024,
+        cap_bytes=FREE_TIER_CAP_BYTES,
     ))
     mode = oct((tmp_path / "tc.json").stat().st_mode)[-3:]
     assert mode == "600"
@@ -392,23 +398,23 @@ def test_cap_gate_invalidate_cache(tmp_path: Path) -> None:
 # ----------------------------------------------------------------------
 
 def test_free_tier_cap_aggregates_sibling_stores(tmp_path: Path) -> None:
-    """The FREE-tier cap is per ACCOUNT: two 1.5 MB stores on the same
-    machine must aggregate to 3 MB and trip the 2 MB cap, even though each
-    store is individually under it (Discord report 2026-06-11: 6.29 MB
-    across 9 stores on one FREE account)."""
+    """The FREE-tier cap is per ACCOUNT: two 3 MB stores on the same machine
+    must aggregate to 6 MB and trip the 5 MiB free cap, even though each store is
+    individually under it (Discord report 2026-06-11: 6.29 MB across 9 stores on
+    one FREE account)."""
     import os
     from sibyl_memory_client._capcheck import aggregate_db_size
 
-    # Primary store: 1.5 MB.
+    # Primary store: 3 MB (individually under the 5 MiB cap).
     primary = tmp_path / "workdir" / "memory.db"
     primary.parent.mkdir()
-    primary.write_bytes(b"\0" * 1_500_000)
+    primary.write_bytes(b"\0" * 3_000_000)
     # Sibling store at the SDK default location under the (isolated) home.
     sibling = Path(os.environ["HOME"]) / ".sibyl-memory" / "memory.db"
     sibling.parent.mkdir(parents=True, exist_ok=True)
-    sibling.write_bytes(b"\0" * 1_500_000)
+    sibling.write_bytes(b"\0" * 3_000_000)
 
-    assert aggregate_db_size(primary) == 3_000_000
+    assert aggregate_db_size(primary) == 6_000_000  # 6 MB > 5 MiB free cap
 
     server = FakeServer(tier="free")
     cache = TierCache(tmp_path / "tc.json")
@@ -422,11 +428,11 @@ def test_free_tier_cap_aggregates_sibling_stores(tmp_path: Path) -> None:
     )
     with pytest.raises(CapExceededError) as exc:
         gate.check(proposed_delta_bytes=100)
-    assert exc.value.cap == 2 * 1024 * 1024
+    assert exc.value.cap == FREE_TIER_CAP_BYTES
     # The boundary check reported the ACCOUNT-level aggregate, not the
     # single-store size.
     assert len(server.calls) == 1
-    assert server.calls[0]["current_size_bytes"] == 3_000_000
+    assert server.calls[0]["current_size_bytes"] == 6_000_000
 
 
 def test_aggregate_db_size_is_wal_inclusive(tmp_path: Path) -> None:
