@@ -15,6 +15,17 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
   new PyPI release for this addition. The Docker files ship via the GitHub
   source sync.
 
+## [0.1.13] - 2026-08-06
+
+### Changed
+- **Dependency floor raised to `sibyl-memory-client>=0.5.0`** to pick up
+  multi-language search (schema v4). The untiered `memory_search` path (which
+  routes through the client's `multi_record` linker + `MemoryClient.search`) now
+  resolves non-ASCII / non-Latin / CJK / Thai / compound-token queries that
+  previously returned nothing — a 100-language write+query sweep went from 21/100
+  to 100/100. No `server.py` code change: the improvement is entirely in the
+  client the MCP server calls. See `sibyl-memory-client` 0.5.0.
+
 ## [0.1.12] - 2026-07-05
 
 Super-patch: recovery + adjudication of the remaining Fable 10-lens audit

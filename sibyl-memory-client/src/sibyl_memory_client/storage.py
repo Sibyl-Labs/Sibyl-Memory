@@ -41,7 +41,16 @@ _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 # transactional (rolls back with a failed rebuild), and reading it is O(1):
 #   0                     -> FTS never verified/rebuilt under this client
 #   _FTS_REBUILD_MARKER   -> the FTS index was (re)built AND its txn committed
+#   _SHADOW_MARKER        -> the v0.5.0 folded-trigram search shadow (shadow.py)
+#                            was created + backfilled AND its txn committed
 _FTS_REBUILD_MARKER = 3
+
+# v0.5.0 multi-language search (spec §5): schema v3 -> v4 adds the standalone
+# folded-trigram ``search_shadow`` table + its maintenance triggers (shadow.py),
+# stamped in PRAGMA user_version by the SAME crash-atomic machinery as the FTS
+# rebuild marker. Marker >= _SHADOW_MARKER (and the shadow table present) is the
+# fast-path signal that v4 is fully applied.
+_SHADOW_MARKER = 4
 
 # v0.4.0 (2026-05-18, KAPPA RED finding): the SQLite DB holds every entity
 # body, not just credentials. docs.sibyllabs.org/memory/install claims 0600
@@ -446,8 +455,18 @@ class Storage:
            content can't detect the emptied case and neither can
            'integrity-check', which is why the marker is the sole signal.)
 
-        Safe to call repeatedly: once the marker is set and the shape is v3,
-        this short-circuits with no scan and no rebuild.
+        3. **v3 → v4 (0.5.0) — folded-trigram search shadow.** Create the
+           standalone ``search_shadow`` trigram table + its maintenance triggers
+           and backfill all four tiers (shadow.py), then stamp
+           ``_SHADOW_MARKER`` in the SAME transaction (same crash-atomic pattern
+           as #2). The fast path returns only when the shape is v3, the marker is
+           ``>= _SHADOW_MARKER``, AND the shadow table is present — so a dropped/
+           corrupt shadow (or a rolled-back v4 migration) is rebuilt on the next
+           open. The shadow is derived state: base-table data is never touched
+           and it is always rebuildable.
+
+        Safe to call repeatedly: once the marker is v4 and the shape is v3 and the
+        shadow is present, this short-circuits with no scan and no rebuild.
         """
         with self.connection() as conn:
             row = conn.execute(
@@ -463,10 +482,13 @@ class Storage:
                 or "content='entities'" not in sql.replace(" ", "")
             )
             marker = self._fts_marker(conn)
+            from .shadow import shadow_table_exists
+            shadow_ok = shadow_table_exists(conn)
 
-        if not needs_v3_shape and marker >= _FTS_REBUILD_MARKER:
-            # v3 external-content shape AND the index was rebuilt + committed
-            # under this client. Fast path: no scan, no rebuild.
+        if not needs_v3_shape and marker >= _SHADOW_MARKER and shadow_ok:
+            # v3 external-content shape, the index was rebuilt + committed under
+            # this client, AND the v4 shadow is present. Fast path: O(1), no scan,
+            # no rebuild, no shadow count(*) probe (spec §5).
             return
 
         try:
@@ -489,14 +511,27 @@ class Storage:
             # Rebuild the FTS indexes from the (intact) base tables and stamp the
             # crash-atomic marker in ONE transaction. If we crash here, the whole
             # transaction — marker included — rolls back, and the next open
-            # rebuilds again (the exact failure Real #3 fixes).
-            with self.transaction() as conn:
-                self._rebuild_fts_indexes(conn)
-                conn.execute(f"PRAGMA user_version = {int(_FTS_REBUILD_MARKER)}")
+            # rebuilds again (the exact failure Real #3 fixes). Only run when the
+            # v3 rebuild marker is not yet set (or we just reshaped); a healthy v3
+            # DB upgrading to v4 must not needlessly re-rebuild its FTS indexes.
+            if needs_v3_shape or marker < _FTS_REBUILD_MARKER:
+                with self.transaction() as conn:
+                    self._rebuild_fts_indexes(conn)
+                    conn.execute(f"PRAGMA user_version = {int(_FTS_REBUILD_MARKER)}")
+            # v3 → v4: create + backfill the folded-trigram search shadow and stamp
+            # _SHADOW_MARKER in ONE transaction (crash-atomic, same as #2). Also
+            # runs when marker is already >= 4 but the shadow table is missing —
+            # the heal for a dropped/corrupt shadow. apply_shadow_migration is
+            # idempotent (CREATE IF NOT EXISTS + DELETE + backfill).
+            if marker < _SHADOW_MARKER or not shadow_ok:
+                from .shadow import apply_shadow_migration
+                with self.transaction() as conn:
+                    apply_shadow_migration(conn)
+                    conn.execute(f"PRAGMA user_version = {int(_SHADOW_MARKER)}")
         except (sqlite3.Error, StorageError, SchemaError) as e:
             raise SchemaError(
                 f"FTS5 index migration/rebuild failed: {type(e).__name__}",
-                recovery="Back up your memory.db, then delete it; the next open will create a fresh v3 DB. Your base-table data is unaffected by an FTS index rebuild failure: the index rebuilds on the next open.",
+                recovery="Back up your memory.db, then delete it; the next open will create a fresh v4 DB. Your base-table data is unaffected by an FTS index / search-shadow rebuild failure: both rebuild from the base tables on the next open.",
             ) from e
 
     def _rebuild_fts_indexes(self, conn: sqlite3.Connection) -> None:
@@ -524,6 +559,12 @@ class Storage:
               FROM journal_events
             """
         )
+        # v0.5.0 (spec §5): the folded-trigram search shadow is derived state too,
+        # so the existing heal/rebuild path covers it. rebuild_shadow is a no-op
+        # when the shadow table is absent (e.g. a fresh DB whose shadow is created
+        # by the later v4 migration step, so this v3 rebuild must not require it).
+        from .shadow import rebuild_shadow
+        rebuild_shadow(conn)
 
     @staticmethod
     def _fts_marker(conn: sqlite3.Connection) -> int:

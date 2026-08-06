@@ -4,6 +4,119 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.5.0] - 2026-08-06
+
+Multi-language search. The default (linker) search path was effectively
+Latin-ASCII-only: a 100-language write+query sweep passed **21/100**. This
+release takes it to **100/100** (measured; deterministic dataset — one
+native-script write+query probe per language). Absorbs PR #25 (0.4.20).
+
+### Fixed
+
+- **Non-ASCII and non-Latin queries silently returned zero results on the
+  default (untiered) search path.** Reported via Discord as "Polish diacritics
+  break full-text search" (`search("Bełżyce")` → 0 hits). The fault was never
+  FTS5 (`porter unicode61` folds decomposable diacritics correctly and a direct
+  `entities_fts MATCH` returns the rows); it was the query-side linker plus an
+  index that cannot see inside an unbroken token. Five distinct mechanisms:
+  - **M1 — ASCII-only linker regex.** `_significant_tokens` tokenized with
+    `[A-Za-z0-9]+`, shattering any non-ASCII word into index-absent fragments
+    (`Bełżyce → ['yce']`) or none at all (Cyrillic/CJK/Greek/Arabic → `[]`), and
+    the linker abstains as soon as one token has df=0. (This is PR #25's fix.)
+  - **M2 — ASCII-calibrated length filter.** The `len(t) > 2` floor dropped
+    2-char CJK/Hangul words (the norm in those scripts) and Brahmic combining-mark
+    fragments, emptying the token list → unconditional abstain. Now applied to the
+    ASCII path ONLY; short non-ASCII tokens are kept.
+  - **M3 — lowercase-before-split.** `query.lower()` ran before tokenization, and
+    `'İstanbul'.lower()` emits `i` + combining U+0307, which then split. Now we
+    split first and case-fold per token only when the fold is length-preserving.
+  - **M4 — glued/single-token runs (index side).** `unicode61` indexes an
+    unbroken letter run as ONE token, so `MATCH '北京'` never hits `北京烤鸭`; same
+    shape for Thai fragment glue and Zulu/Bantu locative compounds. No query-side
+    fix can reach inside a token — this needs substring matching.
+  - **M5 — non-decomposable fold gap.** `ł ß ø æ đ ı œ þ ð` have no canonical
+    decomposition, so no `remove_diacritics` setting folds them; `Belzyce` cannot
+    find a stored `Bełżyce` without an explicit fold map on both sides.
+
+  Staged, measured recovery on the 100-language harness:
+  **21 (baseline) → 69 (PR #25 `\w+`) → 87 (script-aware linker, M1+M2+M3) →
+  100 (folded-trigram shadow, M4+M5).**
+
+### Added
+
+- **Script-aware `multi_record._significant_tokens` (M1+M2+M3).** Splits before
+  case-folding, keeps short non-ASCII tokens, and preserves **byte-identical
+  ASCII behaviour** (the pre-0.5.0 stopword + `len>2` + lower token stream is
+  unchanged). Supersedes PR #25's one-line `\w+` change.
+- **Folded-trigram search shadow (`shadow.py`, schema v4; M4+M5).** A single
+  standalone FTS5 `trigram` table (`search_shadow`) holding a FOLDED rendering of
+  all searchable text across the four tiers (entity/state/reference/journal),
+  maintained by DB-side triggers, consulted ONLY as a **zero-hit fallback** in
+  `MemoryClient.search()`. Gives substring semantics (matches inside CJK/Thai/
+  Bantu/compound tokens — and partial-word/typo'd-suffix queries in any language
+  as a free side effect) plus an explicit fold map that closes the
+  non-decomposable class in both directions (`Belzyce` ↔ `Bełżyce`).
+  - **Strictly additive → benchmark-safe by construction.** The fallback fires
+    only where today's answer is `[]`; a non-empty strict result is returned
+    untouched, so ranking/recall of existing hits (English recall, LongMemEval)
+    cannot regress. `prefix=True` searches are unaffected.
+  - **No native dependency.** `trigram` is built into SQLite; the shadow keeps the
+    plugin shipping pure-Python wheels. `remove_diacritics 1` is used on SQLite
+    ≥ 3.45 and a bare `trigram` below it (runtime-selected; a DB moved across that
+    boundary self-heals).
+  - **Correct under old clients.** The triggers are DB-resident SQL, so a 0.4.x
+    client writing to a migrated DB keeps the shadow in sync without knowing it
+    exists; old clients simply never query it.
+
+### Changed
+
+- **Schema v3 → v4 migration** (`storage.py`): creates `search_shadow` + its
+  triggers and backfills all four tiers, stamped in `PRAGMA user_version`
+  (`_SHADOW_MARKER = 4`) by the same crash-atomic machinery as the FTS-rebuild
+  marker — a crash anywhere rolls the whole transaction back and the next open
+  retries. The fast path returns only when the shape is v3, the marker is ≥ 4,
+  and the shadow table is present, so a dropped/corrupt shadow is rebuilt on the
+  next open. The shadow is derived state: base-table data is never touched and it
+  is always rebuildable.
+- PR #25's pinned `xfail` (`Belzyce` → `Bełżyce`) now passes as a normal test
+  (its `strict=True` marker is removed).
+
+### Rollback
+
+The shadow is additive and reversible. To restore exact v3 behaviour (base data
+is never affected):
+
+```sql
+DROP TRIGGER IF EXISTS entities_ai_shadow;
+DROP TRIGGER IF EXISTS entities_au_shadow;
+DROP TRIGGER IF EXISTS entities_ad_shadow;
+DROP TRIGGER IF EXISTS state_documents_ai_shadow;
+DROP TRIGGER IF EXISTS state_documents_au_shadow;
+DROP TRIGGER IF EXISTS state_documents_ad_shadow;
+DROP TRIGGER IF EXISTS reference_documents_ai_shadow;
+DROP TRIGGER IF EXISTS reference_documents_au_shadow;
+DROP TRIGGER IF EXISTS reference_documents_ad_shadow;
+DROP TRIGGER IF EXISTS journal_events_ai_shadow;
+DROP TABLE IF EXISTS search_shadow;
+PRAGMA user_version = 3;
+```
+
+### Notes / scope
+
+- **Free-tier cap (operator decision at release):** the folded copy + trigram
+  index roughly **doubles** the on-disk footprint (measured ~2.27× on an
+  English-heavy corpus), so free users reach the 2 MB cap roughly 2× sooner. This
+  release ships as-is and documents it (spec §6 default); alternatives (raise the
+  free cap, or exclude shadow bytes from cap sizing) are a server-side operator
+  call, not made here.
+- **Honest scope of 100/100:** one native-script write+query probe per language.
+  It does NOT claim full linguistic quality — no CJK/Thai word segmentation
+  (substring, not semantic), no cross-script/romanization (`Beijing` will not find
+  `北京`), no non-English stemming. Those remain for a future ICU/embedding tier.
+- Impact on existing queries is nil by construction: English/ASCII queries take
+  the identical pre-0.5.0 path and the fallback is never reached when the primary
+  index returns anything.
+
 ## [0.4.19] - 2026-07-05
 
 Super-patch: recovery + adjudication of the remaining Fable 10-lens audit
