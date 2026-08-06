@@ -36,12 +36,34 @@ from sibyl_memory_client.storage import db_size_bytes
 # CAP-1 — WAL-inclusive sizing: data that lands in the WAL is counted
 # ======================================================================
 
+class _NoCapGate:
+    """No-op cap gate: isolates the CAP-1 *sizing* tests from cap ENFORCEMENT.
+
+    v0.5.0 (schema v4): the folded-trigram search shadow roughly doubles the
+    on-disk footprint (spec §6), so these deliberately near-cap bulk writes now
+    trip the free 2 MB cap before the sizing assertion can run. These two tests'
+    SUBJECT is ``db_size_bytes``' WAL-inclusive sizing, NOT free-cap enforcement
+    (which is covered by the CAP-2 tests below and test_capcheck.py). Using a
+    no-op gate keeps the sizing invariant exercised with real writes while the
+    orthogonal cap doesn't interfere. The free-cap footprint change is the
+    spec §6 operator-gated decision, documented in the client CHANGELOG.
+    """
+
+    def check(self, *a, **k):
+        return None
+
+    def check_total_local(self, *a, **k):
+        return None
+
+
 def test_cap1_wal_resident_writes_are_counted(tmp_path: Path) -> None:
     """A committed write that still lives in memory.db-wal (no checkpoint forced)
     must be reflected in db_size_bytes. Sizing memory.db alone would under-report
     and let a free user write past the cap during a burst."""
     db = tmp_path / "memory.db"
-    c = MemoryClient.local(db, tenant_id="qa")
+    # No-op cap gate isolates this sizing test from the shadow's larger footprint
+    # tripping the free cap (see _NoCapGate note above; spec §6).
+    c = MemoryClient(Storage(str(db)), tenant_id="qa", cap_gate=_NoCapGate())
     # First write so the DB + WAL exist.
     c.set_entity("notes", "seed", {"text": "x"})
     baseline = db_size_bytes(db)
@@ -64,7 +86,9 @@ def test_cap1_size_helper_counts_wal_over_main_only(tmp_path: Path) -> None:
     """db_size_bytes (logical/page-count based) must exceed the bare memory.db
     file size when committed data is still in the WAL."""
     db = tmp_path / "memory.db"
-    c = MemoryClient.local(db, tenant_id="qa")
+    # No-op cap gate (see _NoCapGate note above; spec §6) so the shadow's larger
+    # footprint does not trip the free cap mid-write — subject is db_size_bytes.
+    c = MemoryClient(Storage(str(db)), tenant_id="qa", cap_gate=_NoCapGate())
     big = "z" * 100_000
     for i in range(6):
         c.set_entity("notes", f"e-{i}", {"text": big})

@@ -82,8 +82,50 @@ _TIER_PRIORITY = {"entity": 0, "state": 0, "reference": 0, "journal": 1}
 
 
 def _significant_tokens(query: str):
-    return [t for t in re.findall(r"[A-Za-z0-9]+", query.lower())
-            if len(t) > 2 and t not in _STOP]
+    # v0.5.0 multi-language search (spec §4.1; absorbs PR #25's 0.4.20 fix).
+    #
+    # PR #25 diagnosis (0.4.20, Discord ticket 2026-08-04): the old ASCII-only
+    # class ``[A-Za-z0-9]+`` shattered any word with a non-ASCII letter into
+    # index-absent fragments ("Bełżyce" -> ['yce']) and produced NO tokens for
+    # fully non-Latin scripts (Cyrillic/CJK/Greek/Arabic -> []); multi_record_search
+    # abstains (``return []``) as soon as one token has df=0, so a single accented
+    # word silently zeroed the whole cross-tier result. #25 moved to ``\w+``.
+    #
+    # This supersedes #25's one-line change with the SCRIPT-AWARE form, closing
+    # three residual mechanisms #25's ``\w+`` still left broken (measured Stage A,
+    # 87/100, zero ASCII behaviour change):
+    #   M1 non-ASCII split  — ``\w`` keeps the accented/foreign word whole.
+    #   M2 length filter    — the ``len(t) > 2`` floor is ASCII-calibrated: 2-char
+    #                         CJK/Hangul words are the NORM and Brahmic combining
+    #                         marks fragment to <=2 chars, so the floor dropped
+    #                         every token -> abstain. It is applied to the ASCII
+    #                         path ONLY; short non-ASCII tokens are kept.
+    #   M3 case-fold order  — ``query.lower()`` BEFORE splitting changes length on
+    #                         the U+0130 dotted-I class ('İstanbul'.lower() emits
+    #                         i + U+0307), which ``\w+`` then splits. We split
+    #                         FIRST and case-fold per token only when it is a safe
+    #                         1:1 fold (len unchanged); otherwise keep the raw
+    #                         token (FTS5 does its own case folding downstream).
+    #
+    # ASCII invariant: pure-ASCII queries produce the EXACT 0.4.19 token stream
+    # (stopword drop + len>2 + lower). Guarded by
+    # test_unicode_query_tokens_2026_08_04.py (#25) and
+    # test_script_aware_tokens_2026_08_06.py.
+    toks = []
+    for t in re.findall(r"\w+", query):          # split BEFORE case-folding (M3)
+        if t.isascii():
+            t = t.lower()
+            if len(t) > 2 and t not in _STOP:    # ASCII path: UNCHANGED semantics
+                toks.append(t)
+        else:
+            low = t.lower()
+            # Case-fold only when it is a safe 1:1 fold (e.g. Cyrillic, Greek);
+            # keep the raw token where folding changes length (U+0130 dotted-I).
+            # FTS5 does its own case folding, so the raw token is always safe to
+            # pass. Short non-ASCII tokens (2-char CJK words, Brahmic fragments)
+            # are REAL units and are kept (no len>2 filter here — M2).
+            toks.append(low if len(low) == len(t) else t)
+    return toks
 
 
 # CORE-6/MH-3 (2026-06-25 pre-launch audit): cap the per-token recall fan-out.

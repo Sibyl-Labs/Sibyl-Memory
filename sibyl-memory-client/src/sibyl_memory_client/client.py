@@ -1327,7 +1327,39 @@ class MemoryClient:
             hits = self._search_strict(relaxed, limit=limit, prefix=False, tiers=tiers)
             if hits:
                 return hits
+        # v0.5.0 multi-language search (spec §4.3): zero-hit folded-trigram shadow
+        # fallback. Strictly additive — reached ONLY when the strict pass AND every
+        # relaxed variant produced nothing, so a non-empty result is never
+        # reordered or dropped and English/ranking behaviour cannot regress.
+        # prefix queries already returned above (prefix intent != substring
+        # fallback). The shadow gives substring semantics (matches inside an
+        # unbroken CJK/Thai/Bantu/compound token) + a folded copy for the
+        # non-decomposable ł/ß/ø/... class, in any language.
+        if not hits:
+            hits = self._shadow_fallback(query, limit=limit, tiers=tiers)
         return hits
+
+    def _shadow_fallback(self, query: str, *, limit: int = 20,
+                         tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+        """Delegate a zero-hit search to the folded-trigram shadow (shadow.py).
+
+        A no-op ``[]`` when the shadow table is absent (a pre-migration or
+        read-only DB), and the shadow's own execution is error-contained
+        (OperationalError/DatabaseError -> ``[]`` + heal), so a broken or missing
+        shadow can never take down the primary search path. Any unexpected error
+        here is swallowed to ``[]`` for the same reason."""
+        # CORE-5: honor the same limit clamp as the primary path so the fallback
+        # can never broaden a negative/huge limit into SQLite's unbounded scan.
+        limit = _clamp_limit(limit)
+        if not limit:
+            return []
+        try:
+            from .shadow import shadow_search
+            with self._storage.connection() as conn:
+                return shadow_search(conn, self._tenant_id, query,
+                                     limit=limit, tiers=tiers)
+        except Exception:
+            return []
 
     def _search_strict(self, query: str, *, limit: int = 20, prefix: bool = False,
                        tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:

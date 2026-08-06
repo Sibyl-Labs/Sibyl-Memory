@@ -291,7 +291,11 @@ def test_real3_fresh_open_stamps_rebuild_marker(tmp_path: Path) -> None:
     c = MemoryClient.local(db, tenant_id="qa")
     c.set_entity("notes", "seed", {"text": "hello"})
     with c._storage.connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        # v0.5.0 (schema v4): the crash-atomic PRAGMA user_version marker now
+        # terminates at _SHADOW_MARKER (4) — stamped only after the FTS rebuild
+        # AND the folded-trigram shadow are committed. 4 >= _FTS_REBUILD_MARKER,
+        # so the "FTS was rebuilt" guarantee this test pins still holds.
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
     c._storage.close()
 
 
@@ -325,7 +329,9 @@ def test_real3_crashed_migration_rebuilds_fts_on_open(tmp_path: Path) -> None:
     assert c2.search("unique_zebra_token_xyz"), "entity FTS was not rebuilt after crash"
     assert c2.search("unique_journal_thing_qpr"), "journal FTS was not rebuilt after crash"
     with c2._storage.connection() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3  # marker restamped
+        # v0.5.0 (schema v4): marker restamped to the v4 terminal value after the
+        # crash rebuild (FTS rebuilt + shadow rebuilt/committed).
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4  # marker restamped
     c2._storage.close()
 
 

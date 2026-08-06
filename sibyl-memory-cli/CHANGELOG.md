@@ -4,6 +4,15 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.20] - 2026-08-06
+
+### Changed
+- **Dependency floor raised to `sibyl-memory-client>=0.5.0`** for multi-language
+  search (schema v4). `sibyl search` / `sibyl recall` now resolve non-ASCII,
+  non-Latin, CJK, Thai, and compound-token queries that previously returned
+  nothing (100-language sweep: 21/100 → 100/100). No CLI code change. See
+  `sibyl-memory-client` 0.5.0.
+
 ## [0.3.19] - 2026-07-05
 
 Super-patch: recovery + adjudication of the remaining Fable 10-lens audit

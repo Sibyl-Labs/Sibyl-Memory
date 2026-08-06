@@ -4,6 +4,15 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.15] - 2026-08-06
+
+### Changed
+- **Dependency floor raised to `sibyl-memory-client>=0.5.0`** for multi-language
+  search (schema v4). The Hermes provider's `search_multi_record` path now
+  resolves non-ASCII / non-Latin / CJK / Thai / compound-token queries that
+  previously returned nothing (100-language sweep: 21/100 → 100/100). No adapter
+  code change. See `sibyl-memory-client` 0.5.0.
+
 ## [0.3.14] - 2026-07-30
 
 ### Added

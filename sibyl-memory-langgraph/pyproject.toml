@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sibyl-memory-langgraph"
-version = "0.1.0"
+version = "0.1.1"
 description = "LangGraph BaseStore backed by Sibyl Memory (SQLite + FTS5, no vector database, no embeddings)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,7 @@ license = "MIT"
 authors = [{ name = "Sibyl Labs, LLC" }]
 keywords = ["langgraph", "agent-memory", "memory", "sibyl", "fts5", "sqlite"]
 dependencies = [
-    "sibyl-memory-client>=0.4.15",
+    "sibyl-memory-client>=0.5.0",
     "langgraph-checkpoint>=2.0.0,<3",
 ]
 

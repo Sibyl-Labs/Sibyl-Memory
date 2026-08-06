@@ -4,6 +4,15 @@ All notable changes to `sibyl-memory-langgraph` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.1.1] - 2026-08-06
+
+### Changed
+- **Dependency floor raised to `sibyl-memory-client>=0.5.0`** for multi-language
+  search (schema v4). `SibylStore` search now resolves non-ASCII / non-Latin /
+  CJK / Thai / compound-token queries that previously returned nothing
+  (100-language sweep: 21/100 → 100/100). No `SibylStore` code change. See
+  `sibyl-memory-client` 0.5.0.
+
 ## [0.1.0] - 2026-07-05
 
 Initial release. `SibylStore`, a LangGraph `BaseStore` backed by Sibyl Memory's
