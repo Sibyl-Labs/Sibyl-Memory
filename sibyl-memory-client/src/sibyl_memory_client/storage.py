@@ -482,13 +482,23 @@ class Storage:
                 or "content='entities'" not in sql.replace(" ", "")
             )
             marker = self._fts_marker(conn)
-            from .shadow import shadow_table_exists
+            from .shadow import shadow_table_exists, shadow_triggers_complete
             shadow_ok = shadow_table_exists(conn)
+            # F1 (Fable hardening 2026-08-06): the shadow TABLE existing is not
+            # sufficient — the shadow is only kept consistent by its 10
+            # maintenance triggers. An out-of-band trigger drop leaves the table
+            # present but stale, so the fast path must ALSO require all 10
+            # triggers (cheap sqlite_master count). On mismatch we fall through
+            # to the idempotent apply_shadow_migration, which recreates every
+            # trigger — the same self-heal the v3 FTS triggers get on each open.
+            shadow_triggers_ok = shadow_triggers_complete(conn)
 
-        if not needs_v3_shape and marker >= _SHADOW_MARKER and shadow_ok:
+        if (not needs_v3_shape and marker >= _SHADOW_MARKER
+                and shadow_ok and shadow_triggers_ok):
             # v3 external-content shape, the index was rebuilt + committed under
-            # this client, AND the v4 shadow is present. Fast path: O(1), no scan,
-            # no rebuild, no shadow count(*) probe (spec §5).
+            # this client, AND the v4 shadow is present WITH its full trigger set.
+            # Fast path: O(1), no scan, no rebuild, no shadow count(*) probe
+            # (spec §5).
             return
 
         try:
@@ -520,10 +530,12 @@ class Storage:
                     conn.execute(f"PRAGMA user_version = {int(_FTS_REBUILD_MARKER)}")
             # v3 → v4: create + backfill the folded-trigram search shadow and stamp
             # _SHADOW_MARKER in ONE transaction (crash-atomic, same as #2). Also
-            # runs when marker is already >= 4 but the shadow table is missing —
-            # the heal for a dropped/corrupt shadow. apply_shadow_migration is
-            # idempotent (CREATE IF NOT EXISTS + DELETE + backfill).
-            if marker < _SHADOW_MARKER or not shadow_ok:
+            # runs when marker is already >= 4 but the shadow table is missing OR
+            # any of its 10 triggers were dropped out-of-band (F1) — the heal for
+            # a dropped/corrupt shadow. apply_shadow_migration is idempotent
+            # (CREATE IF NOT EXISTS + DELETE + backfill), so recreating triggers
+            # and re-backfilling restores shadow↔base consistency.
+            if marker < _SHADOW_MARKER or not shadow_ok or not shadow_triggers_ok:
                 from .shadow import apply_shadow_migration
                 with self.transaction() as conn:
                     apply_shadow_migration(conn)

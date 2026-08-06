@@ -162,3 +162,40 @@ def test_shadow_internal_containment_returns_empty(tmp_path):
         proxy = _FailMatchConn(conn)
         # 'Belzyce' -> match_toks path -> the MATCH raises -> contained -> []
         assert shadow.shadow_search(proxy, "t1", "Belzyce", limit=10) == []
+
+
+# --------------------------------------------------------------------------
+# F3: one undecodable base-table row is SKIPPED, not the whole result set
+# --------------------------------------------------------------------------
+
+def test_shadow_skips_one_undecodable_row_not_whole_set(tmp_path):
+    """F3 (Fable robustness 2026-08-06): two entities both match the shadow-only
+    query '北京'. Corrupt ONE entity's base-table body to invalid JSON so
+    _shape_hit's json.loads raises for that row. shadow_search must SKIP the bad
+    row and still return the good one — never propagate the decode error, never
+    void the entire fallback result set."""
+    db = tmp_path / "m.db"
+    c = MemoryClient.local(db, tenant_id="t1")
+    c.set_entity("places", "good", {"text": "北京烤鸭"})
+    c.set_entity("places", "bad", {"text": "北京市"})
+    c.storage.close()
+
+    # Corrupt 'bad' to invalid JSON that STILL contains 北京, bypassing the
+    # json_valid CHECK. The AU trigger re-folds the raw text into the shadow (pure
+    # SQL string ops, no JSON decode), so 'bad' still MATCHes 北京 in the shadow —
+    # the failure only surfaces when _shape_hit decodes the base body.
+    raw = sqlite3.connect(str(db))
+    raw.execute("PRAGMA ignore_check_constraints = ON")
+    raw.execute(
+        "UPDATE entities SET body = ? WHERE tenant_id=? AND category=? AND name=?",
+        ('{"text":"北京市", BROKEN', "t1", "places", "bad"),
+    )
+    raw.commit()
+    raw.close()
+
+    c2 = MemoryClient.local(db, tenant_id="t1")
+    with c2.storage.connection() as conn:
+        hits = shadow.shadow_search(conn, "t1", "北京", limit=10)
+    keys = {h["key"] for h in hits}
+    assert "good" in keys, keys        # good row survives the skip
+    assert "bad" not in keys, keys     # undecodable row skipped, set not voided

@@ -317,6 +317,59 @@ def test_dropped_shadow_rebuilt_on_next_open(tmp_path):
     assert any(h["key"] == "beijing" for h in c2.search("北京", limit=10))
 
 
+def test_dropped_shadow_trigger_self_heals_on_next_open(tmp_path, monkeypatch):
+    """F1 (Fable hardening 2026-08-06): the v4 fast path requires the shadow
+    TABLE *and* all 10 maintenance triggers. An out-of-band drop of ONE trigger
+    (table intact, marker still 4, other 9 triggers present) must NOT be read as
+    'already migrated' — otherwise the shadow silently stops being maintained
+    and a later query risks a stale/false-positive fallback hit. The next open
+    must fall through to the idempotent apply_shadow_migration: recreate the
+    trigger (count back to 10) and re-backfill so shadow == base again."""
+    path = tmp_path / "trigheal.db"
+    c = MemoryClient.local(path, tenant_id="t1")
+    c.set_entity("places", "beijing", {"t": "北京烤鸭"})
+    c.storage.close()
+
+    # out-of-band: drop exactly ONE shadow trigger; leave table, marker, others.
+    conn = _raw(path)
+    conn.execute("DROP TRIGGER IF EXISTS entities_ai_shadow")
+    dropped_count = shadow.shadow_trigger_count(conn)
+    table_present = shadow.shadow_table_exists(conn)
+    conn.close()
+    assert _user_version(path) == 4                       # marker untouched
+    assert table_present                                  # table still there
+    assert dropped_count == len(shadow.SHADOW_TRIGGER_NAMES) - 1 == 9
+    assert not (dropped_count == len(shadow.SHADOW_TRIGGER_NAMES))  # incomplete
+
+    # reopen: table present + marker>=4, but triggers incomplete -> self-heal.
+    c2 = MemoryClient.local(path, tenant_id="t1")
+    with c2.storage.connection() as conn:
+        assert shadow.shadow_trigger_count(conn) == 10           # recreated
+        assert shadow.shadow_triggers_complete(conn)
+        assert shadow.shadow_table_exists(conn)
+        # existing row survived the DELETE+re-backfill (shadow still consistent)
+        assert _shadow_txt(conn, "entity", "beijing", "t1") is not None
+    # the recreated AI trigger propagates NEW writes to the shadow again
+    c2.set_entity("places", "shanghai", {"t": "上海"})
+    with c2.storage.connection() as conn:
+        assert _shadow_txt(conn, "entity", "shanghai", "t1") is not None
+    # and the healed folded content is reachable through the fallback
+    assert any(h["key"] == "shanghai" for h in c2.search("上海", limit=10))
+    c2.storage.close()
+
+    # third open: trigger set complete again -> fast path, no migration re-run.
+    calls = {"n": 0}
+    orig = shadow.apply_shadow_migration
+
+    def counting(conn):
+        calls["n"] += 1
+        return orig(conn)
+
+    monkeypatch.setattr(shadow, "apply_shadow_migration", counting)
+    MemoryClient.local(path, tenant_id="t1")
+    assert calls["n"] == 0
+
+
 # --------------------------------------------------------------------------
 # Cross-tenant isolation (CORE-3) on both shadow query paths
 # --------------------------------------------------------------------------

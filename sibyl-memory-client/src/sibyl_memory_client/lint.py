@@ -49,14 +49,16 @@ from .storage import Storage, db_size_bytes
 SEVERITIES = ("critical", "warning", "info")
 # Free-tier soft cap. Tuned 2026-05-15 to land the power-user conversion event
 # in roughly 1-2 weeks of real use. Paid tiers remove the cap entirely.
-DEFAULT_SOFT_CAP_BYTES = 2 * 1024 * 1024  # 2 MB free-tier cap
+# Raised 2026-08-06 (operator directive) from 2 MiB → 5 MiB to compensate for the
+# v0.5.0 folded-trigram search shadow's added on-disk footprint.
+DEFAULT_SOFT_CAP_BYTES = 5 * 1024 * 1024  # 5 MB free-tier cap
 DEFAULT_STALE_DAYS = 90
 DEFAULT_FLAG_RECENCY_DAYS = 30
 EXPECTED_SCHEMA_VERSION = 2
 
 # Tier → soft cap mapping. None means uncapped.
 TIER_SOFT_CAPS: dict[str, int | None] = {
-    "free": 2 * 1024 * 1024,        # 2 MB
+    "free": 5 * 1024 * 1024,        # 5 MB (raised 2026-08-06, see DEFAULT_SOFT_CAP_BYTES)
     "sync": None,                    # uncapped: paid subscription
     "team": None,                    # uncapped: paid subscription
     "lifetime": None,                # uncapped: one-time payment

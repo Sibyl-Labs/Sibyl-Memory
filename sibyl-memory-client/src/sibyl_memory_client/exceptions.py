@@ -90,7 +90,7 @@ class TierGateError(SibylMemoryError):
 
 
 class CapExceededError(SibylMemoryError):
-    """Raised when a free-tier user tries to write past the 2 MB cap.
+    """Raised when a free-tier user tries to write past the 5 MB cap.
 
     Carries the upgrade URL so callers (CLIs, IDEs, agent frameworks) can
     render a clean upgrade prompt.
@@ -103,7 +103,7 @@ class CapExceededError(SibylMemoryError):
 
     code = "CAP_EXCEEDED"
     recovery = (
-        "Upgrade to remove the 2 MB cap. See "
+        "Upgrade to remove the 5 MB cap. See "
         "https://docs.sibyllabs.org/memory/tiers for options "
         "(Sibyl Stake / Sync / Lifetime / Enterprise)."
     )
@@ -137,7 +137,7 @@ class TierVerificationError(SibylMemoryError):
     code = "TIER_VERIFY_FAILED"
     recovery = (
         "Connect to the internet so the SDK can verify your account, or "
-        "stay under the 2 MB free-tier cap until you're online."
+        "stay under the 5 MB free-tier cap until you're online."
     )
 
 
@@ -156,6 +156,6 @@ class TierAuthError(TierVerificationError):
     code = "TIER_AUTH_FAILED"
     recovery = (
         "Your account could not be authorized (token invalid, expired, or "
-        "revoked). Re-run `sibyl init` to refresh credentials. The free 2 MB "
+        "revoked). Re-run `sibyl init` to refresh credentials. The free 5 MB "
         "cap is enforced until your account is re-verified."
     )

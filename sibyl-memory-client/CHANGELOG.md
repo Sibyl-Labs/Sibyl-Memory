@@ -75,11 +75,32 @@ native-script write+query probe per language). Absorbs PR #25 (0.4.20).
   (`_SHADOW_MARKER = 4`) by the same crash-atomic machinery as the FTS-rebuild
   marker — a crash anywhere rolls the whole transaction back and the next open
   retries. The fast path returns only when the shape is v3, the marker is ≥ 4,
-  and the shadow table is present, so a dropped/corrupt shadow is rebuilt on the
-  next open. The shadow is derived state: base-table data is never touched and it
-  is always rebuildable.
+  the shadow table is present, **and all 10 shadow triggers exist** (F1), so a
+  dropped/corrupt shadow — including an out-of-band drop of a single maintenance
+  trigger — is rebuilt on the next open. The shadow is derived state: base-table
+  data is never touched and it is always rebuildable.
 - PR #25's pinned `xfail` (`Belzyce` → `Bełżyce`) now passes as a normal test
   (its `strict=True` marker is removed).
+
+### Hardening (post-review, 2026-08-06)
+
+- **F1 — migration fast path requires the full trigger set, not just the table.**
+  The v4 fast-path precondition previously checked only that the `search_shadow`
+  TABLE existed. An out-of-band drop of any of the 10 maintenance triggers left
+  the table present but silently un-maintained (writes stopped propagating to the
+  shadow), risking a stale/false-positive fallback hit. The fast path now also
+  requires the shadow trigger count to be exactly 10 (cheap `sqlite_master`
+  lookup, `shadow.shadow_triggers_complete`); on mismatch it falls through to the
+  idempotent `apply_shadow_migration`, which recreates every trigger and
+  re-backfills — mirroring how the v3 FTS triggers self-heal on each open.
+  Regression test drops one trigger out-of-band and asserts the count returns to
+  10 and the shadow is consistent again.
+- **F3 — one undecodable row no longer voids the fallback.** In
+  `shadow.shadow_search`, the per-row `_shape_hit` join back to the base table is
+  now wrapped so a single row with an undecodable JSON body (corrupt row, partial
+  write, manual edit) is SKIPPED rather than raising out of the whole fallback and
+  losing every other valid hit — consistent with the §4.2 "a broken shadow must
+  never take down search" containment stance.
 
 ### Rollback
 
@@ -103,12 +124,18 @@ PRAGMA user_version = 3;
 
 ### Notes / scope
 
-- **Free-tier cap (operator decision at release):** the folded copy + trigram
-  index roughly **doubles** the on-disk footprint (measured ~2.27× on an
-  English-heavy corpus), so free users reach the 2 MB cap roughly 2× sooner. This
-  release ships as-is and documents it (spec §6 default); alternatives (raise the
-  free cap, or exclude shadow bytes from cap sizing) are a server-side operator
-  call, not made here.
+- **Free-tier cap raised 2 MiB → 5 MiB (operator directive, spec §6):** the
+  folded copy + trigram index roughly **doubles** the on-disk footprint (measured
+  ~2.27× on an English-heavy corpus), which would have made free users reach the
+  old 2 MiB cap roughly 2× sooner. Rather than ship that regression, the default
+  free storage cap is raised to **5 MiB (5,242,880 bytes = `5 * 1024 * 1024`)** so
+  a free user keeps roughly the same effective headroom they had before the shadow
+  existed. The client constants `_capcheck.FREE_TIER_CAP_BYTES` and
+  `lint.DEFAULT_SOFT_CAP_BYTES` / `TIER_SOFT_CAPS["free"]` now default to 5 MiB,
+  and the user-facing cap messages say "5 MB". **Deploy-time parity (outside this
+  repo):** the server `pricing.js` default `cap_free_bytes` and the server
+  `sibyl_plugin.config.cap_free_bytes` must also be set to `5242880` so the SDK
+  and server agree on the cap.
 - **Honest scope of 100/100:** one native-script write+query probe per language.
   It does NOT claim full linguistic quality — no CJK/Thai word segmentation
   (substring, not semantic), no cross-script/romanization (`Beijing` will not find

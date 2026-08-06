@@ -349,9 +349,20 @@ def test_deep_nesting_overlimit_raises_clean_valueerror():
 
 def test_body_cap_boundary_no_truncation():
     """Body just under the ~1 MiB per-value cap stores intact; just over raises
-    a clean ValidationError. Never silently truncated."""
+    a clean ValidationError. Never silently truncated.
+
+    Cap interplay (v0.5.0 → 2026-08-06): the ~1 MiB ``under`` value, once the
+    v0.5.0 folded-trigram search shadow mirrors it, occupies ~2.3 MB on disk —
+    which TRIPPED the old 2 MiB free-tier cap and made this write fail with a
+    CapExceededError (the shadow-footprint regression). The free cap was raised
+    to 5 MiB (operator directive; see sibyl-memory-client FREE_TIER_CAP_BYTES),
+    so the shadow-inclusive ~2.3 MB now fits comfortably under the 5 MiB free
+    cap and the write succeeds on its own merit — real enforcement, not a
+    mocked/no-op gate. The ``over`` case still exercises the independent
+    per-value 1 MiB body limit (ValidationError before any cap check)."""
     s = fresh()
     try:
+        # ~1 MiB value → ~2.3 MB shadow-inclusive footprint: under the 5 MiB free cap.
         under = "a" * (1024 * 1024 - 2000)
         s.put(NS, "u", {"d": under})
         assert s.get(NS, "u").value["d"] == under
