@@ -506,7 +506,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     upgrade_url = f"{UPGRADE_BASE}?session={session_token}"
 
     print()
-    print(a.section_header("upgrade", subtitle="lift the 2 MB free-tier cap"))
+    print(a.section_header("upgrade", subtitle="lift the 5 MB free-tier cap"))
     print()
     print(a.kv("Account", short(account_id)))
     print(a.kv("Current tier", current_tier.upper(), value_color="accent"))
@@ -1548,7 +1548,7 @@ def cmd_memory(args: argparse.Namespace) -> int:
     Opens the resolved DB read-only via the SDK; never writes. Respects --db so
     you can inspect any split-brain store that `sibyl status` surfaces.
     """
-    from sibyl_memory_client import MemoryClient
+    from sibyl_memory_client import DEFAULT_TENANT, MemoryClient
 
     db_path = Path(args.db).expanduser()
     print()
@@ -1556,7 +1556,18 @@ def cmd_memory(args: argparse.Namespace) -> int:
         print(a.warn_line(f"No memory store at {db_path}."))
         print(a.dim("  Run `sibyl status` to see every store on this machine."))
         return 1
-    client = MemoryClient.local(path=db_path)
+    # F1 (Kravento PL eval 2026-08-12): resolve the ACTIVATED tenant exactly like
+    # the MCP server does (Contract T ladder: tenant_id -> account_id ->
+    # DEFAULT_TENANT), so `sibyl memory list/search/recall` reads the same tenant
+    # the MCP writes. Without this the CLI always read DEFAULT_TENANT and an
+    # activated account saw "(no entities)" for a perfectly healthy store. `--creds`
+    # is a root parser arg so args.credentials is present on the real path; a
+    # direct cmd_memory(Namespace(...)) call (CLI-7 unit tests) may omit it, so we
+    # fall back to the parser default resolved at call time.
+    cred_arg = getattr(args, "credentials", None) or str(DEFAULT_CRED_PATH)
+    creds = read_credentials(Path(cred_arg).expanduser()) or {}
+    tenant_id = creds.get("tenant_id") or creds.get("account_id") or DEFAULT_TENANT
+    client = MemoryClient.local(path=db_path, tenant_id=tenant_id)
     op = getattr(args, "mem_cmd", None)
     if op == "list":
         rows = client.list_entities(category=args.category, limit=args.limit)

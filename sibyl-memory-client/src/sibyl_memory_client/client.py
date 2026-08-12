@@ -562,7 +562,83 @@ def _relaxed_query_strings(query: str):
             yield tok
 
 
-# F5 (red-team 2026-06-17): sanity ceiling on a single serialized body. The 2 MB
+# D2L — coverage-gated stem rescue (Kravento PL eval 2026-08-12). Fusional
+# languages inflect by REPLACING endings (reklamacj-a/-e/-i share the stem
+# 'reklamac'), so query-token == stored-token (porter FTS) and
+# query-is-substring-of-stored (trigram shadow) BOTH fail. Truncating each query
+# token to a stem turns that ending-replacement into the substring problem the
+# folded-trigram shadow already solves.
+#
+# Crude fixed-length truncation is deliberate, NOT a placeholder for a real
+# stemmer: there is no Polish snowball/porter analyzer in the stdlib, and
+# precisely BECAUSE it is crude it survives the stem-internal palatalization a
+# rule-based stemmer would diverge on (wysyłka/wysyłce both keep the 'wysył'
+# prefix). drop=3 covers the 2-3 char ending classes of Polish/Czech/Russian
+# declension (drop=2 misses -ach locatives: magazynach); floor=5 keeps stems
+# long enough to avoid cross-lemma collisions at scale (measured free-or-better
+# vs floor 4 on the 38-query battery). The whole stage runs ONLY in the
+# append-only rescue path of search(), gated on coverage — never on the strict
+# path — so the primary index and its ranking are untouched. F3 (index-time
+# language-aware lemmatization) is the real fix and stays roadmap.
+_STEM_MIN_TOKEN = 5     # tokens shorter than this are never truncated
+_STEM_DROP = 3          # drop up to this many trailing chars
+_STEM_FLOOR = 5         # never truncate a stem below this many chars
+_GATE_ROW_BYTES = 4096  # per-row cap on head text fed to the coverage gate
+
+
+def _stem_token(tok: str) -> str:
+    if len(tok) < _STEM_MIN_TOKEN or any(ch.isdigit() for ch in tok):
+        return tok  # short tokens and identifiers (q3, v2, k8) stay exact
+    return tok[:max(_STEM_FLOOR, len(tok) - _STEM_DROP)]
+
+
+def _stem_truncated_query(query: str) -> str:
+    """The fully-stemmed query (every token stemmed, still AND-ed) for the
+    shadow's substring semantics. Returns "" when no token changed (the raw
+    passes already cover it)."""
+    toks = _match_tokens(query)
+    stems = [_stem_token(t) for t in toks]
+    if not stems or stems == toks:
+        return ""
+    return " ".join(stems)
+
+
+def _head_searchable_text(rows: list[dict[str, Any]]) -> str:
+    """Folded searchable text (key + category + body) of the head rows, for the
+    D2L coverage gate. Each row is capped at ``_GATE_ROW_BYTES`` before folding;
+    truncation errs toward RUNNING the stem pass (the recall-safe direction),
+    never toward suppressing it."""
+    from .shadow import fold_py
+    parts = []
+    for h in rows:
+        row = " ".join((
+            _normalize_text(h.get("key") or ""),
+            _normalize_text(h.get("category") or ""),
+            _normalize_text(h.get("body")),
+        ))
+        parts.append(row[:_GATE_ROW_BYTES])
+    return fold_py(" ".join(parts))
+
+
+def _uncovered_stem_tokens(query: str, rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """The query tokens whose stem is NOT already substring-covered by the head
+    text — the ONLY tokens the D2L rescue may probe. A token whose stem equals
+    the token (no truncation) is skipped: the raw passes already cover it.
+    Returns ``[(token, stem), ...]``. When empty, the stem stage does no work at
+    all — English that porter already served almost never triggers it."""
+    from .shadow import fold_py
+    txt = _head_searchable_text(rows)
+    uncovered: list[tuple[str, str]] = []
+    for tok in _match_tokens(query):
+        stem = _stem_token(tok)
+        if stem == tok:
+            continue
+        if fold_py(stem) not in txt:
+            uncovered.append((tok, stem))
+    return uncovered
+
+
+# F5 (red-team 2026-06-17): sanity ceiling on a single serialized body. The 5 MB
 # free cap bounds TOTAL memory, but one oversized value still floods agent context
 # on recall/search. This high ceiling rejects only pathological single values;
 # per-hit search output is additionally truncated at the tool boundary (adapter).
@@ -660,7 +736,7 @@ class MemoryClient:
         self._account_id = account_id
         self._session_token = session_token
 
-        # Cap gate: enforces the 2 MB free-tier cap with server-authoritative
+        # Cap gate: enforces the 5 MB free-tier cap with server-authoritative
         # tier verification at the boundary. See _capcheck.py for the design.
         if cap_gate is None:
             from ._capcheck import CapGate, TierCache, aggregate_db_size
@@ -723,8 +799,8 @@ class MemoryClient:
 
         Pass ``account_id`` and ``session_token`` from credentials.json so
         the SDK can verify the user's tier against the server when they
-        approach the 2 MB free-tier cap. Without these, the SDK enforces
-        a strict local 2 MB cap (no server check possible).
+        approach the 5 MB free-tier cap. Without these, the SDK enforces
+        a strict local 5 MB cap (no server check possible).
         """
         storage = Storage(path)
         return cls(
@@ -848,7 +924,7 @@ class MemoryClient:
         conflict the existing row is updated (body + status + updated_at).
         Returns the resulting entity row as a dict.
 
-        Subject to the 2 MB free-tier cap when tier='free'. Raises
+        Subject to the 5 MB free-tier cap when tier='free'. Raises
         CapExceededError if the write would push the local DB past the cap
         and the server-authoritative tier check confirms the account is
         still free.
@@ -1099,7 +1175,7 @@ class MemoryClient:
         T1-3 fix: previously this bypassed the cap-gate. A free user at
         1.9 MB could archive their largest entities (body copied into
         archived_entities, doubling footprint temporarily before the
-        DELETE lands) to keep writing past the 2 MB cap. Now gated on
+        DELETE lands) to keep writing past the 5 MB cap. Now gated on
         the size of the body being copied + 200 bytes overhead. Reads
         the body first so we know the actual delta. NotFoundError still
         raised before any cap-gate work.
@@ -1309,35 +1385,94 @@ class MemoryClient:
     @_track_op("search")
     def search(self, query: str, *, limit: int = 20, prefix: bool = False,
                tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
-        """Cross-tier search with a zero-hit paraphrase fallback.
+        """Cross-tier search: strict/relaxed primary hits, then an APPENDED shadow.
 
         Runs the strict AND + proximity search first (``_search_strict``,
-        unchanged behavior). ONLY when that returns nothing and the query is a
-        multi-word non-prefix query does it retry with relaxed variants
-        (stopwords stripped, then the rarest token). This is strictly additive: a
-        non-empty strict result is returned untouched, so ranking and recall of
-        existing hits cannot regress, and single-token / prefix queries (the
-        multi_record path) never trigger the fallback. (paraphrase recall, beta
-        deadguy 2026-06-14: NL queries miss under strict token-AND.)
+        unchanged behavior). When that returns nothing and the query is a
+        multi-word non-prefix query it retries with relaxed variants (stopwords
+        stripped, then the rarest token). The primary (strict/relaxed) hits are
+        the head of the result and are NEVER reordered or dropped, so ranking and
+        recall of existing hits cannot regress, and single-token / prefix queries
+        (the multi_record path) never trigger the relaxed retry. (paraphrase
+        recall, beta deadguy 2026-06-14: NL queries miss under strict token-AND.)
+
+        F2 (Kravento PL eval 2026-08-12): the v0.5.0 folded-trigram shadow now runs
+        UNCONDITIONALLY and its hits are APPENDED after the primary hits (deduped
+        on the identity triple, capped at ``limit``) — it previously fired only on
+        a total zero-hit, so ANY weak/English primary hit hid same-fact rows in
+        other languages (query 'packshot' returned the English 'packshots' row and
+        skipped the Polish 'packshoty' row; worse as the store fills). Append-only:
+        the shadow can only extend the tail, never touch the primary head, so
+        English recall and existing ranking still cannot regress. prefix queries
+        early-return (prefix intent != substring fallback).
+
+        D2L (Kravento PL eval 2026-08-12): a coverage-gated stem rescue with a
+        rescue ladder, appended after the F2 raw shadow. The GATE probes only the
+        query tokens whose stem is not already substring-covered by the head, so a
+        query porter (or the raw shadow) already answered runs no stem work at all
+        — this is what keeps the pass off English at scale. When some token is
+        uncovered the LADDER runs the fully-stemmed query first; if that appends
+        nothing it tries the uncovered stems as single-token probes, longest-first,
+        stopping at the first that appends. This turns fusional ending-replacement
+        (reklamacj-a/-e/-i) into the substring match the shadow solves and rescues
+        the realistic multi-token Polish class the raw shadow alone still misses
+        ('status reklamacji'). Still strictly append-only — every stage only
+        extends the tail, deduped and capped.
         """
         hits = self._search_strict(query, limit=limit, prefix=prefix, tiers=tiers)
-        if hits or prefix:
-            return hits
-        for relaxed in _relaxed_query_strings(query):
-            hits = self._search_strict(relaxed, limit=limit, prefix=False, tiers=tiers)
-            if hits:
-                return hits
-        # v0.5.0 multi-language search (spec §4.3): zero-hit folded-trigram shadow
-        # fallback. Strictly additive — reached ONLY when the strict pass AND every
-        # relaxed variant produced nothing, so a non-empty result is never
-        # reordered or dropped and English/ranking behaviour cannot regress.
-        # prefix queries already returned above (prefix intent != substring
-        # fallback). The shadow gives substring semantics (matches inside an
-        # unbroken CJK/Thai/Bantu/compound token) + a folded copy for the
-        # non-decomposable ł/ß/ø/... class, in any language.
+        if prefix:
+            return hits  # prefix intent != substring fallback (unchanged, v0.5.0)
         if not hits:
-            hits = self._shadow_fallback(query, limit=limit, tiers=tiers)
-        return hits
+            for relaxed in _relaxed_query_strings(query):
+                hits = self._search_strict(relaxed, limit=limit, prefix=False, tiers=tiers)
+                if hits:
+                    break
+        out = list(hits)
+        cap = _clamp_limit(limit)
+        seen = {(h.get("tier"), h.get("category"), h.get("key")) for h in out}
+
+        def _append(rows) -> int:
+            """Append-only tail extension: add new-identity rows until the cap,
+            never touching or reordering the head. Returns the count appended."""
+            added = 0
+            for h in rows:
+                if len(out) >= cap:
+                    break
+                ident = (h.get("tier"), h.get("category"), h.get("key"))
+                if ident in seen:
+                    continue
+                seen.add(ident)
+                out.append(h)
+                added += 1
+            return added
+
+        # F2: the v0.5.0 folded-trigram shadow, run UNCONDITIONALLY and APPENDED
+        # after the head. It previously fired only on a total zero-hit, so any
+        # weak/English primary hit hid same-fact rows in other languages
+        # ('packshot' returned the English 'packshots' row and skipped the Polish
+        # 'packshoty' row; worse as the store fills). Append-only: it can only
+        # extend the tail, so English recall and existing ranking cannot regress.
+        if len(out) < cap:
+            _append(self._shadow_fallback(query, limit=limit, tiers=tiers))
+
+        # D2L: coverage-gated stem rescue with a rescue ladder. GATE — probe only
+        # tokens whose stem is not already substring-covered by the head text, so
+        # a query the strict/raw passes already answered runs no stem work at all.
+        # LADDER — run the fully-stemmed query first; if it appends nothing, try
+        # the uncovered stems as single-token probes, longest-first, stopping at
+        # the first that appends. Turns fusional ending-replacement into the
+        # substring match the shadow solves; every probe goes through
+        # _shadow_fallback (errors stay []) and stays append-only.
+        if len(out) < cap:
+            uncovered = _uncovered_stem_tokens(query, out)
+            if uncovered:
+                stemmed = _stem_truncated_query(query)
+                added = _append(self._shadow_fallback(stemmed, limit=limit, tiers=tiers)) if stemmed else 0
+                if not added and len(out) < cap:
+                    for _tok, stem in sorted(uncovered, key=lambda p: len(p[1]), reverse=True):
+                        if _append(self._shadow_fallback(stem, limit=limit, tiers=tiers)):
+                            break
+        return out
 
     def _shadow_fallback(self, query: str, *, limit: int = 20,
                          tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:

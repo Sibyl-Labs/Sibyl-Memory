@@ -4,6 +4,33 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.21] - 2026-08-12
+
+Multi-language search, part 2 (Kravento / Bilbo Polish evaluation) — CLI leg.
+
+### Fixed
+- **F1 — `sibyl memory list/search/recall` read the wrong tenant on an
+  activated account.** `cmd_memory` opened the store at the hard-coded
+  `DEFAULT_TENANT` while the MCP server writes under the account's real tenant,
+  so an activated account saw `(no entities)` / `(no matches)` for a perfectly
+  healthy store — the surface that made the Polish eval first look like a recall
+  failure before the linguistic gap was even reached. `cmd_memory` now resolves
+  the tenant from `credentials.json` via the same Contract-T ladder the server
+  uses (`tenant_id -> account_id -> DEFAULT_TENANT`, matching `server.py`), like
+  `status`/`health` already did, with a call-time `--creds` default fallback so
+  direct-`Namespace` unit invocations still resolve. Read-only; no write path
+  touched.
+- **Free-tier cap display corrected: 2 MB to 5 MB.** The `sibyl upgrade`
+  subtitle still showed the pre-2026-08-06 cap; the free-tier local cap was
+  raised to 5 MiB in the 0.5.0 release. Display-only, no logic change.
+
+### Changed
+- **Dependency floor raised to `sibyl-memory-client>=0.6.0`.** `sibyl memory
+  search` / `sibyl recall` now inherit the F2 unconditional-shadow append and
+  the D2L coverage-gated stem rescue, taking Polish recall to parity with
+  English on the eval battery (see `sibyl-memory-client` 0.6.0). No CLI code
+  change for this leg.
+
 ## [0.3.20] - 2026-08-06
 
 ### Changed
