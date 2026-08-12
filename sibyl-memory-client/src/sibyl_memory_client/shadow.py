@@ -411,8 +411,10 @@ def _shape_hit(conn: sqlite3.Connection, tenant_id: str, tier: str,
     exact dict shape ``_search_strict`` produces for that tier. Returns None when
     the base record no longer resolves (the shadow raced a delete) — the caller
     skips it. ``snippet`` = first ~120 chars of the folded text; ``rank`` = shadow
-    BM25 (only ever surfaced when the result set would otherwise be empty, so
-    cross-scale comparison with the primary index never arises)."""
+    BM25 but POSITIONAL-ONLY to the caller: since F2 (2026-08-12) shadow hits are
+    APPENDED after the primary hits in MemoryClient.search (never re-sorted into
+    them), this rank orders shadow candidates only among themselves and is never
+    cross-compared with the primary BM25 index — so the two rank scales never mix."""
     snippet = txt[:120]
     if tier == "entity":
         row = conn.execute(

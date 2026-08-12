@@ -4,6 +4,88 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.6.0] - 2026-08-12
+
+Multi-language search, part 2 (Kravento / Bilbo Polish evaluation). On the same
+corpus, code, and store the Polish recall was 81% against English 100% — a gap
+that is entirely linguistic, not a bug. Two search-path changes (F2 + D2L) close
+it. Official harness (32-query PL/EN twin battery, LIMIT 10): **Polish recall
+8/16 → 16/16, English recall stays 16/16**; a 6-query realistic PL multi-token
+extension battery goes **4/6 → 6/6**. `search()` output shape is unchanged and
+every change is strictly append-only, so this is a backward-compatible minor
+release: no migration, no downstream (`mcp`/`hermes`/`langgraph`/`cli`) code
+change required.
+
+Also aligns stale `2 MB` free-tier-cap references (comments, docstrings,
+README) to the current `5 MB` cap (raised in 0.5.0); no behavior change.
+
+### Fixed
+
+- **F2 — the folded-trigram shadow was suppressed by any non-empty primary hit.**
+  `search()` fired the v0.5.0 shadow only on a total zero-hit (`if not hits:`),
+  so a single weak/English strict hit hid same-fact rows in other languages —
+  e.g. `search("packshot")` returned the English `packshots` row and skipped the
+  Polish `packshoty` row; the failure worsens as the store fills. The shadow now
+  runs **unconditionally** and its hits are **appended** after the primary
+  (strict/relaxed) hits, deduped on the `(tier, category, key)` identity triple
+  and capped at `limit`. **Append-only invariant:** the primary head is never
+  reordered or dropped — the shadow can only extend the tail — so English recall
+  and existing ranking cannot regress. (harness: Polish recall 8 → 9/16 from F2
+  alone; the packshot class is fixed.)
+
+### Added
+
+- **D2L — coverage-gated stem rescue with a rescue ladder.** Fusional languages
+  inflect by REPLACING endings (`reklamacj-a/-e/-i` share the stem `reklamac`),
+  so porter token-equality (strict) and the trigram substring test (raw shadow)
+  BOTH fail for an inflected query. D2L turns ending-replacement into the
+  substring problem the shadow already solves, appended after the F2 head:
+  - **Coverage gate.** Only query tokens whose stem is *not* already
+    substring-covered by the assembled head trigger stem work. A query porter or
+    the raw shadow already answered runs no stem probe at all — this is what
+    keeps the pass off the English path at scale (stem probes measured 32/32 →
+    7/32 per query battery-wide).
+  - **Rescue ladder.** When some token is uncovered, the fully-stemmed query
+    (all tokens stemmed, AND-ed) is tried first; if it appends nothing the
+    uncovered stems are probed as single tokens, **longest-first, stopping at the
+    first that appends**. This rescues realistic multi-token PL queries whose
+    full-stemmed AND matches nothing (e.g. `status reklamacji` → the
+    `reklamacja` row), the class an unconditional single stem pass hard-misses.
+  - **Parameters:** `_STEM_MIN_TOKEN=5`, `_STEM_DROP=3`, `_STEM_FLOOR=5`, digit
+    tokens exempt (`q3`/`v2`/`k8` stay exact). Crude fixed-length truncation is
+    deliberate — there is no Polish stemmer in the stdlib, and *because* it is
+    crude it survives stem-internal palatalization a rule-based stemmer would
+    diverge on (`wysyłka`/`wysyłce` both keep the `wysył` prefix). `drop=3`
+    covers the 2–3 char ending classes of Polish/Czech/Russian declension
+    (`drop=2` misses `-ach` locatives such as `magazynach`); `floor=5` keeps
+    stems long enough to avoid cross-lemma collisions at scale.
+  - Applied ONLY in the append-only rescue path of `search()`, gated on
+    coverage — never on the strict path — so the primary index and its ranking
+    are untouched, and every probe goes through `_shadow_fallback` (errors
+    contained to `[]`).
+
+  **Measured trade-off (official 32-query battery vs F2-only):** mean precision
+  0.980 → **0.9479**, precision@1 0.960 → **0.9688** (up), fp_total 1 → **4**.
+  The two coverage-gated FPs D2L removes relative to an unconditional stem pass
+  are exactly the avoidable class (same-stem noise appended to a query the head
+  already answered). **Two documented residuals:**
+  1. Shadow/stem appends are skipped once the head fills to `limit`, so the
+     old zero-hit-suppression shape reappears exactly at limit-saturation —
+     inherent to append-only + cap.
+  2. Same-stem SIBLING rows are not appended when the queried concept already
+     surfaced in the head (the coverage gate suppresses them). This is
+     consistent with the battery's own false-positive convention (the same
+     sibling-append event is scored as noise elsewhere in the battery); full
+     sibling-vs-noise separation is semantic and requires F3.
+
+### Roadmap (not in this release)
+
+- **F3 — substring/trigram is structurally mismatched with fusional morphology.**
+  Polish query-is-substring-of-stored held 0/7 vs English 7/7. The true fix is
+  language-aware **lemmatization at index time** (a pluggable per-language
+  analyzer writing lemmas into the shadow) plus relevance scoring to separate
+  same-lemma siblings from same-stem noise. Out of scope here.
+
 ## [0.5.0] - 2026-08-06
 
 Multi-language search. The default (linker) search path was effectively

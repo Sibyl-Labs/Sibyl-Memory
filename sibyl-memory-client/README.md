@@ -66,7 +66,7 @@ removes the row outright. Use archive to declutter, delete to truly forget.
 
 ## Tier model
 
-Free tier is generous on purpose. You can build real things with it. Paid plans add self-learning, the linter, and remove the 2 MB local cap. Full plan comparison at [docs.sibyllabs.org/memory/tiers](https://docs.sibyllabs.org/memory/tiers).
+Free tier is generous on purpose. You can build real things with it. Paid plans add self-learning, the linter, and remove the 5 MB local cap. Full plan comparison at [docs.sibyllabs.org/memory/tiers](https://docs.sibyllabs.org/memory/tiers).
 
 ## Documentation
 

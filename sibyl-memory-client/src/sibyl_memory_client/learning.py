@@ -504,7 +504,7 @@ class Learner:
         metadata_json = dumps(metadata)
         # T1-3 fix: gate the reference_documents insert through the cap
         # check. Free user at 1.9MB could previously accept skill proposals
-        # (often kilobytes of body) to keep writing past the 2 MB cap.
+        # (often kilobytes of body) to keep writing past the 5 MB cap.
         # When cap_gate is None (direct-Learner instantiation), no check.
         if self._cap_gate is not None:
             # CAP-7 (2026-06-25 pre-launch audit): the estimate omitted the

@@ -269,7 +269,7 @@ def aggregate_db_size(primary_db: str | Path) -> int:
     machine resolves.
 
     The FREE-tier cap is per ACCOUNT, not per DB file. Sizing only the store
-    being written to lets N stores yield N x 2 MB on one free account
+    being written to lets N stores yield N x 5 MB on one free account
     (Discord report 2026-06-11: 6.29 MB across 9 stores). This walks every
     store an agent on this machine can resolve and sums them:
 
@@ -406,7 +406,7 @@ def _default_check_write_fn(
                 continue
             # T2-3 fix: do NOT synthesize a fake "free tier" decision on HTTP
             # error. Previously a transient 502 would write `{tier:free,
-            # cap_bytes:2MB}` into the cache for a legitimately paid user,
+            # cap_bytes:5MB}` into the cache for a legitimately paid user,
             # locking them out for up to 7 days. Now we raise
             # TierVerificationError: the caller (_refresh_and_check) falls back
             # to a recent cache if one exists, or fails open for no-cache writes.
