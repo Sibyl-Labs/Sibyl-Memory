@@ -6,6 +6,20 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Default `memory_search` path (tiers omitted) now answers question-shaped
+  queries.** No `server.py` change — the untiered path routes through the client's
+  `multi_record_search`, which previously abstained (`count == 0`) whenever a
+  query carried a zero-support *function* word (`kiedy`, `gdzie`, `when`, `who`,
+  `how`, ...). The client's N1 fix classifies zero-df tokens so function-shaped
+  ones are dropped while content-shaped absences (injection / `rejected` class)
+  still abstain. Default-path recall on a PL/EN question battery went **1/8 →
+  8/8**; the tool-boundary abstention contract is unchanged (`co0001
+  nonexistenttokenzzzq report` and `was the co0001 order rejected` still return
+  `count == 0`). Requires `sibyl-memory-client` with the N1/N2/N3 recall fixes
+  (0.6.x follow-up to 0.6.0). New coverage:
+  `tests/test_default_path_recall_2026_08_16.py`.
+
 ### Added
 - **First-party Docker packaging (repo-root `Dockerfile`,
   `docker-compose.yml`, `.dockerignore`) and a README "Run with Docker"

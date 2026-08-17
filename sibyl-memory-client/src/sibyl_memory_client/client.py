@@ -1396,6 +1396,15 @@ class MemoryClient:
         (the multi_record path) never trigger the relaxed retry. (paraphrase
         recall, beta deadguy 2026-06-14: NL queries miss under strict token-AND.)
 
+        N2 (Kravento PL eval 2026-08-16): the one exception to a contiguous head
+        is the relaxed SINGLE-TOKEN last resort. When that variant (and only that
+        variant) fills the cap with rows sharing one common token, its tail is
+        trimmed by a small reserve so the F2/D2L rescue stages have headroom to
+        run; the trimmed rows are re-appended (backfill) AFTER the rescue. A
+        non-empty strict head is never trimmed (relaxed_single is only set when
+        strict returned []), and when the rescue appends nothing the output is
+        byte-identical to the pre-holdback result.
+
         F2 (Kravento PL eval 2026-08-12): the v0.5.0 folded-trigram shadow now runs
         UNCONDITIONALLY and its hits are APPENDED after the primary hits (deduped
         on the identity triple, capped at ``limit``) — it previously fired only on
@@ -1422,13 +1431,36 @@ class MemoryClient:
         hits = self._search_strict(query, limit=limit, prefix=prefix, tiers=tiers)
         if prefix:
             return hits  # prefix intent != substring fallback (unchanged, v0.5.0)
+        relaxed_single = False
         if not hits:
             for relaxed in _relaxed_query_strings(query):
                 hits = self._search_strict(relaxed, limit=limit, prefix=False, tiers=tiers)
                 if hits:
+                    # N2: record whether the winning variant was the single-token
+                    # last resort. Stopword-stripped multi-token winners are
+                    # excluded on purpose — they matched every content token, so
+                    # the D2L gate would already find those stems covered.
+                    relaxed_single = len(_match_tokens(relaxed)) == 1
                     break
-        out = list(hits)
         cap = _clamp_limit(limit)
+        # N2 (Kravento PL eval, 2026-08-16): relaxed single-token holdback. When
+        # the ONLY head came from the single-token last resort and it filled the
+        # cap with rows sharing one common token, reserve a slice of the tail so
+        # the F2 + D2L rescue stages below have headroom to run — a cap-filling
+        # relaxed head otherwise suppresses the very rescue that surfaces the
+        # inflected target (target loses the FTS-rank lottery for head slots). The
+        # held rows are re-appended after the rescue (backfill), so when the
+        # ladder rescues nothing the output is byte-identical to today, and when
+        # it rescues K rows the result is the truncated head + K rescue rows +
+        # backfilled held rows, still exactly cap. The strict head is untouched by
+        # construction: relaxed_single can only be True when _search_strict
+        # returned [] (the sole path into the relaxed loop).
+        held: list[dict[str, Any]] = []
+        if relaxed_single and cap >= 2 and len(hits) >= cap:
+            reserve = max(1, cap // 4)
+            held = hits[cap - reserve:]
+            hits = hits[:cap - reserve]
+        out = list(hits)
         seen = {(h.get("tier"), h.get("category"), h.get("key")) for h in out}
 
         def _append(rows) -> int:
@@ -1469,9 +1501,44 @@ class MemoryClient:
                 stemmed = _stem_truncated_query(query)
                 added = _append(self._shadow_fallback(stemmed, limit=limit, tiers=tiers)) if stemmed else 0
                 if not added and len(out) < cap:
-                    for _tok, stem in sorted(uncovered, key=lambda p: len(p[1]), reverse=True):
-                        if _append(self._shadow_fallback(stem, limit=limit, tiers=tiers)):
+                    # N3 (Kravento PL eval, 2026-08-16; panel-hardened): selectivity-
+                    # ordered probe ladder, keeping the pinned stop-at-first-append
+                    # discipline WITHOUT truncating the candidate set. 0.6.0 probed
+                    # EVERY uncovered stem (longest-first, stopping at the first that
+                    # appended); this probes every uncovered stem too — so no
+                    # reachable target is dropped when a query has many uncovered
+                    # stems — but ORDERS by MEASURED selectivity: the probe returning
+                    # the FEWEST rows is the most discriminating and runs first, so a
+                    # saturated high-frequency stem ('aktualiza', 20 rows) can no
+                    # longer fill the tail ahead of a discriminating one ('cenni', 1
+                    # row incl. the target). Stem length is the tie-break, preserving
+                    # 0.6.0's winner (and its stop-at-first-append output) when probes
+                    # tie on hit count. The interim build capped the SELECTION at
+                    # _STEM_PROBE_MAX=8 longest stems to bound fan-out; that was
+                    # reverted before release because slicing the candidate set
+                    # TRUNCATED D2L recall (a target reachable only via a stem past
+                    # position 8 was never probed, a regression vs 0.6.0). Fan-out is
+                    # bounded exactly as in 0.6.0 — by the uncovered-stem count, which
+                    # equals the query's match-token count — with no NEW exposure: the
+                    # default MCP path reaches search() with single-token queries
+                    # (<=1 uncovered stem) and multi_record bounds its caller upstream
+                    # via _MAX_FANOUT_TOKENS. The loop keeps `if _append(rows)` (not
+                    # break-after-fetch) so a most-selective probe whose rows all dedup
+                    # against the head falls through to the next.
+                    probes = sorted(uncovered, key=lambda p: len(p[1]), reverse=True)
+                    fetched = [(stem, self._shadow_fallback(stem, limit=limit, tiers=tiers))
+                               for _tok, stem in probes]
+                    fetched = [sr for sr in fetched if sr[1]]  # drop empty probes
+                    fetched.sort(key=lambda sr: (len(sr[1]), -len(sr[0])))
+                    for _stem, rows in fetched:
+                        if _append(rows):
                             break
+        # N2 backfill: re-append the held relaxed-single tail after the rescue. If
+        # the ladder appended nothing every held row returns in its original order
+        # (byte-identical to pre-holdback); otherwise the rescued rows take the
+        # reserved slots first and the remainder backfill — still dedup-safe and
+        # capped via _append.
+        _append(held)
         return out
 
     def _shadow_fallback(self, query: str, *, limit: int = 20,
