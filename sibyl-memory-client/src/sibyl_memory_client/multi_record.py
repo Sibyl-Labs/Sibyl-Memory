@@ -414,7 +414,22 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
             return []
         df = {t: df[t] for t in toks}
 
-    idf = {t: math.log((corpus_n + 1) / (df[t] + 1)) + 1.0 for t in toks}
+    # BUG (found 2026-08-18): corpus_n is entities-only (_corpus_count reads the
+    # `entities` table), but df[t] comes from client.search(), which is
+    # CROSS-TIER (entities + state_documents + reference_documents +
+    # journal_events). journal is an append-only log that grows without bound,
+    # so in any store where a token's journal hits outnumber the entity count,
+    # df[t] > corpus_n and the classic smoothed-idf formula goes negative
+    # (log of a ratio < 1). A negative term here does not just under-weight a
+    # common token, it can flip the sign of `total` below, which INVERTS the
+    # coverage ranking: a candidate that matches fewer query tokens can score
+    # higher than one that matches all of them (verified: a 1-entity/40-journal
+    # repro puts the full-match entity outside the top 10, replaced by
+    # journal-only partial matches). Standard smoothed idf is only guaranteed
+    # non-negative when df <= corpus_n; clamp at 0 so a token that is common
+    # relative to the (undercounted) corpus is merely worthless, never
+    # ranking-inverting.
+    idf = {t: max(0.0, math.log((corpus_n + 1) / (df[t] + 1)) + 1.0) for t in toks}
     total = sum(idf.values()) or 1.0
 
     # Anchor-first: anchor terms are the rarest (most discriminating) tokens,
