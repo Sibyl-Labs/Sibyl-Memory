@@ -4,6 +4,125 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.6.1] - 2026-08-16
+
+Multi-language search, part 3 (Kravento / Bilbo Polish evaluation, follow-up to
+0.6.0). Three targeted recall fixes on the retrieve-then-verify + rescue path.
+`search()` and `multi_record_search()` output shapes are unchanged and every
+change is strictly append-only / additive-at-cap, so this stays a
+backward-compatible release: no migration, no downstream (`mcp`/`hermes`/
+`langgraph`/`cli`) code change required. Regression gate held: existing client
+suite green; the SDK `client.search()` PL/EN twin battery stays **PL 16/16,
+EN 16/16** at 32 / 300 / 3000 entities. The headline of this release is that the
+agent-**default** MCP path (`memory_search` with `tiers` omitted →
+`multi_record_search`) now reaches that same parity on natural question-shaped
+queries: a faithful default-path battery (16 parallel PL + 16 EN facts, Polish
+stored inflected and queried in a DIFFERENT inflection) moved **PL 9/16 → 16/16
+and EN 15/16 → 16/16** — every prior miss was a zero-df function word the lexicon
+did not recognise (N1 / Finding B), not a content-shaped abstention.
+
+### Fixed
+
+- **N1 — question-shaped queries abstained on the default (multi-record) path.**
+  `multi_record_search` abstains (`return []`) the moment any significant term has
+  zero corpus support, so a discriminating absence (`rejected`, an injection
+  token) correctly collapses the query. But the module stoplist `_STOP` was 23
+  English words with **no interrogatives**, so a zero-support *function* word
+  (`kiedy`, `gdzie`, `jest`, `when`, `who`, `how`) survived tokenization and
+  collapsed the *whole* query — the agent-default MCP path (`memory_search` with
+  `tiers` omitted) and the Hermes `sibyl_search` rail both returned nothing for a
+  natural question. The df=0 gate now classifies the zero-df token against a
+  **curated function-word lexicon ONLY** (`_DF0_FUNCTION`: EN interrogatives /
+  auxiliaries / modals / pronouns + declined PL copula/pronoun paradigms with
+  their ASCII de-diacritic twins + compact DE/FR/ES/CZ sets): a listed
+  **function-shaped** token is **dropped** (it carried no corpus signal by
+  construction), while **anything not in the lexicon** (a content word of any
+  length, a ticker / codename / brand code, a digit-bearing identifier, any
+  non-ASCII content token) still **hard-abstains**. The drop happens before
+  idf / min_df / anchor computation, so the coverage denominator excludes the
+  dropped token (`kiedy jest inwentaryzacja` scores coverage 1.0 on
+  `inwentaryzacja`) and the injection / `rejected` abstention contract is intact
+  (`co0001 nonexistenttokenzzzq report` still returns `[]`).
+
+  **Finding B (adversarial-panel expansion).** The first cut of `_DF0_FUNCTION`
+  carried only a compact interrogative/copula set, so natural PL/other-language
+  questions still zeroed on the default path when they used an inflected function
+  form the lexicon missed (the fusional być paradigm is the worst offender:
+  a future/present/past *person* the store never carries — `będą`, `jesteśmy`,
+  `będę` — collapsed the whole query). The lexicon is now widened to the
+  high-frequency function inventory: the **full być paradigm** (present / future /
+  past / conditional, incl. ASCII de-diacritic twins), the **completed
+  interrogative/relative family** (`kim`, `czym`, `jacy`, `skąd`, `dokąd`, the
+  declined `który`/`jaki`/`czyj` forms), common **PL prepositions, conjunctions,
+  particles, and pronouns/possessives**, plus the obvious missing high-frequency
+  **EN / DE / FR / ES / CZ** function words. HARD RULE held throughout — every
+  entry is a genuine function word safe to drop when absent; known content
+  collisions were deliberately excluded (`bez`=lilac, `ten`/`nas`/`nią`, the
+  number words `one`/`ten`, `mine`/`can`/`may`, DE `die`/`war`/`man`/`hat`, FR
+  `car`/`par`/`son`/`ton`, ES `son`/`con`/`sin`/`era`, CZ `byt`). Faithful
+  default-path battery (16 PL + 16 EN, question-shaped, tiers-omitted):
+  **PL 9/16 → 16/16, EN 15/16 → 16/16**; SDK `client.search()` unchanged at
+  **16/16 / 16/16**.
+
+  Classification is **lexicon-only, by deliberate design.** An interim revision
+  additionally dropped any `<=4`-char ASCII-alpha zero-df token; that length net
+  was reverted before release because length is not a function-vs-content signal.
+  It swept in exactly the short discriminators an entity/company store is queried
+  by (`acme`, `acer`, `weth`, `usdc`, `aero`, `visa`, `ford`, `meta`, `ikea`,
+  `sol`, 3-4-letter names) and, for an *absent* such term, dropped-then-collapsed
+  the query into a cross-entity firehose (`acme report` returned 10 unrelated
+  reports) instead of abstaining; it also let arbitrary short garbage tokens
+  `continue` past the df=0 early-abort, reopening the CORE-6/MH-3 per-token fanout
+  bound (`return []` on the first content-shaped absence is restored, so a 24
+  short-garbage-token query issues one `client.search()`, not 24). The safe
+  direction is preserved: an **unlisted** function word (any language, any length)
+  falls through to hard-abstain — over-abstain, never over-recall. **Known limit:**
+  because the classifier is a curated lexicon and Polish/German are fusional, this
+  is an ongoing lexical-coverage burden, not a solved problem — inflected forms
+  outside the lexicon (rare oblique cases, tense/person conjugations) still
+  collapse a question to `[]`; widen `_DF0_FUNCTION` to cover them as they surface.
+- **N2 — a cap-filling relaxed single-token head suppressed the F2/D2L rescue.**
+  When strict AND missed and the relaxed *single-token* last resort filled the cap
+  with rows sharing one common token, the `if len(out) < cap` guard skipped both
+  the F2 shadow and the D2L stem rescue, and an inflected target that lost the
+  FTS-rank lottery for a head slot never surfaced (19 junk rows FOUND the target,
+  20 junk rows LOST it — exactly cap arithmetic at limit=20). `search()` now holds
+  back a small tail reserve (`max(1, cap//4)`) of the relaxed single-token head so
+  the rescue stages run, then **backfills** the held rows after the rescue: when
+  the ladder rescues nothing the output is byte-identical to before; when it
+  rescues K rows the result is truncated-head + K rescue rows + backfilled held
+  rows, still exactly `cap`, still dedup-safe. **Strict-head invariant preserved:**
+  the holdback can only fire when `_search_strict` returned `[]` (the sole path
+  into the relaxed loop), so a non-empty strict head is never trimmed or
+  reordered.
+- **N3 — the stem-rescue ladder probed by length, not selectivity.** The D2L
+  ladder ordered uncovered stems longest-first and stopped at the first that
+  appended, so a saturated high-frequency stem (`aktualiza`, 20 rows) beat a
+  discriminating one (`cenni`, 1 row incl. the target) purely because it was
+  longer — the target was never probed. The ladder now pre-fetches the uncovered
+  stems and orders them by **measured selectivity** (fewest hits = most
+  discriminating), with stem length as the tie-break, then stops at the first
+  probe that appends. The pinned stop-at-first-append discipline and length
+  tie-break output on ties are unchanged
+  (`test_covgate_stem::test_ladder_longest_first_and_stops` green verbatim); only
+  *which* probe wins when hit counts differ.
+
+  **Panel Finding A (regression fix, must-not-ship).** An interim cut bounded the
+  fetch by slicing the probe SELECTION to the `_STEM_PROBE_MAX=8` **longest**
+  uncovered stems before measuring selectivity. That truncated the candidate set:
+  a query with >8 uncovered stems whose only reachable target sits on a stem past
+  position 8 (in longest-first order) never probed it — a recall regression versus
+  0.6.0, which probed **every** uncovered stem. The slice (and the constant) were
+  removed: the ladder now fetches **all** uncovered stems, so no reachable target
+  is dropped, and orders them by selectivity as above. Fan-out is bounded exactly
+  as in 0.6.0 — by the uncovered-stem count, which equals the query's match-token
+  count — with no NEW cost exposure: the default MCP path reaches `search()` with
+  single-token queries (≤1 uncovered stem each), and `multi_record_search` bounds
+  its own caller upstream via `_MAX_FANOUT_TOKENS`. Guarded by
+  `test_probe_selectivity::test_no_truncation_beyond_probe_cap` (a 9-uncovered-stem
+  query whose most-selective probe is the shortest stem — dropped by the old
+  `[:8]` slice, surfaced by the fix).
+
 ## [0.6.0] - 2026-08-12
 
 Multi-language search, part 2 (Kravento / Bilbo Polish evaluation). On the same

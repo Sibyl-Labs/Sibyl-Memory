@@ -58,6 +58,184 @@ _STOP = {"the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "be",
          "to", "of", "in", "on", "at", "for", "with", "this", "that",
          "final", "current", "by"}
 
+# --- df=0 abstention classifier (N1, 2026-08-16) ------------------------------
+# The Stage-1 abstention (`if df[t] == 0: return []`) is the load-bearing
+# precision gate that collapses injection / "rejected" queries to []. But it
+# cannot tell a CONTENT-shaped zero-df token ("rejected", "nonexistenttokenzzzq")
+# from a FUNCTION-shaped one ("kiedy", "when", "gdzie"): _STOP is 23 English
+# words with no interrogatives, so a question-shaped query in Polish (or any
+# language whose function words survive tokenization) had one zero-support
+# function word abstain the WHOLE query — the default MCP path returned nothing
+# for "kiedy jest inwentaryzacja". This lexical prior is consulted ONLY at the
+# df=0 decision point (never at token admission or scoring of supported tokens):
+# a df=0 token that is function-shaped is DROPPED (carried zero corpus signal by
+# construction), a df=0 token that is content-shaped still hard-abstains. Defined
+# locally (no client-internal import) to preserve the module's documented
+# no-coupling contract; it mirrors client._SEARCH_STOPWORDS' interrogative/
+# auxiliary surplus plus compact PL / DE / FR / ES / CZ sets.
+_DF0_FUNCTION = frozenset({
+    # English interrogatives + auxiliaries (the surplus over _STOP)
+    "what", "which", "who", "whom", "whose", "when", "where", "why", "how",
+    "does", "did", "have", "has", "had", "will", "would", "should", "could",
+    "there", "these", "those", "about", "than", "then", "here",
+    # Polish (compact interrogative / copula / conjunction set)
+    "kiedy", "gdzie", "jaki", "jaka", "jakie", "jakiej", "jakiego",
+    "ktory", "ktora", "ktore", "który", "która", "które", "czy", "jest",
+    "sa", "są", "byl", "był", "byla", "była", "bylo", "było", "bedzie",
+    "będzie", "jak", "ile", "kto", "kogo", "komu", "czego", "czemu",
+    "dlaczego", "gdy", "oraz", "albo", "ale", "dla", "przez", "przy",
+    "mamy", "macie",
+    # German
+    "wann", "wer", "wie", "warum", "wieso", "welche", "welcher", "welches",
+    "sind", "wird",
+    # French
+    "quand", "qui", "quoi", "comment", "pourquoi", "quel", "quelle",
+    "quels", "quelles",
+    # Spanish
+    "cuando", "cuándo", "donde", "dónde", "quien", "quién", "cual", "cuál",
+    "como", "cómo", "porque",
+    # Czech
+    "kdy", "kde", "kdo", "proc", "proč", "jaky", "jaký",
+    # --- N1 hardening (2026-08-16): explicit inflected / modal coverage that a
+    # length net must NOT stand in for (see _df0_droppable). English modals /
+    # auxiliaries / pronouns >=3 chars, and the declined Polish pronoun / copula
+    # paradigms + their ASCII de-diacritic twins (the PL eval corpora spell many
+    # forms without diacritics). Additive only; none is a plausible content
+    # discriminator (no ticker / codename / brand code appears here).
+    "shall", "might", "must", "been", "being", "cannot", "not", "nor",
+    "you", "your", "they", "them", "their", "his", "her", "him", "its",
+    "she", "our",
+    "będą", "beda", "będziemy", "bedziemy", "będziecie", "bedziecie",
+    "będziesz", "bedziesz", "były", "byly", "byli", "byłem", "bylem",
+    "byłam", "bylam",
+    "którym", "ktorym", "których", "ktorych", "którego", "ktorego",
+    "któremu", "ktoremu", "którą", "której", "ktorej", "którzy", "ktorzy",
+    "jaką", "jakim", "jakich", "jakże", "jakze",
+    "welchem", "welchen", "waren", "kann", "muss", "soll",
+    # --- Finding B (2026-08-16 adversarial panel): natural PL/other-language
+    # questions still zeroed on the DEFAULT MCP path because the lexicon missed
+    # common INFLECTED function forms (the być paradigm is fusional, so a future/
+    # present/past person the store never carries collapsed the whole query). This
+    # widens the lexicon to the high-frequency function inventory. HARD RULE held:
+    # every entry below is a genuine function word (interrogative / copula /
+    # auxiliary / modal / conjunction / preposition / pronoun / determiner) that is
+    # SAFE to drop when absent — nothing that could be a content/entity token. The
+    # known collisions were deliberately EXCLUDED (PL 'bez'=lilac, 'ten'/'nas'/
+    # 'nią'; EN/PL 'one'/'ten' numbers, 'mine'/'can'/'may'; DE 'die'/'war'/'man'/
+    # 'hat'; FR 'car'/'par'/'son'/'ton'; ES 'son'/'con'/'sin'/'era'; CZ 'byt'). ASCII
+    # de-diacritic twins are included because the PL eval corpora spell many forms
+    # without diacritics.
+    # Polish — być (copula) paradigm completion (present / future / past / cond.)
+    "jestem", "jesteś", "jestes", "jesteśmy", "jestesmy", "jesteście", "jestescie",
+    "będę", "bede",
+    "byłeś", "byles", "byłaś", "bylas", "byliśmy", "bylismy", "byłyśmy", "bylysmy",
+    "byliście", "byliscie", "byłyście", "bylyscie",
+    "bym", "byś", "bys", "byśmy", "bysmy", "byście", "byscie",
+    "byłby", "bylby", "byłaby", "bylaby", "byłoby", "byloby", "byliby", "bylyby",
+    "byłbym", "bylbym",
+    # Polish — mieć (auxiliary "have") present + modals / impersonals
+    "mam", "masz", "mają", "maja",
+    "może", "moze", "można", "mozna", "trzeba", "należy", "nalezy", "wolno",
+    "musi", "muszę", "musze", "musimy", "musicie", "muszą", "musza",
+    "powinien", "powinna", "powinno", "powinni",
+    # Polish — interrogative / relative paradigm completion
+    "kim", "czym", "jacy", "jakiemu", "jakimi", "którymi", "ktorymi",
+    "czyj", "czyja", "czyje", "czyich", "czyim",
+    "ilu", "iloma", "skąd", "skad", "dokąd", "dokad", "gdzież", "gdziez", "którędy", "ktoredy",
+    # Polish — conjunctions / particles
+    "lub", "ani", "bądź", "badz", "czyli", "także", "takze", "też", "tez",
+    "więc", "wiec", "jednak", "natomiast", "ponieważ", "poniewaz", "gdyż", "gdyz",
+    "aby", "żeby", "zeby", "ażeby", "azeby", "jeśli", "jesli", "jeżeli", "jezeli",
+    "chociaż", "chociaz", "choć", "choc", "zatem", "toteż", "totez", "bowiem",
+    "albowiem", "nie", "już", "juz", "jeszcze", "tylko", "również", "rowniez",
+    "teraz", "tutaj", "tam", "wtedy", "właśnie", "wlasnie", "prawie", "bardzo",
+    "zawsze", "nigdy",
+    # Polish — prepositions
+    "przed", "pod", "nad", "między", "miedzy", "poza", "podczas", "według",
+    "wedlug", "wobec", "ponad", "wśród", "wsrod", "obok", "wokół", "wokol",
+    "oprócz", "oprocz", "spośród", "sposrod", "sprzed", "znad", "spod", "poprzez",
+    "wewnątrz", "wewnatrz", "naprzeciw", "względem", "wzgledem", "odnośnie", "odnosnie",
+    # Polish — pronouns / possessives / demonstratives
+    "ona", "ono", "oni", "jego", "jej", "ich", "jemu", "niego", "niej", "nim",
+    "nimi", "nich", "mnie", "ciebie", "tobie", "sobie", "siebie", "się", "sie",
+    "swój", "swoj", "swoje", "swoja", "swoich", "swojego",
+    "mój", "moj", "moje", "moja", "twój", "twoj", "twoje", "twoja",
+    "nasz", "nasze", "nasza", "wasz", "wasze",
+    "tego", "temu", "tym", "tej", "tych", "tymi",
+    "taki", "taka", "takie", "takich", "takim", "taką", "taka",
+    # English — high-frequency prepositions / conjunctions / pronouns the set missed
+    "before", "after", "above", "below", "over", "under", "into", "onto", "upon",
+    "within", "without", "between", "among", "amongst", "during", "through",
+    "throughout", "toward", "towards", "against", "because", "although", "though",
+    "unless", "until", "till", "while", "whilst", "whether", "yours", "ours",
+    "theirs", "myself", "yourself", "itself", "themselves", "herself", "himself",
+    "ourselves", "yourselves", "whoever", "whatever", "whenever", "wherever",
+    "whichever", "whomever", "however", "moreover", "therefore", "thus", "hence",
+    "otherwise", "meanwhile", "nevertheless", "nonetheless", "anyone", "anything",
+    "everyone", "everything", "someone", "somebody", "anybody", "everybody",
+    "nobody", "nothing", "none", "both", "either", "neither", "such", "same",
+    "another", "per", "via", "versus", "despite", "except", "besides", "beside",
+    "beyond", "inside", "outside", "near", "unto",
+    # German — obvious missing high-frequency function words
+    "ist", "und", "oder", "aber", "nicht", "kein", "keine", "keinen", "keinem",
+    "keiner", "haben", "habe", "hast", "hatte", "hatten", "werden", "werde",
+    "wurde", "wurden", "worden", "sein", "seine", "seiner", "seinem", "seinen",
+    "seines", "durch", "unter", "gegen", "ohne", "nach", "vor", "bei", "beim",
+    "zum", "zur", "dem", "der", "das", "des", "dass", "weil", "wenn", "denn",
+    "doch", "auch", "noch", "nur", "schon", "mehr", "sehr", "wohin", "woher",
+    "hätte", "haette", "würde", "wuerde", "könnte", "koennte", "sollte", "wollte",
+    "möchte", "moechte", "können", "koennen", "müssen", "muessen", "dürfen",
+    "duerfen", "sollen", "wollen", "mögen", "moegen", "wir", "uns", "euch",
+    "mich", "dich", "sich", "ihm", "ihn", "ihnen", "ihre", "ihrer", "ihrem",
+    "ihren", "mein", "meine", "dein", "deine", "unser", "unsere", "diese",
+    "dieser", "dieses", "diesem", "diesen", "jede", "jeder", "jedes",
+    # French — obvious missing high-frequency function words
+    "est", "sont", "être", "etre", "avoir", "avait", "avaient", "était", "etait",
+    "étaient", "etaient", "dans", "pour", "avec", "sans", "sous", "sur", "vers",
+    "chez", "entre", "parmi", "pendant", "depuis", "jusque", "jusqu", "mais",
+    "donc", "ainsi", "alors", "aussi", "encore", "dont", "lequel", "laquelle",
+    "lesquels", "lesquelles", "combien", "cela", "celui", "celle", "ceux",
+    "celles", "cette", "cet", "ces", "une", "aux", "leur", "leurs", "mon", "mes",
+    "tes", "nos", "vos", "ses", "notre", "votre", "très", "tres",
+    # Spanish — obvious missing high-frequency function words
+    "está", "esta", "están", "estan", "estoy", "estás", "estas", "estamos",
+    "ser", "estar", "haber", "hay", "fue", "fueron", "eran", "para", "por",
+    "sobre", "desde", "hasta", "hacia", "según", "segun", "durante", "mediante",
+    "pero", "aunque", "cuánto", "cuanto", "cuántos", "cuantos", "cuánta",
+    "cuanta", "este", "esto", "estos", "ese", "esa", "eso", "esos", "esas",
+    "aquel", "aquella", "aquello", "aquellos", "sus", "mis", "tus", "nuestro",
+    "nuestra", "nuestros", "vuestro", "del", "una", "unos", "unas", "que",
+    "quienes", "cuáles", "cuales",
+    # Czech — obvious missing high-frequency function words
+    "jsou", "jsem", "jste", "jsme", "bude", "budou", "budu", "budeš", "budes",
+    "není", "neni", "nejsou", "kolik", "kam", "odkud", "kudy", "pro", "přes",
+    "pres", "podle", "během", "behem", "protože", "protoze", "nebo", "když",
+    "kdyz", "jako", "ještě", "jeste", "ovšem", "ovsem", "avšak", "avsak", "tedy",
+    "proto", "jelikož", "jelikoz", "abych", "kdyby", "jestli", "pokud",
+})
+
+
+def _df0_droppable(tok: str) -> bool:
+    """True if a zero-df token is FUNCTION-shaped (safe to drop) rather than
+    CONTENT-shaped (must still abstain). Consulted ONLY at the df=0 decision
+    point, never at token admission or scoring of supported tokens.
+
+    Lexicon-ONLY (N1 hardening, 2026-08-16). Membership in the curated
+    _DF0_FUNCTION set is the SOLE test. The first N1 revision also dropped any
+    <=4-char ASCII-alpha zero-df token, but that length net was not a
+    function-vs-content signal: it swept in exactly the short discriminators an
+    entity / company store is queried by (tickers, codenames, 3-4-letter names,
+    brand codes: 'acme', 'acer', 'weth', 'usdc', 'aero', 'visa', 'ford', 'meta',
+    'ikea', 'sol'), and for an ABSENT such term it silently dropped-then-collapsed
+    the query into a cross-entity firehose instead of the honest abstention the
+    caller asked for. It also reopened the CORE-6/MH-3 fanout by letting arbitrary
+    short garbage tokens 'continue' past the df=0 early-abort. Length is not a
+    proxy for function-vs-content; only the lexicon is. Unlisted function words
+    (any language, any length) fall through to hard-abstain, which is the safe
+    direction (over-abstain, never over-recall); widen the lexicon to cover them."""
+    return tok in _DF0_FUNCTION
+
+
 _TERMINAL_Q = {"final", "resolved", "approved", "published", "closed", "sent",
                "emailed", "decision", "finalized"}
 
@@ -202,7 +380,13 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
         hits = client.search(t, limit=_PER_TOKEN_LIMIT)
         df[t] = len(hits)
         if df[t] == 0:
-            return []  # abstention: a discriminating term that nothing satisfies
+            # N1: abstain only on a CONTENT-shaped zero-df term (the injection /
+            # "rejected" class). A FUNCTION-shaped zero-df token ("kiedy",
+            # "when", "gdzie") carried no corpus signal by construction, so it is
+            # dropped after the loop instead of collapsing the whole query.
+            if not _df0_droppable(t):
+                return []  # abstention: a discriminating term nothing satisfies
+            continue  # accumulate no candidates for a droppable zero-df token
         for h in hits:
             key = (h.get("tier"), h.get("key"), h.get("category"))
             e = cand.get(key)
@@ -217,6 +401,18 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
             rank = h.get("rank", 0.0) or 0.0
             if rank < e["best"]:
                 e["best"] = rank
+
+    # N1: drop the FUNCTION-shaped zero-df tokens BEFORE idf / min_df / anchor_cut.
+    # Filtering df here is load-bearing: it makes the coverage denominator exclude
+    # dropped tokens (so 'kiedy jest inwentaryzacja' scores coverage 1.0 on
+    # 'inwentaryzacja') and prevents a min_df=0 from poisoning the anchor band.
+    # terminal_q was computed from the PRE-drop toks (above), so a dropped zero-df
+    # 'sent' still keeps the terminal/prep gate armed.
+    if any(df[t] == 0 for t in toks):
+        toks = [t for t in toks if df[t] > 0]
+        if not toks:
+            return []
+        df = {t: df[t] for t in toks}
 
     idf = {t: math.log((corpus_n + 1) / (df[t] + 1)) + 1.0 for t in toks}
     total = sum(idf.values()) or 1.0

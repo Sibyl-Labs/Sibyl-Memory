@@ -1,5 +1,10 @@
 # Changelog
 
+
+## [0.3.22] - 2026-08-16
+
+### Changed
+- Require `sibyl-memory-client>=0.6.1` so `sibyl update` pulls the multi-language search part-3 fixes (N1/N2/N3: the agent-default MCP path now reaches PL/EN recall parity on question-shaped queries). No CLI code change.
 All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).

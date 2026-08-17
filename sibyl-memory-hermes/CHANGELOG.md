@@ -4,6 +4,19 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **`sibyl_search` now answers question-shaped queries.** No adapter change — the
+  tool routes through the provider's `search_multi_record` → the client's
+  `multi_record_search`, which previously abstained (empty `results`) whenever a
+  query carried a zero-support *function* word (`kiedy`, `gdzie`, `when`, `who`,
+  `how`, ...). The client's N1 fix classifies zero-df tokens so function-shaped
+  ones are dropped while content-shaped absences (injection / `rejected` class)
+  still abstain. Requires `sibyl-memory-client` with the N1/N2/N3 recall fixes
+  (0.6.x follow-up to 0.6.0). New coverage:
+  `tests/test_sibyl_search_question_query_2026_08_16.py`.
+
 ## [0.3.15] - 2026-08-06
 
 ### Changed
