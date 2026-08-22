@@ -525,6 +525,20 @@ def build_server() -> FastMCP:
                 "entity,state" restricts to those two tiers and bypasses
                 the multi-record linker. Omit or pass null to search all
                 tiers with the multi-record linker active.
+
+        Default path vs tier-filtered path (Kravento PL eval, 2026-08-18):
+            with `tiers` omitted, this calls multi_record_search(), which
+            abstains (returns `count: 0`) the moment ONE significant query
+            token is content-shaped and has zero corpus support anywhere —
+            a deliberate precision gate (it is what makes injection /
+            "rejected" queries return nothing) that also means an ordinary
+            paraphrase carrying one unsupported content word (a verb, not a
+            function word — "wynosi", "zajmuje") returns nothing even when
+            every OTHER token in the query would have found the answer.
+            `count: 0` here does NOT mean the store is empty. If a query you
+            expect to match returns nothing, retry with `tiers="entity"`
+            (or the tier you expect the hit in) — that path calls
+            client.search() directly and does not carry this abstention gate.
         """
         try:
             # MH-4: mirror the adapter's _MIN_QUERY_LEN guard. A 1-2 char query

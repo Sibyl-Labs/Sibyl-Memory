@@ -89,7 +89,13 @@ def test_multitoken_ladder_rescue(tmp_path):
 # 3. ladder discipline: longest-first, stop at first append
 # --------------------------------------------------------------------------
 
-def test_ladder_longest_first_and_stops(tmp_path):
+def test_ladder_longest_first_and_continues(tmp_path):
+    """N3' (Kravento PL eval, 2026-08-18) overturned this test's original name
+    (test_ladder_longest_first_and_stops): the query names TWO concepts and
+    both rows answer it, so requiring magazyn-glowny to be ABSENT encoded the
+    N3' bug (stopping at the first appending probe) rather than an invariant.
+    What this test legitimately pins — the tie-break ORDER, longer/more-
+    selective stem leads — is retained below."""
     c = MemoryClient.local(tmp_path / "m.db", tenant_id="t1")
     # 'reklama' (len 7) matches R1; 'magazy' (len 6) matches R2 — disjoint rows.
     c.set_entity("support", "reklamacja-obsluga", {"text": "reklamacja rozpatrzona"})
@@ -100,11 +106,12 @@ def test_ladder_longest_first_and_stops(tmp_path):
     assert [h["key"] for h in c._shadow_fallback("magazy", limit=10)] == ["magazyn-glowny"]
 
     # Query has both tokens uncovered; full-stemmed AND appends nothing, so the
-    # ladder runs. It tries the LONGER stem ('reklama') first, appends R1, and
-    # STOPS — 'magazy' is never probed, so R2 must be absent.
+    # ladder runs. Both probes tie on hit count (1 row each); the longer stem
+    # ('reklama') leads per the tie-break, but the ladder now CONTINUES past
+    # its append instead of stopping, so 'magazy' still runs and R2 surfaces.
     keys = [h["key"] for h in c.search("reklamacji magazynie", limit=10)]
-    assert keys == ["reklamacja-obsluga"]
-    assert "magazyn-glowny" not in keys
+    assert keys[0] == "reklamacja-obsluga"
+    assert "magazyn-glowny" in keys
 
 
 # --------------------------------------------------------------------------

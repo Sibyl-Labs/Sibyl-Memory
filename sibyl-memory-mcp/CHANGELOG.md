@@ -4,7 +4,26 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.1.14] - 2026-08-22
+
+### Changed
+- **Dependency floor raised to `sibyl-memory-client>=0.7.0`, closing a
+  packaging hazard** (cryptoxdylan, independent verification, 2026-08-18): the
+  prior floor (`>=0.5.0`) meant `pip install -U sibyl-memory-mcp` alone was a
+  silent no-op once a newer client existed on PyPI — pip's default
+  only-if-needed upgrade strategy leaves an already-satisfying older client in
+  place, so an MCP-only install (a self-built Docker image, a `pipx`-isolated
+  install, anything not going through `sibyl-memory-cli`'s tighter floor)
+  could sit on unpatched retrieval code indefinitely while reporting a clean
+  install. Picks up the client 0.7.0 N4/N5/N1'-diagnostics fixes.
+- **`memory_search` docstring documents the default-path abstention
+  contract.** No behavior change — the untiered path has always been able to
+  return `count: 0` on an ordinary paraphrase carrying one unsupported content
+  word, indistinguishable from an empty store. The docstring now says so
+  explicitly and tells a caller to retry with `tiers="entity"` (or the
+  expected tier) when a query that should match returns nothing.
+
+## [0.1.13-fixes] - 2026-08-16 (folded into 0.1.13, no separate release)
 
 ### Fixed
 - **Default `memory_search` path (tiers omitted) now answers question-shaped
@@ -25,9 +44,15 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
   `docker-compose.yml`, `.dockerignore`) and a README "Run with Docker"
   section.** Non-root user, pinned slim Python base, no secrets baked in,
   memory on a mounted volume. These are repo-level infra and docs only: the
-  published wheel contents are unchanged, so there is no version bump and no
-  new PyPI release for this addition. The Docker files ship via the GitHub
-  source sync.
+  published wheel contents are unchanged at the time this section was written
+  — see 0.1.14 above, which is the release that actually needed a version
+  bump for retrieval fixes. The Docker files ship via the GitHub source sync.
+  **Caveat surfaced 2026-08-22**: an image built with `docker build` from this
+  Dockerfile bakes in whatever `sibyl-memory-client` is on PyPI at BUILD time
+  (`pip install /app/sibyl-memory-mcp` inside the image, not a floating
+  install) — rebuild the image (`docker build -t sibyl-memory-mcp:local .`)
+  to pick up a newer client; a running or previously-built container does not
+  update itself.
 
 ## [0.1.13] - 2026-08-06
 

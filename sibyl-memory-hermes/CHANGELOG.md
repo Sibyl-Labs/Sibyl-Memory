@@ -4,7 +4,27 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.3.16] - 2026-08-22
+
+### Changed
+- **Dependency floor raised to `sibyl-memory-client>=0.7.0`, closing the same
+  packaging hazard fixed in `sibyl-memory-mcp` 0.1.14** (cryptoxdylan,
+  independent verification, 2026-08-18): the prior floor (`>=0.5.0`) meant a
+  Hermes-only `pip install -U sibyl-memory-hermes` could leave an older,
+  unpatched client in place. `provider.py`'s `search_multi_record` calls
+  `multi_record_search` directly, so Hermes agents were exposed to the same
+  default-path retrieval gaps as the MCP server. Picks up the client 0.7.0
+  N4/N5/N1'-diagnostics fixes.
+
+### Added
+- **`SibylMemoryProvider.search_multi_record` accepts an optional
+  `diagnostics: dict | None` kwarg**, passed straight through to the client's
+  `multi_record_search`. Populated with `abstained`, `abstained_on`,
+  `dropped_function`, `negation_dropped`, `coverage` — pass `diagnostics={}`
+  to see which token triggered an empty result instead of reading it as
+  "nothing was stored." Additive; every existing caller is unaffected.
+
+## [0.3.15-fixes] - 2026-08-16 (folded into 0.3.16, no separate release)
 
 ### Fixed
 - **`sibyl_search` now answers question-shaped queries.** No adapter change — the

@@ -4,6 +4,103 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.7.0] - 2026-08-22
+
+Multi-language search, part 4 (Kravento / Bilbo Polish evaluation, closing out
+what 0.6.1 left open). Independent adversarial re-verification of the 0.6.1
+release (cryptoxdylan, external contributor) found the N-series only partly
+closed the default-MCP-path defect class: N2/N3 held, but a nonzero-df
+function word could still anchor/pollute scoring (N4), a dropped negation word
+silently answered the opposite of the query (N5, newly discovered), and the
+df=0 abstention rule itself remained unchanged with only its lexicon grown
+(N1'). This release closes N4 and N5, and ships a diagnostics channel for N1'
+after a coverage-ratio alternative was implemented and measured unsafe (see
+Fixed below). `search()` and `multi_record_search()` output shapes are
+backward-compatible except where a caller was relying on N5's prior (silently
+wrong) negation behavior — see Changed. New optional `diagnostics` kwarg on
+`multi_record_search` is additive; every existing caller is unaffected.
+
+### Fixed
+
+- **N4 — a nonzero-df function word could anchor the ranking and crowd out the
+  genuine match.** N1 (0.6.1) dropped a function-shaped token only when it had
+  zero corpus support. A function word that happened to have SOME support
+  elsewhere by pure substring (`'our'` matching inside `'c-our-ier'`) was kept,
+  and because it was rare (low df) it could become the anchor term and sit in
+  the idf denominator, scoring a spurious match (`courier-pickups`) higher than
+  the genuine one (`warehouse-*`, matching `'warehouses'`) — measured missing
+  `COVERAGE_THRESHOLD` by 0.005 in the reported case. A function-shaped token
+  is now dropped at ANY df, not only df==0, provided at least one content
+  token survives (an all-function query is left untouched, byte-identical to
+  0.6.1). `'where are our warehouses'`: 1 wrong result → 3 correct results.
+- **N3' — the D2L rescue ladder still stopped at the first appending probe
+  when it shouldn't have.** N3 (0.6.1) ordered probes by selectivity but kept
+  the original "stop after the first append" discipline. For a query naming
+  TWO concepts that both have answers (`'reklamacji magazynie'`), stopping
+  after the first discarded a row that had already been fetched and paid for.
+  The ladder now continues while `len(out) < cap` instead of breaking at the
+  first append; fan-out is unchanged (all probes are fetched up front).
+- **Coverage computation no longer assumes every matched token survived the
+  drop step.** `cov = sum(idf.get(t, 0.0) for t in e["m"]) / total` — a
+  candidate that matched ONLY a since-dropped function/negation token now
+  scores 0 coverage instead of raising `KeyError` or (pre-fix) riding that
+  token's idf into relevance.
+
+### Added
+
+- **N5 — negation-word policy.** Dropping a negation word (`'not'`, `'nie'`,
+  `'nicht'`/`'kein'`...) as a function word left the query answered as if it
+  were never negated (`'contract not approved'` → the record saying it WAS
+  approved). Full-text search has no negation handling either way, so this is
+  a policy decision, not a quality regression: `NEGATION_POLICY` (module
+  constant, default `"abstain"`) makes a dropped negation word abstain the
+  query (`[]`) instead of silently answering the opposite. `"ignore"`
+  preserves the pre-N5 behavior as an explicit opt-out. Verified against the
+  full suite with zero regressions.
+- **N1' diagnostics channel.** A coverage-ratio alternative to the df==0
+  abstention rule ("abstain only when supported-token coverage falls below a
+  fraction of the query") was implemented and measured, then rejected on
+  evidence: the paraphrase class and the abstention class collide at
+  identical coverage ratios with opposite required outcomes (e.g. 0.667 for
+  both an answerable multi-word question and an unanswerable
+  short-discriminator query) — `df` cannot distinguish an unsupported
+  CONNECTIVE VERB from an unsupported DISCRIMINATOR without a signal this
+  module does not have (morphology/POS). `DF0_ABSTAIN_POLICY` is recorded as
+  a documented sentinel (`"any"`, the only supported value) rather than
+  shipped as a second, unsafe code path. What ships instead: an optional
+  `diagnostics: dict | None` kwarg on `multi_record_search`, populated with
+  `abstained`, `abstained_on`, `dropped_function`, `negation_dropped`, and
+  `coverage` — additive, zero extra searches, zero precision cost. `count: 0`
+  stops being indistinguishable from "nothing is stored"; a caller reading
+  `abstained_on` can retry `tiers="entity"` with the one word to drop instead.
+
+### Changed
+
+- Default runtime behavior for a query containing a negation word that gets
+  dropped as a function word: previously answered with the record asserting
+  the opposite (silently wrong); now abstains (`[]`) unless `NEGATION_POLICY`
+  is explicitly set to `"ignore"`. This is the one behavior change in this
+  release that isn't purely additive — flagged here per SemVer minor
+  (real query results can change for negated inputs, everything else is
+  either a precision improvement or additive).
+
+### Provenance
+
+cryptoxdylan (external contributor) independently reproduced both the
+2026-08-07 and 2026-08-13 Kravento/Bilbo reports as pytest regression suites
+against clean PyPI installs, confirmed F1/F2/F3/N2/N3 closed, and reproduced
+N4/N1'/N3'/N5 live on 0.6.1 (black-box, freshly-spawned MCP process included).
+He also flagged a packaging hazard closed in this release cycle (see mcp/
+hermes CHANGELOGs): `sibyl-memory-mcp` and `sibyl-memory-hermes` floored on
+`sibyl-memory-client>=0.5.0`, so an MCP- or Hermes-only `pip install -U` was a
+silent no-op once `sibyl-memory-cli`'s tighter floor was the only thing
+actually pulling a newer client. He built and emailed a working patch with a
+339/343-passing test run; that attachment did not survive the Gmail-attachment
+retrieval path intact (gzip CRC mismatch, confirmed corrupt against two
+independent decode paths in the same session this shipped). The fix above is
+SIBYL's independent reimplementation against his detailed written analysis,
+verified against the scenarios he reproduced rather than his exact bytes.
+
 ## [0.6.1] - 2026-08-16
 
 Multi-language search, part 3 (Kravento / Bilbo Polish evaluation, follow-up to
