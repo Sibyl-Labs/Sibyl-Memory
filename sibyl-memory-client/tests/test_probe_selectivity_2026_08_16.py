@@ -77,11 +77,14 @@ def test_no_truncation_beyond_probe_cap(tmp_path):
         "N3: candidate-set truncation dropped a reachable target past the probe cap"
 
 
-def test_tie_break_reproduces_length_order_and_stop(tmp_path):
-    """No-regression twin of test_covgate_stem::test_ladder_longest_first_and_stops:
-    when two disjoint probes TIE on hit count (1 each), the length tie-break keeps
-    today's winner (the longer stem) and the ladder still stops at the first
-    append, so the shorter stem's row stays absent."""
+def test_tie_break_reproduces_length_order_and_continues(tmp_path):
+    """No-regression twin of test_covgate_stem::test_ladder_longest_first_and_continues.
+    N3' (Kravento PL eval, 2026-08-18) overturned this test's original name
+    (test_tie_break_reproduces_length_order_and_stop): when two disjoint probes
+    TIE on hit count (1 each), the length tie-break still keeps today's winner
+    (the longer stem leads), but the ladder no longer stops at the first
+    append — both rows answer the query, so the shorter stem's row now
+    surfaces too."""
     c = MemoryClient.local(tmp_path / "n3b.db", tenant_id="t1")
     c.set_entity("support", "reklamacja-obsluga", {"text": "reklamacja rozpatrzona"})
     c.set_entity("wh", "magazyn-glowny", {"text": "magazyn glowny lokalizacja"})
@@ -91,6 +94,7 @@ def test_tie_break_reproduces_length_order_and_stop(tmp_path):
     assert [h["key"] for h in c._shadow_fallback("magazy", limit=10)] == ["magazyn-glowny"]
 
     keys = [h["key"] for h in c.search("reklamacji magazynie", limit=10)]
-    # longer stem 'reklama' (7) wins the tie, appends R1, and the ladder STOPS
-    assert keys == ["reklamacja-obsluga"]
-    assert "magazyn-glowny" not in keys
+    # longer stem 'reklama' (7) wins the tie and leads; the ladder continues
+    # past it, so 'magazy' still runs and R2 surfaces below it.
+    assert keys[0] == "reklamacja-obsluga"
+    assert "magazyn-glowny" in keys

@@ -1525,13 +1525,25 @@ class MemoryClient:
                     # via _MAX_FANOUT_TOKENS. The loop keeps `if _append(rows)` (not
                     # break-after-fetch) so a most-selective probe whose rows all dedup
                     # against the head falls through to the next.
+                    # N3' (Kravento PL eval, 2026-08-18): the ladder used to
+                    # stop at the first probe that appended anything. For a
+                    # query naming TWO concepts ('reklamacji magazynie') that's
+                    # wrong: both rows answer the query, and stopping after the
+                    # first discards a row that was already fetched and paid
+                    # for. Continue the ladder while len(out) < cap instead of
+                    # breaking at the first append; the cap already bounds
+                    # fan-out (probes are all fetched up front, above), and the
+                    # tie-break ORDER this used to encode — longer/more-
+                    # selective stem leads — is unchanged, only the early stop
+                    # is gone.
                     probes = sorted(uncovered, key=lambda p: len(p[1]), reverse=True)
                     fetched = [(stem, self._shadow_fallback(stem, limit=limit, tiers=tiers))
                                for _tok, stem in probes]
                     fetched = [sr for sr in fetched if sr[1]]  # drop empty probes
                     fetched.sort(key=lambda sr: (len(sr[1]), -len(sr[0])))
                     for _stem, rows in fetched:
-                        if _append(rows):
+                        _append(rows)
+                        if len(out) >= cap:
                             break
         # N2 backfill: re-append the held relaxed-single tail after the rescue. If
         # the ladder appended nothing every held row returns in its original order

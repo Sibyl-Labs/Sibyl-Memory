@@ -55,14 +55,24 @@ def test_question_query_surfaces_target(tmp_path):
     assert "inwentaryzacja" in {h.get("key") for h in res}
 
 
-def test_drop_only_at_df_zero(tmp_path):
-    """When a function word actually has corpus support (df>0) it is NOT dropped —
-    the drop happens only at df=0. The target still surfaces."""
+def test_function_word_dropped_even_with_df_support(tmp_path):
+    """N4 (Kravento PL eval, 2026-08-18) overturned this test's original name
+    and contract (test_drop_only_at_df_zero: 'the drop happens only at df=0').
+    A function word that happens to have corpus support elsewhere ('kiedy'
+    matching an unrelated daily-planning note) must NOT ride that support into
+    the idf denominator or anchor scoring — it is dropped at ANY df once
+    proven function-shaped, provided a content token survives. This is a
+    precision improvement, not just a non-regression: the unrelated 'plan'
+    record used to leak into the result for a query that never asked about
+    daily planning."""
     c = _seed(tmp_path)
     c.set_entity("notes", "plan", {"text": "kiedy zaczynamy prace w biurze"})
-    # now 'kiedy' has df>0, so it participates normally (no drop path taken)
+    # 'kiedy' now has df>0 (via 'plan'), but N4 drops it anyway since
+    # 'inwentaryzacja' (content) survives.
     res = multi_record_search(c, "kiedy inwentaryzacja", limit=10)
-    assert "inwentaryzacja" in {h.get("key") for h in res}
+    keys = {h.get("key") for h in res}
+    assert "inwentaryzacja" in keys
+    assert "plan" not in keys, "N4 regression: dropped-function-word idf leak let 'plan' back in"
 
 
 # --------------------------------------------------------------------------

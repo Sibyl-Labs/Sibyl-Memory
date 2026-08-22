@@ -448,7 +448,8 @@ class SibylMemoryProvider:
         """
         return self._client.search(query, limit=limit, prefix=prefix, tiers=tiers)
 
-    def search_multi_record(self, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    def search_multi_record(self, query: str, *, limit: int = 20,
+                             diagnostics: dict | None = None) -> list[dict[str, Any]]:
         """Two-stage retrieve-then-verify search for workflow / linked-record
         queries (whose answer spans several related records, e.g. feedback + bug +
         journal). Surfaces all the linked records instead of only the single
@@ -456,9 +457,17 @@ class SibylMemoryProvider:
 
         Same hit shape as ``search()``. For exact single-entity lookups use
         ``recall()``. Backed by ``sibyl_memory_client.multi_record``.
+
+        This path abstains (returns ``[]``) the moment one significant query
+        token is content-shaped and has zero corpus support anywhere — an
+        ordinary paraphrase carrying one unsupported content word can return
+        nothing even when ``search()`` would have found the answer (Kravento
+        PL eval, 2026-08-18). Pass ``diagnostics={}`` to see which token
+        triggered an abstention or was dropped, rather than reading an empty
+        result as "nothing was stored"; retry via ``search()`` directly if so.
         """
         from sibyl_memory_client.multi_record import multi_record_search
-        return multi_record_search(self._client, query, limit=limit)
+        return multi_record_search(self._client, query, limit=limit, diagnostics=diagnostics)
 
     # ------------------------------------------------------------------
     # Diagnostics

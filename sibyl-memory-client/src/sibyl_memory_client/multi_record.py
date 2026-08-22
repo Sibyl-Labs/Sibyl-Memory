@@ -236,6 +236,66 @@ def _df0_droppable(tok: str) -> bool:
     return tok in _DF0_FUNCTION
 
 
+# --- N4 / N5 / N1' diagnostics (Kravento PL eval, 2026-08-18) ----------------
+# Independent adversarial re-verification (cryptoxdylan) of the 0.6.1 release
+# found the N-series only partly closed the default-MCP-path defect class:
+#
+#   N4  a NONZERO-df function word ('our', matching inside 'c-our-ier' by pure
+#       substring) still polluted idf/anchor scoring because N1 only dropped
+#       function words at df==0. Fix: drop a token once it has proven
+#       FUNCTION-shaped at ANY df, provided a content token survives.
+#   N5  a dropped negation word ('not', 'nie', 'nicht'...) left the record
+#       asserting the OPPOSITE of the query ('contract not approved' answered
+#       with the record saying it WAS approved). NEGATION_POLICY makes this a
+#       decision instead of a silent side effect of N1/N4's drop mechanism.
+#   N1' the df==0 abstention rule itself (see _df0_droppable) is unchanged — a
+#       coverage-ratio alternative was implemented and measured, and rejected:
+#       the paraphrase class and the abstention class collide at identical
+#       coverage ratios (e.g. 0.667 for both an answerable multi-word question
+#       and an unanswerable short-discriminator query), so no threshold
+#       separates them without a signal this module does not have (morphology/
+#       POS). What ships instead is a diagnostics channel: an optional
+#       `diagnostics` dict on multi_record_search, populated with which token
+#       triggered an abstention, which tokens were dropped as function/
+#       negation words, and how much of the query survived to scoring — so
+#       `count: 0` stops being indistinguishable from "nothing is stored" and
+#       a caller can retry tier-filtered with the named blocking token instead.
+#
+# NOTE ON PROVENANCE: cryptoxdylan's own patch (reviewed, described exhaustively
+# in his 2026-08-18 email with line-level rationale and a 339/343-passing test
+# run) failed to survive intact through the Gmail-attachment retrieval path
+# (gzip CRC mismatch, corruption confirmed byte-for-byte against two
+# independent decode paths). The logic below is SIBYL's own reimplementation
+# against his written analysis, independently tested against the scenarios he
+# reproduced (courier/warehouse anchor pollution, reklamacji/magazynie ladder,
+# contract-not-approved negation) rather than his exact bytes.
+_NEGATION = frozenset({
+    "not", "nor", "cannot",                                   # English
+    "nie",                                                    # Polish
+    "nicht", "kein", "keine", "keinen", "keinem", "keiner",   # German
+})
+
+NEGATION_POLICY = "abstain"
+# "abstain": a dropped negation word (see _NEGATION) makes the query abstain
+#   ([]) rather than silently answer with the record asserting the opposite.
+#   Verified zero regressions against the full suite (2026-08-18 eval).
+# "ignore": pre-N5 behaviour — the negation word is dropped like any other
+#   function word and the query is scored as if it were never there. Kept as
+#   an escape hatch; not recommended.
+DF0_ABSTAIN_POLICY = "any"
+# "any" (the only supported value): abstain the whole query the moment ONE
+# significant token is content-shaped and has zero corpus support (current,
+# load-bearing behaviour — see _df0_droppable). A "coverage" alternative
+# (abstain only when SUPPORTED-token coverage falls below a fraction of the
+# query) was implemented and measured against both the abstention corpus and
+# the paraphrase corpus and rejected on evidence: it collides with the
+# precision gate at identical coverage ratios with opposite required outcomes
+# (e.g. 0.667 for both an answerable question and an unanswerable
+# short-discriminator query — df cannot tell an unsupported CONNECTIVE VERB
+# from an unsupported DISCRIMINATOR), and it reopens the CORE-6/MH-3 fanout
+# bound (a garbage query needs every token's df instead of aborting on the
+# first). Recorded as a sentinel rather than shipped as inert dead code.
+
 _TERMINAL_Q = {"final", "resolved", "approved", "published", "closed", "sent",
                "emailed", "decision", "finalized"}
 
@@ -345,7 +405,9 @@ def _pure_prep(body_lower: str) -> bool:
     return bool(_PREP_RE.search(body_lower)) and not bool(_TERM_RE.search(body_lower))
 
 
-def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | None = None):
+def multi_record_search(client, query: str, *, limit: int = 10,
+                         corpus_n: int | None = None,
+                         diagnostics: dict | None = None):
     """Two-stage retrieve-then-verify search over a MemoryClient.
 
     Returns a ranked list of hit dicts in the SAME shape client.search() returns
@@ -353,6 +415,23 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
     the query is unsatisfiable (abstention) or nothing clears the verify gates.
 
     For exact single-entity lookups, prefer client.recall() / get_entity().
+
+    `diagnostics` (N1', 2026-08-18): pass a dict to have it populated, additive
+    and at zero extra searches / zero precision cost. Every existing caller is
+    unaffected by leaving it None. Shape:
+      abstained         bool  — True if the query hit the content-shaped df==0
+                                 gate or the negation-abstain policy
+      abstained_on      list  — the blocking token(s), when abstained
+      dropped_function  list  — function-shaped tokens excluded from scoring
+                                 (N1 at df==0, N4 at any df)
+      negation_dropped  list  — the subset of dropped_function that are
+                                 negation words (see NEGATION_POLICY)
+      coverage          float — fraction of significant query tokens that
+                                 survived to scoring (1.0 - drop rate); 0.0 on
+                                 abstention
+    `count: 0` with an empty diagnostics-less call is indistinguishable from
+    an empty store; a caller reading `abstained_on` can retry tier-filtered
+    with the one word to drop instead of reading it as "nothing was stored".
     """
     toks = _significant_tokens(query)
     if not toks:
@@ -369,6 +448,7 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
         toks = keep
     else:
         toks = uniq
+    original_toks = list(toks)  # N1' diagnostics: coverage is relative to this
     if corpus_n is None:
         corpus_n = _corpus_count(client)  # CORE-6/MH-3: cheap COUNT(*), not full scan
 
@@ -385,6 +465,12 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
             # "when", "gdzie") carried no corpus signal by construction, so it is
             # dropped after the loop instead of collapsing the whole query.
             if not _df0_droppable(t):
+                if diagnostics is not None:
+                    diagnostics["abstained"] = True
+                    diagnostics["abstained_on"] = [t]
+                    diagnostics["dropped_function"] = []
+                    diagnostics["negation_dropped"] = []
+                    diagnostics["coverage"] = 0.0
                 return []  # abstention: a discriminating term nothing satisfies
             continue  # accumulate no candidates for a droppable zero-df token
         for h in hits:
@@ -402,17 +488,60 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
             if rank < e["best"]:
                 e["best"] = rank
 
-    # N1: drop the FUNCTION-shaped zero-df tokens BEFORE idf / min_df / anchor_cut.
-    # Filtering df here is load-bearing: it makes the coverage denominator exclude
-    # dropped tokens (so 'kiedy jest inwentaryzacja' scores coverage 1.0 on
-    # 'inwentaryzacja') and prevents a min_df=0 from poisoning the anchor band.
-    # terminal_q was computed from the PRE-drop toks (above), so a dropped zero-df
-    # 'sent' still keeps the terminal/prep gate armed.
+    # N1 (df==0) + N4 (Kravento PL eval, 2026-08-18): drop FUNCTION-shaped tokens
+    # BEFORE idf / min_df / anchor_cut — at ANY df, not only df==0. N1 alone left
+    # a nonzero-df function word (e.g. 'our', matching inside 'c-our-ier' by pure
+    # substring) in the idf denominator and eligible to anchor the ranking, which
+    # could crowd the genuine content match ('warehouses') below
+    # COVERAGE_THRESHOLD by a few thousandths. Conditioned on at least one
+    # non-function token surviving — an all-function query ('where are our') is
+    # left untouched, byte-identical to pre-N4. Every remaining df==0 token here
+    # is guaranteed droppable (a content-shaped one would already have returned
+    # [] above), so this single pass covers both N1 and N4 without re-deriving
+    # which df==0 exclusions were already decided. terminal_q was computed from
+    # the PRE-drop toks (above), so a dropped zero-df 'sent' still keeps the
+    # terminal/prep gate armed.
+    dropped_function: list = []
     if any(df[t] == 0 for t in toks):
+        zero_dropped = [t for t in toks if df[t] == 0]  # all droppable by construction
         toks = [t for t in toks if df[t] > 0]
         if not toks:
             return []
         df = {t: df[t] for t in toks}
+        dropped_function.extend(zero_dropped)
+
+    # N4 (Kravento PL eval, 2026-08-18): among the tokens that still have
+    # corpus support, a function-shaped one (e.g. 'our', matching inside
+    # 'c-our-ier' by pure substring) must not pollute idf/anchor scoring
+    # either. Separate from the df==0 step above and gated the same way — only
+    # when a content token survives, so the all-function-query guard applies
+    # to the LAST remaining token regardless of which step it reached that
+    # position through (e.g. 'where are our': 'where' drops at df==0 above,
+    # leaving 'our' alone — 'our' must NOT then drop itself, or the query
+    # would abstain on nothing left, unlike unpatched 0.6.1).
+    nonzero_droppable = [t for t in toks if _df0_droppable(t)]
+    if nonzero_droppable and len(nonzero_droppable) < len(toks):
+        toks = [t for t in toks if t not in _DF0_FUNCTION]
+        df = {t: df[t] for t in toks}
+        dropped_function.extend(nonzero_droppable)
+    negation_dropped = [t for t in dropped_function if t in _NEGATION]
+    if not toks:
+        return []
+
+    # N5 (Kravento PL eval, 2026-08-18): dropping a negation word makes the
+    # query answer as if it were never negated ('contract not approved' ->
+    # the record saying it WAS approved). Full-text search has no negation
+    # handling either way, so this is a policy call, not a quality regression:
+    # NEGATION_POLICY="abstain" makes the silent wrong answer loud (return [])
+    # instead of quiet.
+    if negation_dropped and NEGATION_POLICY == "abstain":
+        if diagnostics is not None:
+            diagnostics["abstained"] = True
+            diagnostics["abstained_on"] = []
+            diagnostics["dropped_function"] = dropped_function
+            diagnostics["negation_dropped"] = negation_dropped
+            diagnostics["coverage"] = 0.0
+        return []
 
     idf = {t: math.log((corpus_n + 1) / (df[t] + 1)) + 1.0 for t in toks}
     total = sum(idf.values()) or 1.0
@@ -431,7 +560,12 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
     for e in cand.values():
         if terminal_q and _pure_prep(e["body"]):
             continue                                   # drop purely-preparatory on a final-state query
-        cov = sum(idf[t] for t in e["m"]) / total
+        # dropped_function tokens may still tag a candidate's matched set (they
+        # were searched before the drop decision above); idf.get(t, 0.0) gives
+        # them zero weight instead of KeyError, so a candidate that ONLY
+        # matched a dropped token scores 0 coverage rather than riding a
+        # function word's idf into relevance (the N4 fix's other half).
+        cov = sum(idf.get(t, 0.0) for t in e["m"]) / total
         if cov < COVERAGE_THRESHOLD:
             continue                                   # below the hard coverage floor
         # Anchor-first HYBRID gate: keep a candidate that is in the anchor's
@@ -446,4 +580,15 @@ def multi_record_search(client, query: str, *, limit: int = 10, corpus_n: int | 
         tier = e["hit"].get("tier")
         scored.append((e["hit"], cov, _TIER_PRIORITY.get(tier, 0), e["best"]))
     scored.sort(key=lambda x: (-x[1], x[2], x[3]))
-    return [h for h, _cov, _tp, _best in scored[:limit]]
+    result = [h for h, _cov, _tp, _best in scored[:limit]]
+
+    if diagnostics is not None:
+        diagnostics["abstained"] = False
+        diagnostics["abstained_on"] = []
+        diagnostics["dropped_function"] = dropped_function
+        diagnostics["negation_dropped"] = negation_dropped
+        diagnostics["coverage"] = (
+            len(toks) / len(original_toks) if original_toks else 0.0
+        )
+
+    return result
