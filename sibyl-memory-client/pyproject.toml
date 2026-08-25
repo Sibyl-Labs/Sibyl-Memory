@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sibyl-memory-client"
-version = "0.7.0"
+version = "0.7.1"
 description = "Local-first agentic memory SDK. SQLite-backed five-tier hierarchical schema, FTS5 search, multi-tenant, with self-learning skill detection and local memory linter. Foundation of the Sibyl Memory Plugin family."
 authors = [{ name = "SIBYL, Sibyl Labs LLC", email = "sibyl@sibyllabs.org" }]
 license = { text = "MIT" }
@@ -22,7 +22,9 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Topic :: Database",
 ]
-dependencies = []
+dependencies = [
+  "certifi>=2024.7.4",
+]
 
 [project.optional-dependencies]
 dev = [
