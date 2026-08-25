@@ -15,12 +15,12 @@ Design pillars:
   - Every command exits with a clear status code (0 ok, 1 user error, 2 server error).
 """
 from __future__ import annotations
-
 import argparse
 import hashlib
 import json
 import os
 import secrets
+import ssl
 import sys
 import time
 import urllib.error
@@ -30,6 +30,23 @@ import uuid
 import webbrowser
 from pathlib import Path
 from typing import Any
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """HTTPS context that works on macOS framework Python.
+
+    Framework Python (python.org / Framework .pkg) ships without a CA bundle,
+    so the default ``ssl.create_default_context()`` raises
+    ``CERTIFICATE_VERIFY_FAILED`` against api.sibyllabs.org (Cloudflare).
+    When ``certifi`` is importable (already present as a transitive dep) we
+    use its CA bundle; otherwise we fall back to the stdlib default.
+    """
+    try:
+        import certifi  # type: ignore[import]
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
 
 
 def _client_version() -> str:
@@ -154,7 +171,7 @@ def http_request(  # noqa: D401
         full_headers.update(headers)
     req = urllib.request.Request(url, data=data, method=method, headers=full_headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         try:
@@ -1151,7 +1168,7 @@ def _pypi_latest(pkg: str, timeout: float = 4.0) -> str | None:
     url = f"https://pypi.org/pypi/{pkg}/json"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": f"sibyl-memory-cli/{_client_version()}"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
             data = json.loads(r.read().decode("utf-8"))
         return (data.get("info") or {}).get("version")
     except Exception:
