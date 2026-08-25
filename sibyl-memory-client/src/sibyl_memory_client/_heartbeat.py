@@ -31,6 +31,8 @@ import time
 import urllib.parse
 import urllib.request
 
+from ._trust import https_context
+
 _DEFAULT_URL = "https://api.sibyllabs.org/api/plugin/heartbeat"
 _FLUSH_EVERY_OPS = 15
 _FLUSH_INTERVAL_S = 600.0
@@ -153,7 +155,7 @@ class HeartbeatReporter:
             req = urllib.request.Request(self._url, data=body, headers=headers, method="POST")
             # Context-managed so the underlying HTTP socket closes deterministically
             # rather than waiting on GC (hygiene #15, 2026-06-30).
-            with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:
+            with urllib.request.urlopen(req, timeout=_TIMEOUT_S, context=https_context()) as resp:
                 resp.read()
         except Exception:
             pass  # fire-and-forget: telemetry must never disturb local memory
