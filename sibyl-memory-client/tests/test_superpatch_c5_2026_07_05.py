@@ -50,7 +50,7 @@ def _send_and_capture(monkeypatch, *, url=None, session_token="11111111-1111-111
     """
     captured: dict = {}
 
-    def fake_urlopen(req, timeout=None):
+    def fake_urlopen(req, timeout=None, context=None):
         captured["headers"] = {k.lower(): v for k, v in req.header_items()}
         captured["url"] = req.full_url
         captured["body"] = json.loads(req.data.decode())

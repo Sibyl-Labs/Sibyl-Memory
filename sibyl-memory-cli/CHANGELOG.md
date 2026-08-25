@@ -21,6 +21,32 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
   accounts page require users to read verbatim; it is not a bearer secret,
   and the never-print-the-bearer invariant is unchanged. Email and wallet
   masking are unchanged (`--full` still governs those).
+- **Dependency floor raised to `sibyl-memory-client>=0.8.1`**, which carries
+  the shared `_trust` context and declares `certifi` as a real dependency.
+  Without the floor bump a fresh install could resolve an older client, the
+  import fallback would quietly return the same broken default context, and
+  the fix would not actually ship. The floor is what makes certifi land in
+  every install path, pipx included.
+
+### Fixed
+- **`sibyl init` failed on macOS python.org "Framework" builds: `Warning:
+  session-init failed (0)`, browser pairing ended in "session not valid /
+  Bind failed", and `sibyl status` showed `server error: 0`.** That build
+  ships no CA bundle wired into Python's own OpenSSL (users are told to run
+  `Install Certificates.command`; many never do), so every
+  `urllib.request.urlopen` with the stdlib default context raised `[SSL:
+  CERTIFICATE_VERIFY_FAILED]` against api.sibyllabs.org, surfacing through
+  `http_request`'s URLError branch as status 0, while Safari and curl worked
+  (they read the system Keychain), which made the CLI look selectively
+  broken. Both CLI network paths (`http_request` and the `_pypi_latest`
+  update check, which was silently returning nothing on these machines) now
+  pass an explicit verified context from
+  `sibyl_memory_client._trust.https_context()`: platform trust store PLUS
+  certifi's CA bundle, additive only, hostname and chain verification fully
+  on. With no `sibyl-memory-client` importable (bare source tree) the CLI
+  degrades to the stdlib default context instead of crashing.
+  Reported by @keyurbodar (Sibyl-Labs/Sibyl-Memory#29); independent
+  implementation.
 
 ## [0.4.0] "Lucid" - 2026-08-31
 

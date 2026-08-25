@@ -64,7 +64,7 @@ def test_only_counts_no_content_in_payload(monkeypatch):
         def read(self): return b"{}"
         def __enter__(self): return self
         def __exit__(self, *a): return False
-    def fake_urlopen(req, timeout=None):
+    def fake_urlopen(req, timeout=None, context=None):
         import json
         captured["body"] = json.loads(req.data.decode())
         captured["headers"] = dict(req.header_items())
