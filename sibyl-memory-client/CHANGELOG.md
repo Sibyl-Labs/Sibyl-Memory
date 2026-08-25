@@ -4,6 +4,39 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.7.1] - 2026-08-25
+
+Darwin trust-store fix. The python.org "Framework" build of Python on macOS
+ships without a CA bundle wired into `ssl.create_default_context()` (users
+must run the bundled `Install Certificates.command`; many never do), so every
+stdlib-default HTTPS call fails with `CERTIFICATE_VERIFY_FAILED` while the
+same URL opens fine in Safari/curl. Both SDK network paths used that default
+context.
+
+### Fixed
+
+- **macOS framework-build Pythons could not verify api.sibyllabs.org — tier
+  verification degraded and heartbeats vanished.** On affected installs the
+  check-write call raised `TierVerificationError` on every slow-path write
+  (falling back to cache, or fail-open with no cache) and the fire-and-forget
+  heartbeat silently swallowed the SSL error, so the account never accrued
+  usage signal. Both transports now pass an explicit context from the new
+  `_trust` module: it starts from `ssl.create_default_context()` (platform
+  store, `SSL_CERT_FILE`/`SSL_CERT_DIR` overrides, full verification — all
+  preserved) and additionally loads certifi's Mozilla CA bundle. Additive
+  only: a store that already worked (Linux distro CAs, corporate roots) keeps
+  working; an empty macOS framework store gains a real bundle.
+  `check_hostname`/`verify_mode` are never touched — verification is never
+  weakened, and there is no opt-out that disables it.
+
+### Changed
+
+- **First runtime dependency: `certifi>=2024.7.4`.** The SDK was deliberately
+  zero-dependency; this trust gap cannot be closed from inside the stdlib, so
+  certifi is the one exception. If certifi is somehow absent (running from a
+  bare source tree), `_trust.https_context()` returns the stdlib default
+  context unchanged — exactly the pre-0.7.1 behavior, never a crash.
+
 ## [0.7.0] - 2026-08-22
 
 Multi-language search, part 4 (Kravento / Bilbo Polish evaluation, closing out

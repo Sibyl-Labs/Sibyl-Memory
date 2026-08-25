@@ -344,13 +344,17 @@ def _default_check_write_fn(
 ) -> dict[str, Any]:
     """Default network transport for the check-write call.
 
-    Pure stdlib (urllib) to keep the SDK zero-dependency. If the call
-    fails (timeout, network error, non-2xx), raises TierVerificationError.
+    Stdlib urllib transport; TLS trust comes from the shared certifi-backed
+    context (``_trust.https_context()``) so macOS framework-build Pythons —
+    which ship an empty OpenSSL trust store — verify api.sibyllabs.org
+    correctly. certifi is the SDK's single runtime dependency (0.7.1). If the
+    call fails (timeout, network error, non-2xx), raises TierVerificationError.
     Callers can pass in a custom fn for testing or for using their own
     HTTP client.
     """
     import urllib.request
     import urllib.error
+    from ._trust import https_context
     body = json.dumps(payload).encode("utf-8")
     # User-Agent sourced from installed metadata so version drift is impossible.
     try:
@@ -389,7 +393,7 @@ def _default_check_write_fn(
     # raises immediately so we don't add latency to genuine failures.
     for attempt in range(CHECK_WRITE_MAX_RETRIES + 1):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout, context=https_context()) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             # CAP-5 / CORE-2: 401/403 are authoritative "not entitled". Do not
