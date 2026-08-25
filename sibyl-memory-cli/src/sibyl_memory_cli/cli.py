@@ -4,7 +4,9 @@ Stdlib only. The CLI is a thin wrapper around HTTP calls to
 https://api.sibyllabs.org/api/plugin/* and the local SibylMemoryProvider.
 
 Design pillars:
-  - Zero non-stdlib deps in this file. urllib is enough.
+  - Zero HARD non-stdlib deps in this file. urllib is enough; sibyl_memory_client
+    is imported lazily where it helps (tenant resolution, TLS trust) and every
+    such import degrades gracefully when the package is absent.
   - Credentials are written atomically at mode 0600, set at file-creation
     time via O_CREAT|O_EXCL|O_NOFOLLOW (no chmod-after-write race).
   - The URL parameter handed to the browser is an opaque session identifier,
@@ -21,6 +23,7 @@ import hashlib
 import json
 import os
 import secrets
+import ssl
 import sys
 import time
 import urllib.error
@@ -135,6 +138,24 @@ class HttpError(Exception):
         self.url = url
 
 
+def _https_context() -> ssl.SSLContext:
+    """TLS context for every CLI network call (api.sibyllabs.org, pypi.org).
+
+    Prefers the shared certifi-backed trust context from sibyl-memory-client —
+    the fix for macOS framework-build Pythons that ship an empty OpenSSL trust
+    store (the `session-init failed (0)` / `Bind failed` / `server error: 0`
+    class of report). Degrades to the stdlib default context when the client
+    package is absent, mirroring the `_ver_lt` packaging fallback: the CLI
+    stays runnable stdlib-only, just without the Darwin trust fix. Verification
+    is fully on in both branches; nothing here ever weakens it.
+    """
+    try:
+        from sibyl_memory_client._trust import https_context
+    except ImportError:
+        return ssl.create_default_context()
+    return https_context()
+
+
 def http_request(  # noqa: D401
     method: str,
     path: str,
@@ -154,7 +175,7 @@ def http_request(  # noqa: D401
         full_headers.update(headers)
     req = urllib.request.Request(url, data=data, method=method, headers=full_headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=_https_context()) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         try:
@@ -1151,7 +1172,7 @@ def _pypi_latest(pkg: str, timeout: float = 4.0) -> str | None:
     url = f"https://pypi.org/pypi/{pkg}/json"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": f"sibyl-memory-cli/{_client_version()}"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout, context=_https_context()) as r:
             data = json.loads(r.read().decode("utf-8"))
         return (data.get("info") or {}).get("version")
     except Exception:
