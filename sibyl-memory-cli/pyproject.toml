@@ -23,7 +23,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-  "sibyl-memory-client>=0.8.0",
+  "sibyl-memory-client>=0.8.1",
   "sibyl-memory-hermes>=0.4.0",
   "pyyaml>=6.0,<7",
 ]

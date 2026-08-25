@@ -18,9 +18,37 @@ follows [SemVer](https://semver.org/).
   server-side tier name the client does not know can never silently demote
   a paying user again (`tests/test_pro_tier_2026_09_03.py`).
 
+### Changed
+- **First runtime dependency: `certifi>=2024.7.4`.** The SDK was deliberately
+  zero-dependency; the macOS trust gap below cannot be closed from inside the
+  stdlib, so certifi is the one exception. If certifi is somehow absent
+  (running from a bare source tree), `_trust.https_context()` returns the
+  stdlib default context unchanged, exactly the pre-0.8.1 behavior, never a
+  crash.
+
 ### Fixed
 - Free-tier cap copy now says 5 MB everywhere (the cap itself has been
   5 MiB since 0.5.0; 0.8.0 shipped with two stale 2 MB strings).
+- **macOS framework-build Pythons could not verify api.sibyllabs.org, so tier
+  verification degraded and heartbeats vanished.** The python.org "Framework"
+  build of Python on macOS ships without a CA bundle wired into
+  `ssl.create_default_context()` (users are told to run the bundled
+  `Install Certificates.command`; many never do), so every stdlib-default
+  HTTPS call fails with `CERTIFICATE_VERIFY_FAILED` while the same URL opens
+  fine in Safari and curl. On affected installs the check-write call raised
+  `TierVerificationError` on every slow-path write (falling back to cache, or
+  fail-open with no cache) and the fire-and-forget heartbeat silently
+  swallowed the SSL error, so the account never accrued usage signal. Both
+  transports now pass an explicit context from the new `_trust` module: it
+  starts from `ssl.create_default_context()` (platform store, `SSL_CERT_FILE`
+  and `SSL_CERT_DIR` overrides, full verification, all preserved) and
+  additionally loads certifi's Mozilla CA bundle. Additive only: a store that
+  already worked (Linux distro CAs, corporate roots) keeps working; an empty
+  macOS framework store gains a real bundle. `check_hostname` and
+  `verify_mode` are never touched, so verification is never weakened, and
+  there is no opt-out that disables it.
+  Reported by @keyurbodar (Sibyl-Labs/Sibyl-Memory#29); independent
+  implementation.
 
 ## [0.8.0] "Lucid" - 2026-08-31
 
