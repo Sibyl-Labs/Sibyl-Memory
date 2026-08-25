@@ -22,7 +22,9 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Topic :: Database",
 ]
-dependencies = []
+dependencies = [
+  "certifi>=2024.7.4",
+]
 
 [project.optional-dependencies]
 dev = [
