@@ -167,6 +167,15 @@ def fold_py(text: str) -> str:
 # ---------------------------------------------------------------------------
 NORMALIZER_VERSION = 1
 
+# The schema marker that corresponds to the rendering above, stamped into
+# PRAGMA user_version by storage.py. It lives HERE, next to the rendering, so the
+# two writers of the rendering (storage's migration and shadow._heal) can both
+# stamp it. Marker 4 was the fold-only rendering shipped as 0.7.0; 5 was an
+# intermediate revision of this branch that never left it; 6 is
+# NORMALIZER_VERSION 1 with the full boundary set. Any change to the four
+# per-tier expressions must bump this or existing stores keep the old rendering.
+SHADOW_MARKER = 6
+
 _STEM_MIN_TOKEN = 5     # tokens shorter than this are never truncated
 _STEM_DROP = 3          # drop up to this many trailing chars
 _STEM_FLOOR = 5         # never truncate a stem below this many chars
@@ -183,10 +192,23 @@ _MAX_SHADOW_TERMS = 12
 # byte. `_` is deliberately absent: it is a \w character, so it is part of a
 # token on both sides (s3_bucket stays one token).
 _BOUNDARY_CHARS = (
+    # ASCII
     '"', "'", "`", "\\", "/", "|",
     "{", "}", "[", "]", "(", ")", "<", ">",
     ":", ";", ",", ".", "!", "?",
     "-", "=", "+", "*", "&", "%", "$", "#", "@", "~", "^",
+    # Typographic (adversarial review 2026-08-30, finding 5). The ASCII-only set
+    # left 18 characters that are word boundaries to a reader but not to the
+    # rendering, so a word wrapped in them had no word START and the exactness
+    # tie-break silently scored 0 for it. `\u201e ... \u201d` is the standard POLISH
+    # quotation pair, so the build's own target language was in the gap, and
+    # NBSP is the commonest of these in pasted content.
+    "\u2013", "\u2014", "\u2015",              # en dash, em dash, horizontal bar
+    "\u201c", "\u201d", "\u2018", "\u2019",     # curly double + single quotes
+    "\u201e", "\u00ab", "\u00bb",              # low-9 double quote, guillemets
+    "\u00a0", "\u200b",                      # NBSP, zero-width space
+    "\u2026",                              # ellipsis
+    "\u3001", "\u3002", "\u3010", "\u3011", "\uff0c",  # CJK punctuation + fullwidth comma
 )
 
 # Whitespace handled separately: a SQL string literal cannot carry a raw tab or
@@ -293,7 +315,14 @@ def normalize_select(base_expr: str, carried: list[tuple[str, str]],
 
 
 def normalize_py(text: str) -> str:
-    """Query-side twin of ``normalize_sql``. Idempotent."""
+    """Query-side twin of the write-time rendering, byte-identical to it.
+
+    NOT idempotent in the strict sense: a second pass adds a second pad, because
+    the SQL side pads unconditionally and a conditional pad here would break the
+    parity that is the whole contract. Idempotent on CONTENT, which is the
+    property anything may rely on: ``normalize_py(normalize_py(x))`` equals
+    ``" " + normalize_py(x) + " "``, and nothing in the package re-renders.
+    """
     out = fold_py(text)
     for ch in _BOUNDARY_CHARS:
         out = out.replace(ch, " ")
@@ -553,6 +582,27 @@ def shadow_triggers_complete(conn: sqlite3.Connection) -> bool:
     return shadow_trigger_count(conn) == len(SHADOW_TRIGGER_NAMES)
 
 
+def rendering_is_current(conn: sqlite3.Connection) -> bool:
+    """Cheap O(1) check that the stored rendering is the one this client writes.
+
+    Samples ONE shadow row and requires the normalizer's edge pad. The marker
+    alone is not sufficient evidence: it is written by storage.py, while the
+    rendering has a second writer (``_heal``), and a third party could always
+    write the table directly. An empty shadow is vacuously current. Returns True
+    on any read error, the safe direction for a probe whose only job is to force
+    an extra rebuild (the migration itself is idempotent, but a probe that failed
+    open would rebuild on EVERY open)."""
+    try:
+        row = conn.execute(
+            f"SELECT txt FROM {SHADOW_TABLE} LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return True
+    if row is None or row[0] is None:
+        return True
+    txt = row[0]
+    return txt.startswith(" ") and txt.endswith(" ")
+
+
 def apply_shadow_migration(conn: sqlite3.Connection) -> None:
     """Create the shadow table + triggers and (re)backfill all four tiers.
 
@@ -622,7 +672,16 @@ def _is_healable(err: Exception) -> bool:
 def _heal(conn: sqlite3.Connection) -> None:
     """Best-effort portability heal: rebuild the shadow with the local tokenizer
     clause. Runs inside the §4.2 containment so a failure here can never crash
-    search. Wrapped in its own transaction; swallows any error."""
+    search. Wrapped in its own transaction; swallows any error.
+
+    STAMPS THE MARKER (adversarial review 2026-08-30, finding 3). This is the
+    SECOND writer of the rendering, after storage's migration, and it writes
+    whatever rendering the RUNNING client has. Without the stamp, an old client
+    healing a new store on the documented portability path left the new marker
+    standing over the old fold-only rendering, and the new client then trusted
+    its fast path forever: quality degraded silently and permanently. Stamping
+    inside the same transaction as the rebuild keeps marker and rendering
+    consistent for both writers."""
     try:
         conn.execute("BEGIN IMMEDIATE")
         drop_shadow(conn)
@@ -631,6 +690,7 @@ def _heal(conn: sqlite3.Connection) -> None:
             conn.execute(stmt)
         for stmt in backfill_sqls():
             conn.execute(stmt)
+        conn.execute(f"PRAGMA user_version = {int(SHADOW_MARKER)}")
         conn.execute("COMMIT")
     except sqlite3.Error:
         try:
@@ -715,7 +775,8 @@ def _shape_hit(conn: sqlite3.Connection, tenant_id: str, tier: str,
     return None
 
 
-def _content_terms(terms: list[tuple[str, bool]]) -> list[tuple[str, bool]]:
+def _content_terms(
+        terms: list[tuple[str, bool, str]]) -> list[tuple[str, bool, str]]:
     """The terms allowed to carry coverage weight.
 
     A term counts iff the ending rule SHORTENED it (so it is a morphological
@@ -735,7 +796,8 @@ def _content_terms(terms: list[tuple[str, bool]]) -> list[tuple[str, bool]]:
 
 
 def _shadow_search_normalized(conn: sqlite3.Connection, tenant_id: str, query: str,
-                              limit: int, allowed: set) -> list[dict] | None:
+                              limit: int, allowed: set,
+                              require_raw: bool = False) -> list[dict] | None:
     """The normalized shadow pass: match the normalized query against the
     normalized rendering, and return the rows that cover the MOST query terms.
 
@@ -752,6 +814,22 @@ def _shadow_search_normalized(conn: sqlite3.Connection, tenant_id: str, query: s
     is bought without giving up substring reach. Coverage is a ranking rule
     inside the rescue, not a gate deciding whether the rescue runs — the caller
     decides that, and this function always does the same work.
+
+    ``require_raw`` narrows the result to rows that carry one of the query's
+    tokens VERBATIM as a substring, not merely its stem. It is set by the
+    single-token consult on a non-empty strict head (client.search), and it is
+    what keeps that consult narrow in English (adversarial review 2026-08-30,
+    finding 2): the ending rule truncates every 6-to-8 character token to its
+    first five characters, so 'contract' becomes 'contr' and an unrestricted
+    probe reaches control, contrast, contribution, contrary and contralto. That
+    inflated df up to sevenfold, which deflated idf, which pushed correct rows
+    under multi_record's coverage floor and removed them from the DEFAULT path.
+    Requiring the raw token keeps exactly the shape the consult exists for, a
+    stored inflection that EXTENDS the query token ('packshot' inside
+    'packshoty'), which is precisely what porter's whole-token matching cannot
+    reach. Ending-REPLACEMENT inflections ('reklamacje' against a stored
+    'reklamacja') are unaffected: those reach the zero-hit path, where the strict
+    pass returned nothing and no narrowing applies.
 
     Returns None when the query carries no content-shaped term at all, which
     tells the caller to fall through to the 0.5.0 raw-folded pass instead.
@@ -817,6 +895,12 @@ def _shadow_search_normalized(conn: sqlite3.Connection, tenant_id: str, query: s
                 if all(t in v["txt"] for t in like_terms)}
         if not cand:
             return []
+    if require_raw:
+        raws = [raw for _t, _a, raw in match_terms]
+        cand = {k: v for k, v in cand.items()
+                if any(raw in v["txt"] for raw in raws)}
+        if not cand:
+            return []
 
     # Coverage top-up + word-start scoring, both from the text already in hand.
     # A very common term's own probe is capped at `fetch`, so a row that
@@ -864,7 +948,8 @@ def _shadow_search_normalized(conn: sqlite3.Connection, tenant_id: str, query: s
 
 def shadow_search(conn: sqlite3.Connection, tenant_id: str, query: str,
                   *, limit: int = 20, tiers: tuple[str, ...] | None = None,
-                  normalize: bool = False) -> list[dict]:
+                  normalize: bool = False,
+                  require_raw: bool = False) -> list[dict]:
     """Folded-trigram substring fallback. Returns ``_search_strict``-shaped dicts.
 
     Substring semantics via the trigram MATCH (>=3-char folded tokens) with a
@@ -891,7 +976,8 @@ def shadow_search(conn: sqlite3.Connection, tenant_id: str, query: str,
 
     if normalize:
         try:
-            out = _shadow_search_normalized(conn, tenant_id, query, limit, allowed)
+            out = _shadow_search_normalized(conn, tenant_id, query, limit, allowed,
+                                            require_raw=require_raw)
         except (sqlite3.OperationalError, sqlite3.DatabaseError) as err:
             if _is_healable(err):
                 _heal(conn)

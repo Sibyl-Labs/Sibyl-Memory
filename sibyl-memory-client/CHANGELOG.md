@@ -81,6 +81,57 @@ Same battery, same 300-entity store, all figures from our own runs
   smaller space-trigram vocabulary. Entity writes cost about 20 percent more
   (3.79 ms vs 3.12 ms per write) and a 300-row backfill 29.8 ms vs 16.0 ms.
 
+### Changed (revision 2, after independent adversarial review 2026-08-30)
+
+The first cut of this work was reviewed independently and returned
+PROMOTE-WITH-FIXES with 2 blockers, both English regressions the battery could not
+see. Full disposition in `stage2-report.md` §10.
+
+- **The shadow no longer runs before the relaxed ladder.** Reverted to the 0.5.0
+  order. The ladder searches with FTS5 porter, which reaches `story` from
+  `stories`; the shadow only does substring on a fixed-length truncation, and
+  `stori` is not a substring of `story` but is one of `historic`. Running the
+  shadow first therefore answered with an unrelated row and LOST the correct one,
+  for -y/-ies plurals and for every digit-bearing identifier (never shortened, so
+  never a shadow content term, while CORE-11 exists to give it last-resort
+  recall). One narrow exception remains: a last-resort single-token head that
+  fills the caller's entire limit is overridden by the shadow, because filling the
+  cap from one token means that token matched indiscriminately. A last-resort head
+  that does NOT saturate keeps its rows and its rank 1, and the shadow's rows are
+  appended after it.
+- **The single-token consult requires the raw token.** `shadow_search` gained
+  `require_raw`, set only by the consult: an appended row must carry one of the
+  query's tokens verbatim, not merely its stem. Without it the consult fired on
+  most ordinary English nouns, because the ending rule truncates every 6-to-8
+  character token to five characters; `contract` reached control, contrast,
+  contribution, contrary and contralto, `df[contract]` went 1 to 7, and the
+  deflated idf pushed a correct row under `multi_record`'s coverage floor and off
+  the default path. `df[contract]` is now 2, equal to released 0.7.0.
+- **`shadow._heal` stamps the marker**, and the migration fast path additionally
+  samples one shadow row and requires the normalizer's pad. `_heal` is a second
+  writer of the rendering, so an old client healing a new store used to leave the
+  new marker standing over the old rendering, and the new client trusted its fast
+  path forever. The marker constant moved to `shadow.py`, next to the rendering it
+  stamps, and is now 6.
+- **The boundary set is complete.** 18 typographic characters were missing,
+  including the Polish quotation pair and NBSP, so a word wrapped in them had no
+  word start and the exactness tie-break scored 0 for it. `_BOUNDARY_CHARS` is now
+  49 entries, the chain 69 replacements, six staged subqueries.
+- **The re-backfill raises `busy_timeout` to 120 s for its duration.** The forced
+  re-migration is O(rows) under one write lock (measured elsewhere at 27 s for
+  100k rows) and a concurrent open died at the 5 s default above roughly 25k rows.
+  A mitigation, not a fix; it needs a release note.
+- Docstring and annotation corrections: `normalize_py` no longer claims
+  idempotence, `_content_terms` is annotated for the three-tuples it handles.
+
+Battery re-measured on all three builds after extending it with the three English
+shapes it was missing (-y/-ies plurals, identifier-plus-word, five-character
+prefix families) and two injection queries whose tokens have corpus support: 88
+queries, up from 75. `client.search()` Polish 16/16 matched and 19/19 natural with
+15 noise rows (baseline 15/16, 19/19, 55; stripped 8/16, 10/19, 26). English
+25/25 natural and 16/16 matched on every build; on the DEFAULT path English is
+byte-identical to the stripped build. Client suite 407 passed / 11 skipped.
+
 ### Removed
 
 Query-time multilingual rescue layers stripped out of `MemoryClient.search()`

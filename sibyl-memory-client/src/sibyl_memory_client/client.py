@@ -535,6 +535,24 @@ def _relaxed_query_strings(query: str):
     surface). Order: stopword-stripped (recovers most paraphrase misses), then
     the rarest single token (last-resort recall).
     """
+    for cand, _last_resort in _relaxed_query_variants(query):
+        yield cand
+
+
+def _relaxed_query_variants(query: str):
+    """``(candidate, is_last_resort)`` for every relaxed variant, in order.
+
+    Exactly the sequence ``_relaxed_query_strings`` yields; the flag distinguishes
+    the two stages, which differ in quality by a lot and now have to be told
+    apart (see MemoryClient.search):
+
+      * stage 1, ``is_last_resort=False`` — the stopword-stripped CONJUNCTION,
+        which still requires every content token and so answers the whole
+        question.
+      * stage 2, ``is_last_resort=True`` — ONE token, longest first. The
+        docstring above already calls this last-resort recall: it is the weakest
+        answer this client can produce.
+    """
     toks = _match_tokens(query)
     if len(toks) < 2:
         return  # single-token queries have nothing to relax
@@ -544,7 +562,7 @@ def _relaxed_query_strings(query: str):
     if content and len(content) < len(toks):
         cand = " ".join(content)
         seen.add(cand)
-        yield cand
+        yield cand, False
     # 2) each content token alone, longest-first (length = cheap rarity proxy).
     #    The wrapper stops at the first variant that returns hits, so the most
     #    specific term is tried before more common ones. Last-resort recall.
@@ -559,7 +577,7 @@ def _relaxed_query_strings(query: str):
             continue
         if len(tok) >= 2 or any(ch.isdigit() for ch in tok):
             seen.add(tok)
-            yield tok
+            yield tok, True
 
 
 # D2L (the coverage-gated stem rescue: _stem_token / _stem_truncated_query /
@@ -1393,41 +1411,76 @@ class MemoryClient:
             # replaces fired on EVERY query and cost 39 English noise rows; this
             # one cannot fire on a multi-word query at all.
             if _single_inflected_token(query):
-                hits = self._append_shadow(hits, query, limit=limit, tiers=tiers)
+                # require_raw: the consult fires on a head that ALREADY answered,
+                # so it may only add a row carrying the token verbatim (see
+                # shadow._shadow_search_normalized). The rescue paths below,
+                # where the alternative is a wrong answer or none, do not.
+                hits = self._append_shadow(hits, query, limit=limit, tiers=tiers,
+                                           require_raw=True)
             return hits
         # v0.5.0 multi-language search (spec §4.3): the folded-trigram shadow,
         # reached ONLY when the strict pass produced nothing, so a non-empty
-        # STRICT result is never reordered or dropped and English ranking cannot
-        # regress. prefix queries already returned above (prefix intent !=
-        # substring fallback). The shadow gives substring semantics (matches
-        # inside an unbroken CJK/Thai/Bantu/compound token) + a folded copy for
-        # the non-decomposable ł/ß/ø/... class, in any language. Since v0.8.0 it
-        # runs the NORMALIZED pass: the same normalizer the write side used,
-        # inflected tokens truncated to a stem, rows ranked by idf-weighted
-        # coverage of the query's content terms.
+        # STRICT result is never reordered or dropped. prefix queries already
+        # returned above (prefix intent != substring fallback). The shadow gives
+        # substring semantics (matches inside an unbroken CJK/Thai/Bantu/compound
+        # token) + a folded copy for the non-decomposable ł/ß/ø/... class, in any
+        # language. Since v0.8.0 it runs the NORMALIZED pass: the same normalizer
+        # the write side used, inflected tokens truncated to a stem, rows ranked
+        # by idf-weighted coverage of the query's content terms.
         #
-        # v0.8.0 ORDER CHANGE: below an empty strict head, the shadow is tried
-        # BEFORE the relaxed variants, not after them. Both are rescues, but the
-        # shadow answers the WHOLE query while the relaxed ladder's last resort
-        # answers one token of it, and that one token is often the worst one:
-        # 'termin rozpatrzenia reklamacji' relaxes to 'termin', which strictly
-        # matches the forty stored notes that say "termin przesuniety", fills the
-        # cap with them and ends the search — while the complaints row the query
-        # actually describes sits one shadow probe away. Same three stages as
-        # 0.5.0, better order. The relaxed ladder still runs, unchanged, whenever
-        # the shadow has nothing.
+        # ORDER: the relaxed ladder runs FIRST and the shadow last, exactly as in
+        # 0.5.0. An earlier v0.8.0 revision put the shadow first and that was
+        # wrong (adversarial review 2026-08-30, finding 1). The relaxed ladder
+        # searches with FTS5 PORTER, which reaches 'story' from 'stories'; the
+        # shadow only does substring on a fixed-length truncation, and 'stori' is
+        # not a substring of 'story' but IS one of 'historic'. Shadow-first
+        # therefore answered with an unrelated row and the ladder never ran, so
+        # the correct row was LOST — the same shape for entries/centrifuge,
+        # queries/querist, and for every digit-bearing identifier, which is never
+        # shortened and so contributes nothing to the shadow while CORE-11 exists
+        # precisely to give it last-resort recall.
+        # How the two rescues share the space below an empty strict head:
+        #
+        #   stage-1 head (the stopword-stripped CONJUNCTION) wins outright. It
+        #     still required every content token, so it answered the question,
+        #     and it is a PORTER answer, which reaches inflections the shadow's
+        #     fixed-length truncation cannot ('stories' -> 'story'). This is the
+        #     branch that carries every English case in finding 1, and it is
+        #     byte-identical to 0.5.0.
+        #   stage-2 head (ONE token, last resort) does NOT exclude the shadow. It
+        #     answered a fragment of the question, and which fragment is decided
+        #     by raw token length, so it lands on 'robimy' in 'kiedy robimy
+        #     inwentaryzację' and on 'procent' in 'ile procent wynosi stawka
+        #     ryczałtu'. The shadow's rows are APPENDED after it: the ladder keeps
+        #     its rows and its order, including rank 1, so a correct last-resort
+        #     answer such as 'postgres15' can never be displaced.
+        #   a SATURATED stage-2 head is the exception, and the only place the
+        #     ladder is overridden. Filling the caller's entire limit from one
+        #     token is the index saying that token matched indiscriminately:
+        #     'termin rozpatrzenia reklamacji' relaxes to 'termin', which matches
+        #     the forty stored notes reading "termin przesuniety". There is no
+        #     room to append and nothing worth keeping, so the shadow, which
+        #     answered the whole query, leads. The condition is the caller's own
+        #     limit, not a tuned constant.
+        relaxed_hits: list[dict[str, Any]] = []
+        last_resort_head = False
+        for relaxed, last_resort in _relaxed_query_variants(query):
+            relaxed_hits = self._search_strict(relaxed, limit=limit, prefix=False,
+                                               tiers=tiers)
+            if relaxed_hits:
+                last_resort_head = last_resort
+                break
+        if relaxed_hits and not last_resort_head:
+            return relaxed_hits
+        if relaxed_hits and len(relaxed_hits) < limit:
+            return self._append_shadow(relaxed_hits, query, limit=limit, tiers=tiers)
         hits = self._shadow_fallback(query, limit=limit, tiers=tiers,
                                      normalize=True)
-        if hits:
-            return hits
-        for relaxed in _relaxed_query_strings(query):
-            hits = self._search_strict(relaxed, limit=limit, prefix=False, tiers=tiers)
-            if hits:
-                return hits
-        return hits
+        return hits or relaxed_hits
 
     def _append_shadow(self, hits: list[dict[str, Any]], query: str, *, limit: int,
-                       tiers: tuple[str, ...] | None) -> list[dict[str, Any]]:
+                       tiers: tuple[str, ...] | None,
+                       require_raw: bool = False) -> list[dict[str, Any]]:
         """Append normalized shadow rows after an existing head, de-duped, capped.
 
         Never reorders, never drops, never re-ranks the head — the head list is
@@ -1435,7 +1488,8 @@ class MemoryClient:
         scale stays positional-only (see shadow._shape_hit)."""
         if len(hits) >= limit:
             return hits
-        extra = self._shadow_fallback(query, limit=limit, tiers=tiers, normalize=True)
+        extra = self._shadow_fallback(query, limit=limit, tiers=tiers,
+                                      normalize=True, require_raw=require_raw)
         if not extra:
             return hits
         seen = {(h.get("tier"), h.get("key"), h.get("category")) for h in hits}
@@ -1463,7 +1517,8 @@ class MemoryClient:
 
     def _shadow_fallback(self, query: str, *, limit: int = 20,
                          tiers: tuple[str, ...] | None = None,
-                         normalize: bool = False) -> list[dict[str, Any]]:
+                         normalize: bool = False,
+                         require_raw: bool = False) -> list[dict[str, Any]]:
         """Delegate a zero-hit search to the folded-trigram shadow (shadow.py).
 
         A no-op ``[]`` when the shadow table is absent (a pre-migration or
@@ -1481,7 +1536,7 @@ class MemoryClient:
             with self._storage.connection() as conn:
                 return shadow_search(conn, self._tenant_id, query,
                                      limit=limit, tiers=tiers,
-                                     normalize=normalize)
+                                     normalize=normalize, require_raw=require_raw)
         except Exception:
             return []
 
