@@ -35,7 +35,13 @@ def _packshot_store(tmp_path):
     return c
 
 
-@pytest.mark.skip(reason="F2 unconditional shadow append: removed 2026-08-30 lang-core-strip (operator directive)")
+# RE-ENABLED 2026-08-30 (lang-core-normalize). The F2 UNCONDITIONAL append this
+# test was written against is still gone; what it pins — a single-token query
+# satisfied by the other language's row must not hide the row in its own — is
+# exactly what the write-time normalizer restored, through the narrow
+# single-inflected-token append in MemoryClient.search. Same assertions, new
+# mechanism, and the multi-word queries F2 also fired on are covered by
+# test_strict_head_preserved_for_every_query below.
 def test_packshot_english_strict_first_polish_appended(tmp_path):
     c = _packshot_store(tmp_path)
     strict = c._search_strict("packshot", limit=10)
@@ -138,7 +144,12 @@ def test_shadow_error_contained_primary_returned(tmp_path, monkeypatch):
 # under the coverage gate because the empty head covers nothing)
 # --------------------------------------------------------------------------
 
-@pytest.mark.skip(reason="D2L stem rescue: removed 2026-08-30 lang-core-strip (operator directive)")
+# RE-ENABLED 2026-08-30 (lang-core-normalize). The D2L coverage gate and its
+# probe ladder are still gone; the property this test pins — an ending-swap
+# inflection that BOTH the strict pass and the RAW shadow miss is still found —
+# is now delivered by the normalized shadow pass. Note the explicit
+# `_shadow_fallback(...)` call below takes the raw path (normalize defaults to
+# False), so the assertion that the raw shadow misses still means what it said.
 def test_stem_pass_recovers_inflection_append_only(tmp_path):
     c = MemoryClient.local(tmp_path / "m.db", tenant_id="t1")
     c.set_entity("support", "reklamacja-obsluga",

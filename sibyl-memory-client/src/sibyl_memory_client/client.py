@@ -567,10 +567,27 @@ def _relaxed_query_strings(query: str):
 # _STEM_DROP, _STEM_FLOOR and _GATE_ROW_BYTES) was REMOVED on 2026-08-30 by
 # the lang-core-strip operator directive, together with its probe ladder in
 # search(). It was a QUERY-time compensation for fusional morphology; the
-# replacement is a WRITE-time normalization built on the shadow table (stage
-# 2). The folding primitive it used, shadow.fold_py, is untouched and is the
-# intended basis for that build. Git history at 63a5ea9 holds the removed
-# code verbatim if it is ever needed for reference.
+# replacement is the WRITE-time normalization built on the shadow table (stage
+# 2, 2026-08-30): ONE versioned normalizer in shadow.py renders the stored text
+# at write time and the query at read time, and the truncation parameters that
+# lived here are now shadow.normalize_token. Git history at 63a5ea9 holds the
+# removed code verbatim if it is ever needed for reference.
+
+
+def _single_inflected_token(query: str) -> bool:
+    """True for a one-token query whose token the normalizer actually shortened.
+
+    This is the ONLY condition under which search() consults the shadow on a
+    NON-empty strict head (§ twin masking, below). Deliberately narrow:
+      * one token, so every multi-word query keeps the pure zero-hit contract;
+      * shortened, so 'stock' / 'form' / 'k8' — anything the ending rule leaves
+        alone — behave exactly as they did on the stripped base. That is what
+        preserves the precision the strip bought ('stock' no longer dragging in
+        'stocktake' through a substring append).
+    """
+    from .shadow import normalize_terms
+    terms = normalize_terms(query)
+    return len(terms) == 1 and terms[0][1]
 
 
 # F5 (red-team 2026-06-17): sanity ceiling on a single serialized body. The 5 MB
@@ -1356,26 +1373,97 @@ class MemoryClient:
         measured recall regression in Polish, not a bug.
         """
         hits = self._search_strict(query, limit=limit, prefix=prefix, tiers=tiers)
-        if hits or prefix:
+        if prefix:
+            return hits
+        if hits:
+            # TWIN MASKING (2026-08-07 Finding 2; back after lang-core-strip,
+            # closed here). A single-token query can be SATISFIED by a row in the
+            # other language and thereby hide the row in the query's own language:
+            # 'packshot' porter-matches the English 'packshots' row, the head is
+            # non-empty, the zero-hit gate is satisfied, and the Polish
+            # 'Packshoty produktów' row is never reached. A whole-query zero gate
+            # structurally cannot see this, so the ONE case where a non-empty head
+            # still consults the shadow is a single token the normalizer
+            # shortened — which is also exactly the shape multi_record's df probes
+            # take, so it is what makes df truthful for inflected forms.
+            #
+            # Strictly append-only: the strict head keeps its order and its rows,
+            # shadow rows are appended after it, identity triples are de-duped and
+            # the caller's limit still caps the total. The 0.7.0 F2 append this
+            # replaces fired on EVERY query and cost 39 English noise rows; this
+            # one cannot fire on a multi-word query at all.
+            if _single_inflected_token(query):
+                hits = self._append_shadow(hits, query, limit=limit, tiers=tiers)
+            return hits
+        # v0.5.0 multi-language search (spec §4.3): the folded-trigram shadow,
+        # reached ONLY when the strict pass produced nothing, so a non-empty
+        # STRICT result is never reordered or dropped and English ranking cannot
+        # regress. prefix queries already returned above (prefix intent !=
+        # substring fallback). The shadow gives substring semantics (matches
+        # inside an unbroken CJK/Thai/Bantu/compound token) + a folded copy for
+        # the non-decomposable ł/ß/ø/... class, in any language. Since v0.8.0 it
+        # runs the NORMALIZED pass: the same normalizer the write side used,
+        # inflected tokens truncated to a stem, rows ranked by idf-weighted
+        # coverage of the query's content terms.
+        #
+        # v0.8.0 ORDER CHANGE: below an empty strict head, the shadow is tried
+        # BEFORE the relaxed variants, not after them. Both are rescues, but the
+        # shadow answers the WHOLE query while the relaxed ladder's last resort
+        # answers one token of it, and that one token is often the worst one:
+        # 'termin rozpatrzenia reklamacji' relaxes to 'termin', which strictly
+        # matches the forty stored notes that say "termin przesuniety", fills the
+        # cap with them and ends the search — while the complaints row the query
+        # actually describes sits one shadow probe away. Same three stages as
+        # 0.5.0, better order. The relaxed ladder still runs, unchanged, whenever
+        # the shadow has nothing.
+        hits = self._shadow_fallback(query, limit=limit, tiers=tiers,
+                                     normalize=True)
+        if hits:
             return hits
         for relaxed in _relaxed_query_strings(query):
             hits = self._search_strict(relaxed, limit=limit, prefix=False, tiers=tiers)
             if hits:
                 return hits
-        # v0.5.0 multi-language search (spec §4.3): zero-hit folded-trigram shadow
-        # fallback. Strictly additive — reached ONLY when the strict pass AND every
-        # relaxed variant produced nothing, so a non-empty result is never
-        # reordered or dropped and English/ranking behaviour cannot regress.
-        # prefix queries already returned above (prefix intent != substring
-        # fallback). The shadow gives substring semantics (matches inside an
-        # unbroken CJK/Thai/Bantu/compound token) + a folded copy for the
-        # non-decomposable ł/ß/ø/... class, in any language.
-        if not hits:
-            hits = self._shadow_fallback(query, limit=limit, tiers=tiers)
         return hits
 
+    def _append_shadow(self, hits: list[dict[str, Any]], query: str, *, limit: int,
+                       tiers: tuple[str, ...] | None) -> list[dict[str, Any]]:
+        """Append normalized shadow rows after an existing head, de-duped, capped.
+
+        Never reorders, never drops, never re-ranks the head — the head list is
+        returned unchanged when the shadow adds nothing, and the shadow's own rank
+        scale stays positional-only (see shadow._shape_hit)."""
+        if len(hits) >= limit:
+            return hits
+        extra = self._shadow_fallback(query, limit=limit, tiers=tiers, normalize=True)
+        if not extra:
+            return hits
+        seen = {(h.get("tier"), h.get("key"), h.get("category")) for h in hits}
+        out = list(hits)
+        # The journal cap is a property of the RESULT, not of one pass. Both
+        # _search_strict and the shadow apply max(1, limit//4) to their own rows;
+        # without this the two caps stack and a contentless journal can retake
+        # the result the cap exists to protect (test_journal_does_not_dominate_
+        # search, 2026-06-02). Count what the head already spent.
+        journal_cap = max(1, limit // 4)
+        journal_used = sum(1 for h in hits if h.get("tier") == "journal")
+        for h in extra:
+            ident = (h.get("tier"), h.get("key"), h.get("category"))
+            if ident in seen:
+                continue
+            if h.get("tier") == "journal":
+                if journal_used >= journal_cap:
+                    continue
+                journal_used += 1
+            seen.add(ident)
+            out.append(h)
+            if len(out) >= limit:
+                break
+        return out
+
     def _shadow_fallback(self, query: str, *, limit: int = 20,
-                         tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+                         tiers: tuple[str, ...] | None = None,
+                         normalize: bool = False) -> list[dict[str, Any]]:
         """Delegate a zero-hit search to the folded-trigram shadow (shadow.py).
 
         A no-op ``[]`` when the shadow table is absent (a pre-migration or
@@ -1392,7 +1480,8 @@ class MemoryClient:
             from .shadow import shadow_search
             with self._storage.connection() as conn:
                 return shadow_search(conn, self._tenant_id, query,
-                                     limit=limit, tiers=tiers)
+                                     limit=limit, tiers=tiers,
+                                     normalize=normalize)
         except Exception:
             return []
 

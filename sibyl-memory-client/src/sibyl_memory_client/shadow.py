@@ -118,6 +118,226 @@ def fold_py(text: str) -> str:
     return out
 
 
+# ---------------------------------------------------------------------------
+# WRITE-TIME NORMALIZATION (v0.8.0 stage 2, 2026-08-30)
+#
+# ONE normalizer, two halves, both versioned together by NORMALIZER_VERSION:
+#
+#   normalize_sql / normalize_py  — the RENDERING. fold (above) + boundary
+#       normalization (every punctuation/whitespace character becomes a single
+#       space) + one leading and one trailing space. Applied at WRITE time by the
+#       four per-tier expressions below (so triggers and backfill share it
+#       verbatim) and applied identically on the query side by normalize_terms.
+#       This is what makes WORD-START matching possible: the shadow stores
+#       JSON-serialised bodies, where a word is very often preceded by `"` or `:`
+#       rather than by a space, and the trigram tokenizer indexes punctuation as
+#       ordinary content. Without this half, a query term can only be matched as
+#       a free-floating substring, which is what made the 0.6.x stem probes so
+#       unselective ('magaz' matching inside 'supermagazynowy').
+#
+#   normalize_terms                — the QUERY-side ending rule. Fusional
+#       languages inflect by REPLACING endings (reklamacj-a/-e/-i share the stem
+#       'reklamac'), so query-token == stored-token (porter FTS) and
+#       query-is-substring-of-stored (raw trigram) both fail. Truncating the
+#       query token to a stem turns ending-replacement into the substring problem
+#       the folded trigram already solves, and the stem is then matched ANCHORED
+#       at a word start, which is what keeps it selective.
+#
+# Why the ending rule is applied to the query and not to the stored text, even
+# though this is the write-time build: truncation is a PREFIX operation, so
+# trunc(q) is always a substring of trunc(s) implies trunc(q) is a substring of
+# s. Truncating the stored side therefore matches a strict SUBSET of what
+# truncating only the query side matches — it cannot add recall, it can only
+# remove it, and it would destroy the tail of every unbroken CJK/Thai/compound
+# run, which is the case the shadow exists for. SQLite also cannot express a
+# per-token truncation in pure SQL, and doing it with an application-defined
+# function inside the maintenance triggers would make every base-table write
+# FAIL for any process that opens the DB without registering that function (a
+# second venv on an older client, the sqlite3 CLI). See stage2-report.md §2.
+#
+# The truncation parameters are the tuned ones from the removed 0.6.0 D2L block
+# (git history at 63a5ea9), kept verbatim: crude fixed-length truncation is
+# deliberate and NOT a placeholder for a real stemmer. There is no Polish
+# snowball analyzer in the stdlib, and precisely BECAUSE it is crude it survives
+# the stem-internal palatalization a rule-based suffix stripper diverges on
+# (wysyłka/wysyłce keep 'wysyl'; księgowość/księgowości keep 'księgowo').
+# drop=3 covers the 2-3 char ending classes of Polish/Czech/Russian declension
+# (drop=2 misses -ach locatives: magazynach); floor=5 keeps stems long enough to
+# avoid cross-lemma collisions at scale.
+# ---------------------------------------------------------------------------
+NORMALIZER_VERSION = 1
+
+_STEM_MIN_TOKEN = 5     # tokens shorter than this are never truncated
+_STEM_DROP = 3          # drop up to this many trailing chars
+_STEM_FLOOR = 5         # never truncate a stem below this many chars
+
+# Cap on how many distinct terms one shadow query may probe. Mirrors
+# multi_record's _MAX_FANOUT_TOKENS in intent: an arbitrarily long query must not
+# turn into an arbitrarily long series of index scans. Longest-first, because
+# length is the cheap rarity proxy.
+_MAX_SHADOW_TERMS = 12
+
+# Every character that must read as a WORD BOUNDARY in the stored rendering.
+# Enumerated (not a character class) because the SQL side can only express this
+# as a fixed chain of replace() calls, and the two sides must agree byte for
+# byte. `_` is deliberately absent: it is a \w character, so it is part of a
+# token on both sides (s3_bucket stays one token).
+_BOUNDARY_CHARS = (
+    '"', "'", "`", "\\", "/", "|",
+    "{", "}", "[", "]", "(", ")", "<", ">",
+    ":", ";", ",", ".", "!", "?",
+    "-", "=", "+", "*", "&", "%", "$", "#", "@", "~", "^",
+)
+
+# Whitespace handled separately: a SQL string literal cannot carry a raw tab or
+# newline portably, so these go through char().
+_BOUNDARY_CHAR_CODES = (9, 10, 13)
+
+# Scripts written without spaces between words. A token drawn from one of these
+# is a whole phrase, not a word with an inflectional ending, so the truncation
+# rule must never touch it (truncating '北京烤鸭' to 5 chars would make its tail
+# unfindable — the exact capability the trigram shadow exists to provide). The
+# same test decides which SHORT tokens are real words worth requiring: a 2-char
+# Han/Hangul token is content, a 2-char Latin token ('są', 'is') is noise.
+_UNSPACED_RANGES = (
+    (0x2E80, 0x2FDF),    # CJK radicals
+    (0x3040, 0x30FF),    # Hiragana + Katakana
+    (0x3400, 0x4DBF),    # CJK ext A
+    (0x4E00, 0x9FFF),    # CJK unified
+    (0xAC00, 0xD7AF),    # Hangul syllables
+    (0xF900, 0xFAFF),    # CJK compatibility
+    (0x0E00, 0x0E7F),    # Thai
+    (0x0E80, 0x0EFF),    # Lao
+    (0x1000, 0x109F),    # Myanmar
+    (0x1780, 0x17FF),    # Khmer
+    (0x0F00, 0x0FFF),    # Tibetan
+    (0x20000, 0x2FA1F),  # CJK ext B..F
+)
+
+
+def _is_unspaced(text: str) -> bool:
+    """True if any character belongs to a script written without word spaces."""
+    for ch in text:
+        cp = ord(ch)
+        for lo, hi in _UNSPACED_RANGES:
+            if lo <= cp <= hi:
+                return True
+    return False
+
+
+def _sql_str(ch: str) -> str:
+    """A single-quoted SQL string literal for one boundary character."""
+    return "'" + ch.replace("'", "''") + "'"
+
+
+# SQLite's TRIGGER parser overflows ("parser stack overflow") at about 27 nested
+# function calls, measured on 3.45.1. The normalized rendering needs 17 fold
+# replacements plus the boundary set, well past that, so the chain is STAGED
+# through nested subqueries: each stage applies at most _STAGE_OPS replace()
+# calls and hands its result to the next as the column ``nv``, while the business
+# key columns ride along untouched. Keep this well under the measured ceiling —
+# it is a hard parse-time failure, not a runtime one, so an over-long chain would
+# break DB creation outright rather than degrade.
+_STAGE_OPS = 12
+
+
+def _replace_ops() -> list[tuple[str, str]]:
+    """Every (search, replacement) pair of the rendering, in application order.
+
+    Search terms are SQL EXPRESSIONS (already quoted, or a ``char(n)`` call);
+    replacements are SQL literals. Fold first, then boundaries — the order the
+    Python twin uses. No fold target is a boundary character, so the two passes
+    do not interact, but the order is fixed anyway so parity cannot drift.
+    """
+    ops = [(_sql_str(src), _sql_str(dst)) for src, dst in FOLD_MAP.items()]
+    ops += [(_sql_str(ch), "' '") for ch in _BOUNDARY_CHARS]
+    ops += [(f"char({code})", "' '") for code in _BOUNDARY_CHAR_CODES]
+    return ops
+
+
+def normalize_select(base_expr: str, carried: list[tuple[str, str]],
+                     from_table: str | None) -> str:
+    """A SELECT list + FROM producing the normalized rendering of ``base_expr``.
+
+    Returns the text after ``INSERT INTO ... `` : ``SELECT <txt>, <carried...>
+    FROM (...)``. ``carried`` is ``[(expr, alias), ...]`` for the business-key
+    columns, which are carried through every stage RAW (they are the join key
+    back to the base table and the DELETE triggers match them verbatim).
+    ``from_table`` is None on the trigger side, where the innermost stage reads
+    ``new.``/``old.`` and needs no FROM at all.
+
+    This one function generates BOTH the trigger side and the backfill side, so a
+    backfilled row stays byte-identical to a trigger-written one. Sources and
+    targets are fixed ASCII/Latin-1 literals (never user input), so the string
+    interpolation is injection-safe.
+    """
+    ops = _replace_ops()
+    chunks = [ops[i:i + _STAGE_OPS] for i in range(0, len(ops), _STAGE_OPS)] or [[]]
+
+    expr = f"lower({base_expr})"
+    for src, dst in chunks[0]:
+        expr = f"replace({expr}, {src}, {dst})"
+    cols = [f"{expr} AS nv"] + [f"{e} AS {a}" for e, a in carried]
+    sub = f"(SELECT {', '.join(cols)}"
+    sub += f" FROM {from_table})" if from_table else ")"
+
+    for chunk in chunks[1:]:
+        expr = "nv"
+        for src, dst in chunk:
+            expr = f"replace({expr}, {src}, {dst})"
+        cols = [f"{expr} AS nv"] + [a for _e, a in carried]
+        sub = f"(SELECT {', '.join(cols)} FROM {sub})"
+
+    out_cols = ["' ' || nv || ' '"] + [a for _e, a in carried]
+    return f"SELECT {', '.join(out_cols)} FROM {sub}"
+
+
+def normalize_py(text: str) -> str:
+    """Query-side twin of ``normalize_sql``. Idempotent."""
+    out = fold_py(text)
+    for ch in _BOUNDARY_CHARS:
+        out = out.replace(ch, " ")
+    for code in _BOUNDARY_CHAR_CODES:
+        out = out.replace(chr(code), " ")
+    return " " + out + " "
+
+
+def normalize_token(tok: str) -> str:
+    """The ending rule for ONE already-folded token. Identity when it does not
+    apply: short tokens, identifiers carrying a digit (q3, v2, k8, s3), and any
+    token from an unspaced script."""
+    if len(tok) < _STEM_MIN_TOKEN:
+        return tok
+    if any(ch.isdigit() for ch in tok):
+        return tok
+    if _is_unspaced(tok):
+        return tok
+    return tok[:max(_STEM_FLOOR, len(tok) - _STEM_DROP)]
+
+
+def normalize_terms(query: str) -> list[tuple[str, bool, str]]:
+    """``[(term, anchored, raw), ...]`` for the shadow MATCH, from the SAME
+    normalizer the write side uses.
+
+    ``anchored`` is True exactly when the ending rule shortened the token, i.e.
+    the term is a morphological stem rather than the word itself. ``raw`` is the
+    token before the ending rule, kept so a row that satisfies the word the user
+    actually typed can outrank one that only satisfies its stem.
+    """
+    folded = normalize_py(query)
+    out: list[tuple[str, bool, str]] = []
+    seen: set[str] = set()
+    for tok in re.findall(r"\w+", folded):
+        if not tok:
+            continue
+        stem = normalize_token(tok)
+        if stem in seen:
+            continue
+        seen.add(stem)
+        out.append((stem, stem != tok, tok))
+    return out
+
+
 def trigram_tokenizer_clause() -> str:
     """Runtime-selected tokenizer clause across the SQLite 3.45 boundary.
 
@@ -146,27 +366,47 @@ def create_table_sql() -> str:
     )
 
 
-# Per-tier fold expressions, IDENTICAL on the trigger side (new./old.) and the
-# backfill side (bare columns). Mirrors the base-table columns each tier's
+# Per-tier NORMALIZED renderings, IDENTICAL on the trigger side (new./old.) and
+# the backfill side (bare columns). Mirrors the base-table columns each tier's
 # primary FTS5 index feeds on; journal reuses the exact concat of
 # journal_events_ai_fts.
-def _entity_txt(p: str) -> str:
-    return fold_sql(f"{p}name || ' ' || {p}category || ' ' || {p}body")
+#
+# These four are the single write-time injection point (v0.8.0 stage 2). They
+# went from a bare fold_sql expression to the full normalized rendering, which is
+# what makes the stored text word-boundary-clean and therefore word-START
+# matchable. Each returns the whole ``SELECT ... FROM (...)`` because the
+# rendering has to be staged past SQLite's trigger parser ceiling; both write
+# paths still come from this one place, so a backfilled row is byte-identical to
+# a trigger-written one. Change these four and BOTH write paths change together —
+# which is also why _SHADOW_MARKER must be bumped whenever they change, so every
+# existing store drops, recreates and re-backfills its shadow on the next open.
+def _entity_txt(p: str, src: str | None) -> str:
+    return normalize_select(
+        f"{p}name || ' ' || {p}category || ' ' || {p}body",
+        [("'entity'", "tier"), (f"{p}category", "k1"), (f"{p}name", "k2"),
+         (f"{p}tenant_id", "tid")], src)
 
 
-def _state_txt(p: str) -> str:
-    return fold_sql(f"{p}document_key || ' ' || {p}body")
+def _state_txt(p: str, src: str | None) -> str:
+    return normalize_select(
+        f"{p}document_key || ' ' || {p}body",
+        [("'state'", "tier"), ("''", "k1"), (f"{p}document_key", "k2"),
+         (f"{p}tenant_id", "tid")], src)
 
 
-def _reference_txt(p: str) -> str:
-    return fold_sql(f"{p}doc_key || ' ' || COALESCE({p}body, '')")
+def _reference_txt(p: str, src: str | None) -> str:
+    return normalize_select(
+        f"{p}doc_key || ' ' || COALESCE({p}body, '')",
+        [("'reference'", "tier"), ("''", "k1"), (f"{p}doc_key", "k2"),
+         (f"{p}tenant_id", "tid")], src)
 
 
-def _journal_txt(p: str) -> str:
-    return fold_sql(
+def _journal_txt(p: str, src: str | None) -> str:
+    return normalize_select(
         f"COALESCE({p}evaluated, '') || ' ' || COALESCE({p}acted, '') || ' ' || "
-        f"COALESCE({p}forward, '') || ' ' || COALESCE({p}extra, '')"
-    )
+        f"COALESCE({p}forward, '') || ' ' || COALESCE({p}extra, '')",
+        [("'journal'", "tier"), ("''", "k1"), (f"{p}id", "k2"),
+         (f"{p}tenant_id", "tid")], src)
 
 
 def trigger_sqls() -> list[str]:
@@ -178,14 +418,15 @@ def trigger_sqls() -> list[str]:
     BUSINESS key (see module docstring TRAP note). Ordering the DELETE before the
     re-INSERT in the AU triggers keeps a rename/rekey clean.
     """
+    ins = f"INSERT INTO {SHADOW_TABLE}(txt, tier, k1, k2, tenant_id)"
     stmts: list[str] = []
 
     # --- entities: business key (tenant_id, category, name) = (tenant, k1, k2)
     stmts.append(f"""
 CREATE TRIGGER IF NOT EXISTS entities_ai_shadow
 AFTER INSERT ON entities BEGIN
-  INSERT INTO {SHADOW_TABLE}(txt, tier, k1, k2, tenant_id)
-  VALUES ({_entity_txt('new.')}, 'entity', new.category, new.name, new.tenant_id);
+  {ins}
+  {_entity_txt('new.', None)};
 END""")
     stmts.append(f"""
 CREATE TRIGGER IF NOT EXISTS entities_ad_shadow
@@ -200,16 +441,16 @@ AFTER UPDATE ON entities BEGIN
   DELETE FROM {SHADOW_TABLE}
    WHERE tier = 'entity' AND k1 = old.category AND k2 = old.name
          AND tenant_id = old.tenant_id;
-  INSERT INTO {SHADOW_TABLE}(txt, tier, k1, k2, tenant_id)
-  VALUES ({_entity_txt('new.')}, 'entity', new.category, new.name, new.tenant_id);
+  {ins}
+  {_entity_txt('new.', None)};
 END""")
 
     # --- state_documents: business key (tenant_id, document_key) = (tenant, k2)
     stmts.append(f"""
 CREATE TRIGGER IF NOT EXISTS state_documents_ai_shadow
 AFTER INSERT ON state_documents BEGIN
-  INSERT INTO {SHADOW_TABLE}(txt, tier, k1, k2, tenant_id)
-  VALUES ({_state_txt('new.')}, 'state', '', new.document_key, new.tenant_id);
+  {ins}
+  {_state_txt('new.', None)};
 END""")
     stmts.append(f"""
 CREATE TRIGGER IF NOT EXISTS state_documents_ad_shadow
@@ -222,16 +463,16 @@ CREATE TRIGGER IF NOT EXISTS state_documents_au_shadow
 AFTER UPDATE ON state_documents BEGIN
   DELETE FROM {SHADOW_TABLE}
    WHERE tier = 'state' AND k2 = old.document_key AND tenant_id = old.tenant_id;
-  INSERT INTO {SHADOW_TABLE}(txt, tier, k1, k2, tenant_id)
-  VALUES ({_state_txt('new.')}, 'state', '', new.document_key, new.tenant_id);
+  {ins}
+  {_state_txt('new.', None)};
 END""")
 
     # --- reference_documents: business key (tenant_id, doc_key) = (tenant, k2)
     stmts.append(f"""
 CREATE TRIGGER IF NOT EXISTS reference_documents_ai_shadow
 AFTER INSERT ON reference_documents BEGIN
-  INSERT INTO {SHADOW_TABLE}(txt, tier, k1, k2, tenant_id)
-  VALUES ({_reference_txt('new.')}, 'reference', '', new.doc_key, new.tenant_id);
+  {ins}
+  {_reference_txt('new.', None)};
 END""")
     stmts.append(f"""
 CREATE TRIGGER IF NOT EXISTS reference_documents_ad_shadow
@@ -244,33 +485,30 @@ CREATE TRIGGER IF NOT EXISTS reference_documents_au_shadow
 AFTER UPDATE ON reference_documents BEGIN
   DELETE FROM {SHADOW_TABLE}
    WHERE tier = 'reference' AND k2 = old.doc_key AND tenant_id = old.tenant_id;
-  INSERT INTO {SHADOW_TABLE}(txt, tier, k1, k2, tenant_id)
-  VALUES ({_reference_txt('new.')}, 'reference', '', new.doc_key, new.tenant_id);
+  {ins}
+  {_reference_txt('new.', None)};
 END""")
 
     # --- journal_events: append-only, AI only. Business key (tenant_id, id).
     stmts.append(f"""
 CREATE TRIGGER IF NOT EXISTS journal_events_ai_shadow
 AFTER INSERT ON journal_events BEGIN
-  INSERT INTO {SHADOW_TABLE}(txt, tier, k1, k2, tenant_id)
-  VALUES ({_journal_txt('new.')}, 'journal', '', new.id, new.tenant_id);
+  {ins}
+  {_journal_txt('new.', None)};
 END""")
 
     return stmts
 
 
 def backfill_sqls() -> list[str]:
-    """One INSERT..SELECT per tier, folding with the SAME expressions the
+    """One INSERT..SELECT per tier, rendering with the SAME expressions the
     triggers use so a backfilled row is byte-identical to a trigger-written one."""
+    ins = f"INSERT INTO {SHADOW_TABLE}(txt, tier, k1, k2, tenant_id) "
     return [
-        f"INSERT INTO {SHADOW_TABLE}(txt, tier, k1, k2, tenant_id) "
-        f"SELECT {_entity_txt('')}, 'entity', category, name, tenant_id FROM entities",
-        f"INSERT INTO {SHADOW_TABLE}(txt, tier, k1, k2, tenant_id) "
-        f"SELECT {_state_txt('')}, 'state', '', document_key, tenant_id FROM state_documents",
-        f"INSERT INTO {SHADOW_TABLE}(txt, tier, k1, k2, tenant_id) "
-        f"SELECT {_reference_txt('')}, 'reference', '', doc_key, tenant_id FROM reference_documents",
-        f"INSERT INTO {SHADOW_TABLE}(txt, tier, k1, k2, tenant_id) "
-        f"SELECT {_journal_txt('')}, 'journal', '', id, tenant_id FROM journal_events",
+        ins + _entity_txt("", "entities"),
+        ins + _state_txt("", "state_documents"),
+        ins + _reference_txt("", "reference_documents"),
+        ins + _journal_txt("", "journal_events"),
     ]
 
 
@@ -327,6 +565,15 @@ def apply_shadow_migration(conn: sqlite3.Connection) -> None:
     duplicate-free.
     """
     conn.execute(create_table_sql())
+    # v0.8.0 stage 2: DROP before CREATE. The trigger bodies embed the per-tier
+    # rendering expression, so ``CREATE TRIGGER IF NOT EXISTS`` alone would leave
+    # a pre-existing store running the OLD rendering in its triggers while the
+    # backfill below writes the NEW one — a silently split index. Dropping first
+    # makes this migration idempotent with respect to a CHANGED trigger body, not
+    # just a missing one. Cheap (10 sqlite_master deletes) and still safe to
+    # re-run: the whole thing is inside the caller's single transaction.
+    for name in SHADOW_TRIGGER_NAMES:
+        conn.execute(f"DROP TRIGGER IF EXISTS {name}")
     for stmt in trigger_sqls():
         conn.execute(stmt)
     conn.execute(f"DELETE FROM {SHADOW_TABLE}")
@@ -468,8 +715,156 @@ def _shape_hit(conn: sqlite3.Connection, tenant_id: str, tier: str,
     return None
 
 
+def _content_terms(terms: list[tuple[str, bool]]) -> list[tuple[str, bool]]:
+    """The terms allowed to carry coverage weight.
+
+    A term counts iff the ending rule SHORTENED it (so it is a morphological
+    stem, which in an inflecting language means a word long enough to inflect) or
+    it comes from an unspaced script (where 2-3 characters are a whole word).
+    Everything else — 'and', 'the', 'gdzie', 'nasze', 'your', 'oraz' — is
+    function-word-shaped by length and is dropped.
+
+    This is the SAME predicate the normalizer already applies, reused rather than
+    re-derived: there is no stoplist here, no language detection, and no
+    per-query tuning. It exists because coverage without it is meaningless — an
+    8-word injection query in which only 'and' has corpus support otherwise
+    scores every English row in the store at coverage 1 and returns 20 of them.
+    """
+    return [(t, a, raw) for t, a, raw in terms
+            if a or (len(t) >= 3 and _is_unspaced(t))]
+
+
+def _shadow_search_normalized(conn: sqlite3.Connection, tenant_id: str, query: str,
+                              limit: int, allowed: set) -> list[dict] | None:
+    """The normalized shadow pass: match the normalized query against the
+    normalized rendering, and return the rows that cover the MOST query terms.
+
+    One probe per term. Never a sequential ladder: every term is probed, always,
+    in a fixed order, with no early stop and no selectivity re-ordering. Then a
+    single argmax on term coverage, tie-broken by how many of those terms matched
+    at a WORD START. AND is the special case where some row covers everything, so
+    no separate AND pass is needed, and a term nothing supports contributes
+    nothing to any row and drops out on its own.
+
+    Probes are UNANCHORED (free substring), which is what preserves the
+    compound-interior and CJK-interior matching the trigram shadow exists for;
+    the word-start test is applied afterwards as a RANKING signal, so selectivity
+    is bought without giving up substring reach. Coverage is a ranking rule
+    inside the rescue, not a gate deciding whether the rescue runs — the caller
+    decides that, and this function always does the same work.
+
+    Returns None when the query carries no content-shaped term at all, which
+    tells the caller to fall through to the 0.5.0 raw-folded pass instead.
+    """
+    terms = normalize_terms(query)
+    content = _content_terms(terms)
+    match_terms = [(t, a, raw) for t, a, raw in content if len(t) >= 3]
+    if not match_terms:
+        return None
+    # A short token is content only in a script written without word spaces. A
+    # 2-char Latin token ('są', 'is', 'do') is stopword-grade and must not become
+    # a hard AND requirement on every candidate row — which is exactly what the
+    # pre-0.8.0 `not t.isascii()` test did to every accented 2-char Polish word.
+    like_terms = [t for t, _a, _r in terms if len(t) < 3 and _is_unspaced(t)]
+    if len(match_terms) > _MAX_SHADOW_TERMS:
+        match_terms = sorted(match_terms, key=lambda p: len(p[0]), reverse=True
+                             )[:_MAX_SHADOW_TERMS]
+
+    tier_clause, tier_params = _tier_filter(allowed)
+    fetch = max(limit, 1) * 4
+    cand: dict = {}
+
+    weight: dict = {}
+    for term, _anchored, _raw in match_terms:
+        # !!! CORE-3 TENANT-ISOLATION LOCK (2026-06-25 pre-launch audit) !!!
+        # `AND tenant_id = ?` is the ONLY thing keeping this query inside the
+        # caller's tenant (tenant_id is UNINDEXED -> trailing post-filter, not
+        # index-enforced). DO NOT remove, reorder, or make this conditional.
+        rows = conn.execute(
+            f"SELECT txt, tier, k1, k2, rank FROM {SHADOW_TABLE} "
+            f"WHERE {SHADOW_TABLE} MATCH ? AND tenant_id = ?" + tier_clause +
+            " ORDER BY rank LIMIT ?",
+            ['"' + term.replace('"', '""') + '"', tenant_id, *tier_params, fetch],
+        ).fetchall()
+        # Term weight = length / document frequency. Both halves are rarity
+        # proxies this codebase already relies on: df is what multi_record scores
+        # with, and length is the "cheap rarity proxy" _relaxed_query_strings
+        # orders by. No threshold, no stoplist, no store-size lookup (every probe
+        # shares one `fetch` cap, so df is comparable across terms).
+        #
+        # df carries 'termin rozpatrzenia reklamacji': 'termi' matches the forty
+        # stored notes saying "termin przesuniety" and is worth 5/40, while
+        # 'reklama' matches one row and is worth 7/1 — the difference between
+        # returning the complaints row and returning forty notes. Length carries
+        # the ties df cannot see: in 'kiedy robimy inwentaryzację' both 'robim'
+        # and 'inwentaryza' match exactly one row, and the longer stem is the one
+        # the question is actually about.
+        weight[term] = len(term) / max(len(rows), 1)
+        for txt, tier, k1, k2, rank in rows:
+            key = (tier, k1, k2)
+            e = cand.get(key)
+            if e is None:
+                e = cand[key] = {"txt": txt, "tier": tier, "k1": k1, "k2": k2,
+                                 "rank": rank, "cover": set()}
+            e["cover"].add(term)
+            if rank < e["rank"]:
+                e["rank"] = rank
+
+    if not cand:
+        return []
+    if like_terms:  # short unspaced-script tokens stay hard requirements
+        cand = {k: v for k, v in cand.items()
+                if all(t in v["txt"] for t in like_terms)}
+        if not cand:
+            return []
+
+    # Coverage top-up + word-start scoring, both from the text already in hand.
+    # A very common term's own probe is capped at `fetch`, so a row that
+    # genuinely carries it can be missing from that probe's window; the same
+    # substring test the MATCH performs is re-run in Python. Union only — it can
+    # add coverage, never remove it — and the SQL side stays the more generous of
+    # the two (the trigram tokenizer is additionally diacritic-insensitive).
+    for v in cand.values():
+        anchored_hits = exact_hits = 0
+        for term, _a, raw in match_terms:
+            if term not in v["cover"] and term in v["txt"]:
+                v["cover"].add(term)
+            if (" " + term) in v["txt"]:
+                anchored_hits += 1
+            if raw != term and (" " + raw + " ") in v["txt"]:
+                exact_hits += 1
+        v["anchored"] = anchored_hits
+        # A row carrying the WHOLE WORD the user actually typed beats one
+        # carrying only its stem. Truncation is an approximation applied because
+        # the exact form missed; where it did not need to miss, exactness wins.
+        # Language-neutral, and only ever a tie-break, so it cannot change which
+        # rows are eligible — it decides that 'where do we keep product
+        # packshots' leads with the English row rather than its equally-covered
+        # Polish twin. WHOLE WORD, not substring: the rendering pads every word
+        # with spaces, so `' '+raw+' '` is an exact word test, and it has to be,
+        # because 'magazynierow' contains the string 'magazynie' and a substring
+        # test would hand that row the bonus and hide the warehouse row behind
+        # it — the exact latent defect that made baseline 0.7.0 read 15/16.
+        v["exact"] = exact_hits
+        # Rounded so float addition order can never split an otherwise exact tie.
+        v["score"] = round(sum(weight[t] for t in v["cover"]), 9)
+
+    # ELIGIBILITY is score alone; `exact` and `anchored` only ORDER the rows that
+    # tied on it. That separation is load-bearing: 'packshot' scores the English
+    # and the Polish row identically, and only the English one carries the whole
+    # word, so letting exactness filter would drop the Polish twin and re-create
+    # the very masking this build exists to close. It orders, it does not select.
+    best = max(v["score"] for v in cand.values())
+    keep = [v for v in cand.values() if v["score"] == best]
+    keep.sort(key=lambda v: (-v["exact"], -v["anchored"], v["rank"],
+                             v["tier"], v["k1"], v["k2"]))
+    return _shape_rows(conn, tenant_id, [(v["txt"], v["tier"], v["k1"], v["k2"],
+                                          v["rank"]) for v in keep], limit)
+
+
 def shadow_search(conn: sqlite3.Connection, tenant_id: str, query: str,
-                  *, limit: int = 20, tiers: tuple[str, ...] | None = None) -> list[dict]:
+                  *, limit: int = 20, tiers: tuple[str, ...] | None = None,
+                  normalize: bool = False) -> list[dict]:
     """Folded-trigram substring fallback. Returns ``_search_strict``-shaped dicts.
 
     Substring semantics via the trigram MATCH (>=3-char folded tokens) with a
@@ -477,6 +872,13 @@ def shadow_search(conn: sqlite3.Connection, tenant_id: str, query: str,
     case — trigram MATCH cannot see below 3 chars). Short ASCII tokens are
     stopword-grade noise and dropped. A no-op ``[]`` when the shadow table is
     absent (pre-migration DB) so it is safe to call unconditionally.
+
+    ``normalize=True`` (v0.8.0 stage 2) runs the NORMALIZED pass instead: the
+    query goes through the same normalizer the stored rendering went through at
+    write time, inflected tokens are truncated to a stem and matched at a word
+    start, and the rows covering the most terms win. ``normalize=False`` is the
+    0.5.0 raw-folded behaviour, kept because it is a different question (exact
+    substring, no morphology) and several callers and tests ask exactly that.
     """
     if limit <= 0:  # CORE-5: a non-positive limit must never broaden — mirror clamp
         return []
@@ -486,6 +888,19 @@ def shadow_search(conn: sqlite3.Connection, tenant_id: str, query: str,
     allowed &= set(_TIERS)
     if not allowed:
         return []
+
+    if normalize:
+        try:
+            out = _shadow_search_normalized(conn, tenant_id, query, limit, allowed)
+        except (sqlite3.OperationalError, sqlite3.DatabaseError) as err:
+            if _is_healable(err):
+                _heal(conn)
+            return []
+        if out is not None:
+            return out
+        # No content-shaped term: an all-short-token query ('form', 'the cat').
+        # Fall through to the 0.5.0 raw pass, which is exactly what such a query
+        # got before this build, rather than inventing an answer for it.
 
     folded = fold_py(query)
     toks = [t for t in re.findall(r"\w+", folded) if t]
@@ -536,9 +951,16 @@ def shadow_search(conn: sqlite3.Connection, tenant_id: str, query: str,
             _heal(conn)
         return []
 
-    # Hit shaping. Journal is capped at max(1, limit//4) for symmetry with
-    # _search_strict (contentless journal rows share many common terms and would
-    # otherwise dominate). Rows whose base record no longer resolves are skipped.
+    return _shape_rows(conn, tenant_id, rows, limit)
+
+
+def _shape_rows(conn: sqlite3.Connection, tenant_id: str, rows, limit: int) -> list[dict]:
+    """Hit shaping, shared by the raw and the normalized pass.
+
+    Journal is capped at max(1, limit//4) for symmetry with _search_strict
+    (contentless journal rows share many common terms and would otherwise
+    dominate). Rows whose base record no longer resolves are skipped.
+    """
     journal_cap = max(1, limit // 4) if limit > 0 else 0
     journal_used = 0
     hits: list[dict] = []

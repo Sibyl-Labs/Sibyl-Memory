@@ -50,7 +50,16 @@ _FTS_REBUILD_MARKER = 3
 # stamped in PRAGMA user_version by the SAME crash-atomic machinery as the FTS
 # rebuild marker. Marker >= _SHADOW_MARKER (and the shadow table present) is the
 # fast-path signal that v4 is fully applied.
-_SHADOW_MARKER = 4
+#
+# v0.8.0 stage 2 (2026-08-30): bumped 4 -> 5. The shadow's stored rendering
+# changed from fold_sql to normalize_sql (shadow.py NORMALIZER_VERSION = 1), so
+# every existing store must drop, recreate and re-backfill its shadow on the next
+# open or it would keep serving the old rendering. This marker IS the normalizer
+# version stamp on disk: marker 4 == fold-only rendering, marker 5 ==
+# NORMALIZER_VERSION 1. Any future change to the four per-tier expressions in
+# shadow.py must bump it again, and apply_shadow_migration now drops its triggers
+# before recreating them so a changed trigger BODY actually takes effect.
+_SHADOW_MARKER = 5
 
 # v0.4.0 (2026-05-18, KAPPA RED finding): the SQLite DB holds every entity
 # body, not just credentials. docs.sibyllabs.org/memory/install claims 0600
