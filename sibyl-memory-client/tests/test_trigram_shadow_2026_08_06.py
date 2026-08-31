@@ -15,6 +15,9 @@ v0.5.0 multi-language search (spec §4.2 / §5 / §7). Covers:
 """
 from __future__ import annotations
 
+import ast
+import inspect
+import re
 import sqlite3
 
 import pytest
@@ -27,6 +30,7 @@ from sibyl_memory_client.shadow import (
     trigram_tokenizer_clause,
     create_table_sql,
 )
+from sibyl_memory_client import storage as storage_mod
 from sibyl_memory_client.storage import _FTS_REBUILD_MARKER, _SHADOW_MARKER
 
 
@@ -383,8 +387,14 @@ def test_cross_tenant_isolation_match_and_like(tmp_path):
     b.set_entity("p", "b-city", {"t": "上海 Kraków"})
 
     with a.storage.connection() as conn:
-        # MATCH path (>=3-char folded token 'lodz'): A sees a-city, B sees nothing
-        assert [h["key"] for h in shadow_search(conn, "tenant-A", "lodz", limit=10)] == ["a-city"]
+        # MATCH path (>=3-char folded token 'lodz'): A sees a-city, B sees nothing.
+        # The POSITIVE half needs decomposable folding (ó, ź), which is the
+        # tokenizer's job and arrives with remove_diacritics at SQLite 3.45; on
+        # 3.34-3.44 this query is a documented miss. Every ISOLATION assertion
+        # below runs on every supported version — only the recall half is gated.
+        if shadow.sqlite_supports_full_fold():
+            assert [h["key"] for h in shadow_search(
+                conn, "tenant-A", "lodz", limit=10)] == ["a-city"]
         assert shadow_search(conn, "tenant-B", "lodz", limit=10) == []
         # LIKE path (2-char CJK '北京'): A sees a-city, B sees nothing
         assert [h["key"] for h in shadow_search(conn, "tenant-A", "北京", limit=10)] == ["a-city"]
@@ -432,3 +442,50 @@ def test_tokenizer_clause_345_and_up(monkeypatch):
     monkeypatch.setattr(shadow.sqlite3, "sqlite_version_info", (3, 45, 0))
     assert trigram_tokenizer_clause() == "tokenize = 'trigram remove_diacritics 1'"
     assert "trigram remove_diacritics 1" in create_table_sql()
+
+
+# --------------------------------------------------------------------------
+# The SQLite floor: enforced, and measured rather than asserted (v0.8.0)
+# --------------------------------------------------------------------------
+def test_the_floor_is_stated_once_and_enforced():
+    """ONE number. The 3.34 claim was carried for months with no run behind it,
+    and storage.py's schema-failure recovery carried a SECOND, different number
+    ("3.38+ for json_valid"). Both are now the one constant below."""
+    assert shadow.SQLITE_MIN_VERSION == (3, 34, 0)
+    assert shadow.SQLITE_FULL_FOLD_VERSION == (3, 45, 0)
+    # No SQLite version may be spoken by a user-visible STRING in storage.py.
+    # Comments are prose about the history; a string literal is a claim the user
+    # reads, and a string literal is where the second floor lived.
+    tree = ast.parse(inspect.getsource(storage_mod))
+    spoken = [n.value for n in ast.walk(tree)
+              if isinstance(n, ast.Constant) and isinstance(n.value, str)
+              and re.search(r"(?<![\d.])3\.[34]\d", n.value)]
+    assert spoken == [], f"a second SQLite floor is back in a storage.py string: {spoken}"
+
+
+def test_below_the_floor_raises_a_named_schema_error_before_any_write(tmp_path, monkeypatch):
+    """BEFORE any migration write: the store file must not exist afterwards."""
+    monkeypatch.setattr(shadow.sqlite3, "sqlite_version_info", (3, 33, 0))
+    monkeypatch.setattr(shadow.sqlite3, "sqlite_version", "3.33.0")
+    db = tmp_path / "old-sqlite.db"
+    with pytest.raises(SchemaError) as ei:
+        MemoryClient.local(db, tenant_id="qa")
+    msg = str(ei.value)
+    assert "3.34" in msg, msg          # the minimum, named
+    assert "3.33.0" in msg, msg        # the found version, named
+    assert "trigram" in msg, msg       # and why
+    assert "3.34" in ei.value.recovery and "3.45" in ei.value.recovery
+    assert not db.exists(), "raised AFTER touching the store"
+
+
+def test_at_and_above_the_floor_it_does_not_raise(monkeypatch):
+    for v in [(3, 34, 0), (3, 44, 2), (3, 45, 1), (3, 99, 0)]:
+        monkeypatch.setattr(shadow.sqlite3, "sqlite_version_info", v)
+        shadow.assert_sqlite_supported()   # must not raise
+
+
+def test_full_fold_predicate_tracks_the_boundary(monkeypatch):
+    for v, want in [((3, 34, 1), False), ((3, 44, 2), False),
+                    ((3, 45, 0), True), ((3, 45, 1), True)]:
+        monkeypatch.setattr(shadow.sqlite3, "sqlite_version_info", v)
+        assert shadow.sqlite_supports_full_fold() is want

@@ -4,7 +4,31 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] - 2026-08-31
+
+Minor version: `search_multi_record` and `search` now return a `SearchResults`
+list subclass carrying `.verdict`, and the adapter's `sibyl_search` returns
+`{"results": [...], "verdict": {...}}` where it used to return `{"results": [...]}`.
+Every existing caller of the list is unaffected; a caller reading the adapter
+payload's keys should read this entry.
+
+- Floors `sibyl-memory-client>=0.8.0`. The provider forwards a verdict the client
+  produces; over an old client it would forward nothing.
+
+### Fixed (stage-3 ratification, 2026-08-31)
+
+- **The one-vocabulary guard did not read `adapter.py`.** The guard scanned
+  `provider.py` only, and `adapter.py` is the module that builds what a real
+  Hermes agent receives, so it is where a drifted second declaration of a cause
+  name matters most. A ratification pass planted `_LOCAL_CAUSE_COPY =
+  'abstained_on'` above `class SibylAdapter` and kept the suite green. The guard
+  now scans `adapter.py` with exactly the two teaching strings excised (the
+  `SEARCH_SCHEMA` description and the `system_prompt_block` return), located by
+  AST rather than by line range, so a rename of either surface fails the test
+  instead of silently widening the exemption. Re-attacked with the original plant
+  and four variants (both quote styles, a second key inside `SEARCH_SCHEMA`, a
+  gate-cause literal deep in a method body): all five now fail as they should. No
+  drifted copy existed; this closes the hole, it does not fix a live defect.
 
 ### Added
 - **`search_multi_record` returns the cause by default** (branch

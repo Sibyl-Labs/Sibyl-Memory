@@ -4,7 +4,15 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] - 2026-08-31
+
+Minor version: `sibyl memory search` prints a new `cause:` line on the zero path,
+so anything parsing this command's output should read this entry.
+
+- Floors `sibyl-memory-client>=0.8.0`, `sibyl-memory-hermes>=0.4.0` and, in the
+  `mcp` extra, `sibyl-memory-mcp>=0.2.0`. The CLI prints causes it does not own;
+  an old client underneath a new CLI would leave it printing a cause line for a
+  verdict that is never populated.
 
 ### Changed
 - **`sibyl memory search` explains a zero instead of just reporting one** (branch

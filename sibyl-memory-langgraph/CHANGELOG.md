@@ -4,7 +4,19 @@ All notable changes to `sibyl-memory-langgraph` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-08-31
+
+Minor version: `SibylStore` gained `last_search_verdict`, and the underlying
+`search_entities` now returns a `list` subclass. `BaseStore.search` still returns
+`list[SearchItem]` and its rows are unchanged.
+
+- Floors `sibyl-memory-client>=0.8.0`, raised from `>=0.5.0`. The store reads a
+  verdict the client produces; over an old client `last_search_verdict` would be
+  permanently `None` while the package advertised it. The floor also stops a
+  partial upgrade pairing this store with a client whose search shadow uses the
+  older stored rendering.
+- `__version__` in `__init__.py` was stale at `0.1.0` while the package shipped
+  as 0.1.1. It now tracks the pyproject version.
 
 ### Added
 - **`SibylStore.last_search_verdict`** (branch `lang-core-verdict`,
