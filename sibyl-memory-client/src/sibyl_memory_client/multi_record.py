@@ -54,6 +54,25 @@ import json
 import math
 import re
 
+from .verdicts import (
+    GateCause,
+    GateCounters,
+    SearchResults,
+    VerdictCode,
+    abstained_on_verdict,
+    gated_verdict,
+    negation_abstain_verdict,
+    no_match_verdict,
+    stamp,
+    store_is_empty,
+)
+
+# The deprecated diagnostics dict's key for the blocking token happens to BE the
+# cause name, so it is derived from the canonical enum rather than re-typed here.
+# One vocabulary, one declaration — a second copy is how a surface starts
+# reporting a cause the engine never emits.
+_LEGACY_ABSTAINED_ON_KEY = VerdictCode.ABSTAINED_ON.value
+
 _STOP = {"the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "be",
          "to", "of", "in", "on", "at", "for", "with", "this", "that",
          "final", "current", "by"}
@@ -407,18 +426,52 @@ def _pure_prep(body_lower: str) -> bool:
 
 def multi_record_search(client, query: str, *, limit: int = 10,
                          corpus_n: int | None = None,
-                         diagnostics: dict | None = None):
+                         diagnostics: dict | None = None) -> SearchResults:
     """Two-stage retrieve-then-verify search over a MemoryClient.
 
     Returns a ranked list of hit dicts in the SAME shape client.search() returns
-    ({tier, key, category, body, snippet, rank, ts}), best-first. Returns [] when
-    the query is unsatisfiable (abstention) or nothing clears the verify gates.
+    ({tier, key, category, body, snippet, rank, ts}), best-first. Returns an
+    EMPTY list when the query is unsatisfiable (abstention) or nothing clears the
+    verify gates — and, since the verdict contract (2026-08-31), that empty list
+    always says why.
 
     For exact single-entity lookups, prefer client.recall() / get_entity().
 
-    `diagnostics` (N1', 2026-08-18): pass a dict to have it populated, additive
-    and at zero extra searches / zero precision cost. Every existing caller is
-    unaffected by leaving it None. Shape:
+    THE VERDICT CONTRACT (stage 3, 2026-08-31)
+    ------------------------------------------
+    The return value is a ``verdicts.SearchResults`` — a ``list`` subclass, so
+    every existing caller (``len``, iteration, indexing, ``== []``,
+    ``json.dumps``, ``isinstance(x, list)``) is byte-for-byte unaffected — that
+    additionally carries ``.verdict``, a ``verdicts.Verdict`` naming exactly why
+    the result is the length it is. The verdict is part of the RETURN, not an
+    opt-in kwarg, because the defect it closes was precisely that the only
+    explanation channel was optional and the MCP server never passed it.
+
+    Every exit from this function flows through one internal ``_finish``. There
+    is no bare ``return []`` left in the body and no gate that can drop a
+    candidate without counting the drop. The five causes are closed
+    (``verdicts.ZERO_CAUSES``):
+
+      ABSTAINED_ON      one CONTENT-shaped query token has zero corpus support
+      NEGATION_ABSTAIN  a negation word was dropped and NEGATION_POLICY=abstain
+      GATED             candidates were found, then dropped by coverage_floor /
+                        anchor_gate / prep_filter (with per-gate counts and the
+                        best coverage any candidate reached)
+      EMPTY_STORE       the tenant has no searchable row in any tier (probed,
+                        never inferred)
+      NO_MATCH          the honest miss
+
+    NOTHING ABOUT SEARCH BEHAVIOUR CHANGED. No gate constant, no threshold, no
+    lexicon, no ordering, no early-return condition. The rows this returns for
+    any query are identical to the pre-verdict build; only the explanation is
+    new. That invariant is asserted by the battery's byte-parity check against
+    ef98f5b and by ``tests/test_verdict_contract_2026_08_31.py``.
+
+    `diagnostics` (N1', 2026-08-18) — DEPRECATED, kept working. Pass a dict to
+    have it populated exactly as before (same keys, same values, same exits), so
+    no existing caller breaks. Prefer ``result.verdict``: the dict channel is
+    optional, so a caller who forgets it is back to an unexplained zero, which is
+    the whole defect. The legacy shape:
       abstained         bool  — True if the query hit the content-shaped df==0
                                  gate or the negation-abstain policy
       abstained_on      list  — the blocking token(s), when abstained
@@ -429,13 +482,71 @@ def multi_record_search(client, query: str, *, limit: int = 10,
       coverage          float — fraction of significant query tokens that
                                  survived to scoring (1.0 - drop rate); 0.0 on
                                  abstention
-    `count: 0` with an empty diagnostics-less call is indistinguishable from
-    an empty store; a caller reading `abstained_on` can retry tier-filtered
-    with the one word to drop instead of reading it as "nothing was stored".
+      verdict           dict  — ADDITIVE (2026-08-31): the full verdict envelope,
+                                 identical to ``result.verdict.as_dict()``
     """
+    # --- verdict bookkeeping ------------------------------------------------
+    # Numeric / enum only. Nothing here ever holds stored-record content, so the
+    # envelope composes with the MCP MH-1 fence instead of routing around it.
+    gates = GateCounters()
+    tokens_total = 0
+    tokens_scored = 0
+    candidates = 0
+    dropped_function: list = []
+    negation_dropped: list = []
+
+    def _finish(rows, verdict) -> SearchResults:
+        """THE SINGLE EXIT. Every return in this function goes through here.
+
+        A bare ``return []`` below this point is a contract violation: it would
+        reintroduce the unexplained zero this whole stage exists to delete.
+        """
+        verdict.gates = gates
+        verdict.tokens_total = tokens_total
+        verdict.candidates = candidates
+        verdict.dropped_function = list(dropped_function)
+        # An abstention short-circuits before scoring, so nothing was scored.
+        verdict.tokens_scored = (
+            0 if verdict.code in (VerdictCode.ABSTAINED_ON,
+                                  VerdictCode.NEGATION_ABSTAIN)
+            else tokens_scored
+        )
+        # Capture the LOCAL cause before any escalation, so the deprecated
+        # diagnostics dict keeps reporting exactly what it reported before.
+        legacy_code = verdict.code
+        legacy_tokens = list(verdict.tokens)
+        out = stamp(rows, verdict)
+        v = out.verdict
+        # An empty result against a store with nothing in it is EMPTY_STORE
+        # whatever the local cause was: "one word blocked your query" is useless
+        # advice when there is nothing to block. Probed (all four searchable
+        # tiers), never inferred, and only ever on the zero path — one indexed
+        # COUNT in the common case, since `entities` short-circuits it.
+        if not rows and store_is_empty(client):
+            v.code = VerdictCode.EMPTY_STORE
+            v.gate = None
+            v.tokens = []
+        if diagnostics is not None:
+            abstained = legacy_code in (VerdictCode.ABSTAINED_ON,
+                                        VerdictCode.NEGATION_ABSTAIN)
+            diagnostics["abstained"] = abstained
+            diagnostics[_LEGACY_ABSTAINED_ON_KEY] = (
+                legacy_tokens if legacy_code is VerdictCode.ABSTAINED_ON else [])
+            diagnostics["dropped_function"] = list(dropped_function)
+            diagnostics["negation_dropped"] = list(negation_dropped)
+            diagnostics["coverage"] = (
+                0.0 if abstained or not original_toks
+                else len(toks) / len(original_toks)
+            )
+            diagnostics["verdict"] = v.as_dict()
+        return out
+
     toks = _significant_tokens(query)
+    original_toks: list = []
     if not toks:
-        return []
+        # No searchable term at all (too short, or all stopwords). Not a gate,
+        # not an abstention — there was nothing to run.
+        return _finish([], no_match_verdict())
     # CORE-6/MH-3: bound token fan-out. De-dup, then keep the longest (rarest-
     # proxy) tokens up to the cap so an attacker can't force one FTS5 search per
     # token on an arbitrarily long query. Terminal-state keywords are always
@@ -449,6 +560,8 @@ def multi_record_search(client, query: str, *, limit: int = 10,
     else:
         toks = uniq
     original_toks = list(toks)  # N1' diagnostics: coverage is relative to this
+    tokens_total = len(original_toks)   # verdict: the pre-drop working set
+    tokens_scored = len(original_toks)  # revised down as tokens are dropped
     if corpus_n is None:
         corpus_n = _corpus_count(client)  # CORE-6/MH-3: cheap COUNT(*), not full scan
 
@@ -465,13 +578,10 @@ def multi_record_search(client, query: str, *, limit: int = 10,
             # "when", "gdzie") carried no corpus signal by construction, so it is
             # dropped after the loop instead of collapsing the whole query.
             if not _df0_droppable(t):
-                if diagnostics is not None:
-                    diagnostics["abstained"] = True
-                    diagnostics["abstained_on"] = [t]
-                    diagnostics["dropped_function"] = []
-                    diagnostics["negation_dropped"] = []
-                    diagnostics["coverage"] = 0.0
-                return []  # abstention: a discriminating term nothing satisfies
+                # abstention: a discriminating term nothing satisfies. The
+                # verdict names it, which is what makes the taught recovery
+                # (drop this token, retry with every gate still armed) possible.
+                return _finish([], abstained_on_verdict(t))
             continue  # accumulate no candidates for a droppable zero-df token
         for h in hits:
             key = (h.get("tier"), h.get("key"), h.get("category"))
@@ -501,12 +611,19 @@ def multi_record_search(client, query: str, *, limit: int = 10,
     # which df==0 exclusions were already decided. terminal_q was computed from
     # the PRE-drop toks (above), so a dropped zero-df 'sent' still keeps the
     # terminal/prep gate armed.
-    dropped_function: list = []
+    candidates = len(cand)          # verdict: stage-1 recall, pre-verify
+    # (dropped_function / negation_dropped are bound at the top of the function
+    # so the single exit can read them from any return point.)
     if any(df[t] == 0 for t in toks):
         zero_dropped = [t for t in toks if df[t] == 0]  # all droppable by construction
         toks = [t for t in toks if df[t] > 0]
         if not toks:
-            return []
+            # Every token was an unsupported function word: nothing discriminating
+            # was left to search with. Not a gate and not an abstention.
+            dropped_function.extend(zero_dropped)
+            negation_dropped = [t for t in dropped_function if t in _NEGATION]
+            tokens_scored = 0
+            return _finish([], no_match_verdict())
         df = {t: df[t] for t in toks}
         dropped_function.extend(zero_dropped)
 
@@ -526,7 +643,13 @@ def multi_record_search(client, query: str, *, limit: int = 10,
         dropped_function.extend(nonzero_droppable)
     negation_dropped = [t for t in dropped_function if t in _NEGATION]
     if not toks:
-        return []
+        # Unreachable while the two drop steps above are both conditioned on a
+        # content token surviving, but it is a `return` and so it names a cause
+        # like every other one. A silent `return []` here is exactly the shape
+        # this stage exists to make structurally impossible.
+        tokens_scored = 0
+        return _finish([], no_match_verdict())
+    tokens_scored = len(toks)
 
     # N5 (Kravento PL eval, 2026-08-18): dropping a negation word makes the
     # query answer as if it were never negated ('contract not approved' ->
@@ -535,13 +658,7 @@ def multi_record_search(client, query: str, *, limit: int = 10,
     # NEGATION_POLICY="abstain" makes the silent wrong answer loud (return [])
     # instead of quiet.
     if negation_dropped and NEGATION_POLICY == "abstain":
-        if diagnostics is not None:
-            diagnostics["abstained"] = True
-            diagnostics["abstained_on"] = []
-            diagnostics["dropped_function"] = dropped_function
-            diagnostics["negation_dropped"] = negation_dropped
-            diagnostics["coverage"] = 0.0
-        return []
+        return _finish([], negation_abstain_verdict(negation_dropped))
 
     idf = {t: math.log((corpus_n + 1) / (df[t] + 1)) + 1.0 for t in toks}
     total = sum(idf.values()) or 1.0
@@ -556,9 +673,17 @@ def multi_record_search(client, query: str, *, limit: int = 10,
     anchor_cut = max(2, round(ANCHOR_BAND * min_df))
     anchor_terms = {t for t in toks if df[t] <= anchor_cut}
 
+    # THE THREE GATES. Each `continue` below used to discard a candidate with no
+    # record that it had happened — three silent drops that reached the agent as
+    # the same empty list an empty store produces. The gates are UNCHANGED (same
+    # conditions, same constants, same order); each one now increments a counter
+    # so the verdict can say which gate emptied the result and how close the best
+    # candidate came. Counters are integers and a float; no row content is
+    # retained, so the envelope stays compatible with the MH-1/MH-2 fence.
     scored = []
     for e in cand.values():
         if terminal_q and _pure_prep(e["body"]):
+            gates.record(GateCause.PREP_FILTER)
             continue                                   # drop purely-preparatory on a final-state query
         # dropped_function tokens may still tag a candidate's matched set (they
         # were searched before the drop decision above); idf.get(t, 0.0) gives
@@ -566,7 +691,12 @@ def multi_record_search(client, query: str, *, limit: int = 10,
         # matched a dropped token scores 0 coverage rather than riding a
         # function word's idf into relevance (the N4 fix's other half).
         cov = sum(idf.get(t, 0.0) for t in e["m"]) / total
+        # Recorded for EVERY candidate that reaches the comparison, kept or not:
+        # "the best row only reached 0.31 against a 0.45 floor" is the single
+        # most useful number a gated zero can carry.
+        gates.observe_coverage(cov)
         if cov < COVERAGE_THRESHOLD:
+            gates.record(GateCause.COVERAGE_FLOOR)
             continue                                   # below the hard coverage floor
         # Anchor-first HYBRID gate: keep a candidate that is in the anchor's
         # cluster (matches an anchor term) OR clears the high-coverage bar
@@ -576,19 +706,17 @@ def multi_record_search(client, query: str, *, limit: int = 10,
         # retrieval diagnostic: synthetic-workflow pollution -> 0 while natural-
         # language recall is preserved (anchor-only over-filtered real queries).
         if anchor_terms and not (e["m"] & anchor_terms) and cov < ANCHOR_HYBRID_HI:
+            gates.record(GateCause.ANCHOR_GATE)
             continue
         tier = e["hit"].get("tier")
         scored.append((e["hit"], cov, _TIER_PRIORITY.get(tier, 0), e["best"]))
     scored.sort(key=lambda x: (-x[1], x[2], x[3]))
     result = [h for h, _cov, _tp, _best in scored[:limit]]
 
-    if diagnostics is not None:
-        diagnostics["abstained"] = False
-        diagnostics["abstained_on"] = []
-        diagnostics["dropped_function"] = dropped_function
-        diagnostics["negation_dropped"] = negation_dropped
-        diagnostics["coverage"] = (
-            len(toks) / len(original_toks) if original_toks else 0.0
-        )
-
-    return result
+    # The one exit that can be either outcome. Rows -> OK (stamp() sets it).
+    # No rows -> GATED when a gate actually dropped something (with the dominant
+    # gate named), otherwise the honest miss: stage 1 gathered nothing to gate.
+    dominant = gates.dominant()
+    if not result and dominant is not None:
+        return _finish(result, gated_verdict(dominant, gates))
+    return _finish(result, no_match_verdict())

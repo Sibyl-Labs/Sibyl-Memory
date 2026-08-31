@@ -256,7 +256,16 @@ SEARCH_SCHEMA = {
         "FTS5 full-text search across ALL Sibyl tiers (entities + state + "
         "reference + journal) for this tenant. Each hit carries a `tier` tag "
         "so you know where the match came from. Returns ranked matches. Use "
-        "whenever you want past context but don't know the exact (category, name)."
+        "whenever you want past context but don't know the exact (category, name).\n"
+        "An EMPTY `results` always ships with a `verdict` saying why. When "
+        "verdict.code is 'abstained_on', one word in your query (verdict.tokens[0]) "
+        "appears nowhere in this store and blocked the whole query — drop exactly "
+        "that word and call again, unchanged otherwise; repeat once if a second "
+        "word blocks the retry, then STOP (at most two retries: past that the "
+        "loop stops recovering your question and starts answering a shorter one). "
+        "'gated' means rows were found and dropped for weak "
+        "relevance (use more of the exact stored wording). 'empty_store' means "
+        "nothing has been written yet. 'no_match' is an honest miss."
     ),
     "parameters": {
         "type": "object",
@@ -441,6 +450,12 @@ class SibylAdapter(MemoryProvider):
             "proper nouns you stored (names, ids, categories) over a full natural-language "
             "question. For a multi-concept query, search each key term separately and merge "
             "the results, or use sibyl_recall when you know the category and name.\n"
+            "  An empty result is never silent: it carries a `verdict`. verdict.code="
+            "'abstained_on' means the single word in verdict.tokens[0] is absent from the "
+            "store and blocked everything else — drop that word and search again, at "
+            "most TWICE (past two retries the loop answers a shorter question, not "
+            "yours). 'gated' = found but too weakly matched; 'empty_store' = "
+            "nothing written yet; 'no_match' = a genuine miss.\n"
             "- sibyl_list(category?, status?): browse what's remembered"
         )
 
@@ -624,14 +639,27 @@ class SibylAdapter(MemoryProvider):
                 # Run15 multi-record fix (Terminal B): workflow queries spanning
                 # several linked records surface them all (retrieve-then-verify).
                 # See provider.search_multi_record / sibyl_memory_client.multi_record.
-                hits = self._sibyl.search_multi_record(query, limit=limit)
+                found = self._sibyl.search_multi_record(query, limit=limit)
+                # The verdict rides on the RETURN (stage 3, 2026-08-31), so read
+                # it BEFORE the comprehensions below turn the carrier back into a
+                # plain list. getattr-with-fallback keeps this adapter working
+                # against an older sibyl-memory-client that predates the contract.
+                verdict = getattr(found, "verdict", None)
+                hits = list(found)
                 # F5: cap each hit body so one oversized value can't flood context.
                 hits = [_truncate_hit_body(h) for h in hits]
                 # F1/MH-6: strip any forged fence markers per-value BEFORE
                 # serialization (JSON-escaped markers can't bypass the regex,
                 # and the JSON envelope is never mangled by the substitution).
                 hits = [_scrub_value(h) for h in hits]
-                return json.dumps({"results": hits}, default=str)
+                payload: dict[str, Any] = {"results": hits}
+                if verdict is not None:
+                    # Numbers, enum values and the caller's own query tokens —
+                    # no record text by construction. Scrubbed anyway, so a
+                    # future field that forgets that rule is caught by the fence
+                    # instead of becoming a second channel out of the store.
+                    payload["verdict"] = _scrub_value(verdict.as_dict())
+                return json.dumps(payload, default=str)
 
             if tool_name == "sibyl_list":
                 category = args.get("category")

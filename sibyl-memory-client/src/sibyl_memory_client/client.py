@@ -17,6 +17,7 @@ from typing import Any
 
 from .exceptions import NotFoundError, StorageError, TenantError, ValidationError
 from .storage import Storage, db_size_bytes, dumps, loads, new_id, _utc_now_iso
+from .verdicts import SearchResults, no_match_verdict, ok_verdict, stamp
 
 _log = logging.getLogger(__name__)
 
@@ -1287,11 +1288,20 @@ class MemoryClient:
     # ------------------------------------------------------------------
     @_track_op("search_entities")
     def search_entities(self, query: str, *, limit: int = 20, prefix: bool = False,
-                        category: str | None = None) -> list[dict[str, Any]]:
+                        category: str | None = None) -> SearchResults:
         """Full-text search over entity name + category + body via FTS5.
 
         Returns warm-tier entity rows only. For cross-tier search (entities +
         state + reference + journal in one call), use ``search()``.
+
+        THE VERDICT CONTRACT (stage 3, 2026-08-31): this is the third and last
+        search entry point in the SDK, and it leaves through the same single
+        ``stamp()`` as the other two. A ``verdicts.SearchResults`` (a ``list``
+        subclass — every existing caller is byte-for-byte unaffected) carrying
+        ``OK`` or ``NO_MATCH``. Like ``search()`` it is a policy-free primitive:
+        no abstention, no relevance gate, so no other cause is reachable, and
+        the ``EMPTY_STORE`` probe is left to whichever surface reports the zero
+        (``verdicts.refine_zero``).
 
         Query is sanitized as a single FTS5 phrase: column-filter syntax
         (``name:foo``) and unclosed quotes can't escape into the parser.
@@ -1311,7 +1321,10 @@ class MemoryClient:
         limit = _clamp_limit(limit)  # CORE-5: negative=unbounded; huge=full-scan. Clamp.
         match_q = _sanitize_fts5_query(query, prefix=prefix)
         if not match_q:
-            return []
+            # An empty / invalid query is a zero like any other, and it names a
+            # cause like any other. `tokens_total=0` is what lets explain() say
+            # "the query carried no searchable terms" instead of guessing.
+            return stamp([], no_match_verdict(tokens_total=0))
         # external-content FTS5: join by rowid back to base table.
         # _fts_query handles classification (v0.4.0 KAPPA) + corruption
         # containment (poisoned-index DatabaseError self-heals or returns []).
@@ -1353,11 +1366,38 @@ class MemoryClient:
                 keyed.append((_proximity_bucket(query_tokens, text), idx, e))
             keyed.sort(key=lambda t: (t[0], t[1]))
             ents = [t[2] for t in keyed]
-        return ents
+        return stamp(ents, ok_verdict())
 
     @_track_op("search")
     def search(self, query: str, *, limit: int = 20, prefix: bool = False,
-               tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+               tiers: tuple[str, ...] | None = None) -> SearchResults:
+        """Cross-tier search that always says why it returned what it returned.
+
+        THE VERDICT CONTRACT (stage 3, 2026-08-31). Thin wrapper over
+        ``_search_rows`` — the unchanged search body, ladder and all — whose only
+        job is to be the SINGLE EXIT: whatever the ladder inside returns leaves
+        through one ``stamp()`` and arrives carrying a ``verdict``.
+
+        The return is a ``verdicts.SearchResults``: a ``list`` subclass, so every
+        existing caller (``len``, iteration, indexing, ``== []``,
+        ``json.dumps``, ``isinstance(x, list)``) is byte-for-byte unaffected,
+        with ``.verdict`` attached. Only two causes are reachable at this level,
+        because ``search()`` is a policy-free primitive with no abstention and no
+        relevance gate: ``OK`` when rows came back, ``NO_MATCH`` when they did
+        not. A user-facing surface (the CLI, the MCP tool) may pay one probe via
+        ``verdicts.refine_zero`` to upgrade that ``NO_MATCH`` to ``EMPTY_STORE``.
+        The probe is deliberately NOT taken here: ``multi_record_search`` calls
+        this method once per query token, and a COUNT per token would be a real
+        per-query cost for an explanation only the outermost caller needs.
+
+        Which rows come back is unchanged. See ``_search_rows`` below for the
+        search behaviour and its history.
+        """
+        rows = self._search_rows(query, limit=limit, prefix=prefix, tiers=tiers)
+        return stamp(rows, ok_verdict())
+
+    def _search_rows(self, query: str, *, limit: int = 20, prefix: bool = False,
+                     tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
         """Cross-tier search with a zero-hit paraphrase fallback.
 
         Runs the strict AND + proximity search first (``_search_strict``,

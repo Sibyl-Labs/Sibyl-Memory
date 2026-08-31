@@ -1549,6 +1549,10 @@ def cmd_memory(args: argparse.Namespace) -> int:
     you can inspect any split-brain store that `sibyl status` surfaces.
     """
     from sibyl_memory_client import DEFAULT_TENANT, MemoryClient
+    # THE canonical cause vocabulary (stage 3, 2026-08-31). Imported from the
+    # client, never re-declared here — the CLI prints causes, it does not own
+    # them.
+    from sibyl_memory_client.verdicts import refine_zero
 
     db_path = Path(args.db).expanduser()
     print()
@@ -1582,9 +1586,21 @@ def cmd_memory(args: argparse.Namespace) -> int:
             print(a.kv(f"{cat}/{name}", r.get("status") or "-"))
         return 0
     if op == "search":
-        hits = client.search(args.query, limit=args.limit)
+        # THE VERDICT CONTRACT (stage 3, 2026-08-31). This used to print
+        # "(no matches)" and stop — the terminal-shaped version of the defect
+        # this stage closes: a zero that cannot explain itself. The SDK now
+        # returns a cause on every call, and `refine_zero` pays one COUNT on the
+        # zero path so a brand-new user is told their store is EMPTY rather than
+        # left to conclude their query was wrong.
+        hits = refine_zero(client, client.search(args.query, limit=args.limit))
         if not hits:
             print(a.dim(f"(no matches for {args.query!r})"))
+            verdict = getattr(hits, "verdict", None)
+            if verdict is not None:
+                # Plain language, generated from the enum and never from stored
+                # text, so it is always safe to print to a terminal.
+                print(a.warn_line(verdict.explain()))
+                print(a.dim(f"cause: {verdict.code.value}"))
             return 0
         print(a.eyebrow(f"matches ({len(hits)})"))
         for h in hits:

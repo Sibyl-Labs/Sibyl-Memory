@@ -4,6 +4,21 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **`sibyl memory search` explains a zero instead of just reporting one** (branch
+  `lang-core-verdict`, 2026-08-31). It used to print `(no matches for 'x')` and
+  stop — the terminal-shaped version of the defect this stage closes, and the
+  reader is usually a new user deciding whether the product works. Saying "no
+  matches" against a store that is simply EMPTY was the single most misleading
+  thing this command could do. It now prints the canonical cause in plain
+  language plus a machine-readable `cause: <code>` line, and pays one count on
+  the zero path so `empty_store` is reported as what it is: a fixable state, not
+  a failed search. The success path is unchanged and prints no extra noise.
+- The cause vocabulary is imported from `sibyl_memory_client.verdicts`; the CLI
+  prints causes, it does not own them. A test asserts it declares none.
+
 ## [0.3.23] - 2026-08-22
 
 ### Changed
