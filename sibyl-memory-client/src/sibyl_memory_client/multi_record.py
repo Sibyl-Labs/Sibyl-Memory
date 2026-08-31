@@ -581,6 +581,15 @@ def multi_record_search(client, query: str, *, limit: int = 10,
                 # abstention: a discriminating term nothing satisfies. The
                 # verdict names it, which is what makes the taught recovery
                 # (drop this token, retry with every gate still armed) possible.
+                #
+                # `candidates = None` rather than `len(cand)` or 0: this aborts
+                # stage 1 PARTWAY, so earlier tokens may already have contributed
+                # rows and later tokens were never searched. Neither a partial
+                # count nor a flat 0 is a true answer to "how many candidates did
+                # stage 1 gather", and 0 is the actively misleading one — it reads
+                # as "nothing matched any of your words" when an earlier word may
+                # have matched several. Unknown and zero are different facts.
+                candidates = None
                 return _finish([], abstained_on_verdict(t))
             continue  # accumulate no candidates for a droppable zero-df token
         for h in hits:

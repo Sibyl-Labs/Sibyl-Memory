@@ -112,6 +112,24 @@ def test_abstained_on_names_the_blocking_token(tmp_path):
     assert v.abstained is True
     assert v.recovery == "drop_token_and_retry"
     assert v.tokens[0] in v.explain()
+    # Stage 1 aborted partway, so a candidate count would be a half-truth and 0
+    # would be a lie ("nothing matched any of your words" when an earlier word
+    # may have matched several). Unknown is reported as unknown.
+    assert v.candidates is None
+
+
+def test_abstention_does_not_report_zero_candidates_when_one_word_did_match(tmp_path):
+    """The specific half-truth being avoided. 'procent' matches a row before
+    'wynosi' aborts the query; reporting `candidates: 0` there would tell the
+    caller the store has nothing for any of their words."""
+    c = _client(tmp_path, "partial.db")
+    c.set_entity("ops", "stawka-ryczalt", {"text": "stawka ryczaltu dwadziescia procent"})
+    assert c.search("procent", limit=10)                 # the earlier token DOES match
+    res = multi_record_search(c, "ile procent wynosi stawka ryczaltu", limit=10)
+    assert res.verdict.code is VerdictCode.ABSTAINED_ON
+    assert res.verdict.tokens == ["wynosi"]
+    assert res.verdict.candidates is None
+    assert res.verdict.as_dict()["candidates"] is None
 
 
 def test_negation_abstain_names_the_negation(tmp_path):
