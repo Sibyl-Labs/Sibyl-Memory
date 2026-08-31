@@ -566,7 +566,11 @@ def _relaxed_query_variants(query: str):
     # 2) each content token alone, longest-first (length = cheap rarity proxy).
     #    The wrapper stops at the first variant that returns hits, so the most
     #    specific term is tried before more common ones. Last-resort recall.
-    for tok in sorted(set(content or toks), key=len, reverse=True):
+    # (-len, token): longest first, ties broken by the token itself. The old
+    # `key=len, reverse=True` was a stable sort over a SET, so equal-length
+    # tokens came out in randomised string-hash order and the same query could
+    # answer differently in different processes (review finding 11).
+    for tok in sorted(set(content or toks), key=lambda t: (-len(t), t)):
         # CORE-11 (2026-06-25 pre-launch audit): the old len>=3 floor silently
         # dropped short alphanumeric identifiers (q3, v2, k8, s3) — exactly the
         # discriminating tokens a developer searches for. Recover any token of
@@ -1445,54 +1449,46 @@ class MemoryClient:
         #   stage-1 head (the stopword-stripped CONJUNCTION) wins outright. It
         #     still required every content token, so it answered the question,
         #     and it is a PORTER answer, which reaches inflections the shadow's
-        #     fixed-length truncation cannot ('stories' -> 'story'). This is the
-        #     branch that carries every English case in review finding 1, and it
-        #     is byte-identical to 0.5.0.
-        #   stage-2 head (ONE token, last resort) does NOT exclude the shadow.
-        #     It answered a fragment of the question, and which fragment is
-        #     decided by raw token length, so it lands on 'robimy' in 'kiedy
-        #     robimy inwentaryzację'. The shadow's rows are APPENDED after it,
-        #     under the decisive guard, so the ladder keeps its rows and its
-        #     rank 1 and a correct last-resort answer such as 'postgres15' can
-        #     never be displaced.
-        #   a DEGRADED, SATURATED stage-2 head is the one place the ladder is
-        #     overridden, and it needs BOTH conditions. Saturation alone is not
-        #     enough and the b0b6e31 revision was rejected for assuming it was
-        #     (review finding 16): a token can fill the cap because it matched
-        #     indiscriminately, or because it is exactly right and the store has
-        #     that many relevant rows. 'quarterly reconciliation' answers from
-        #     'reconciliation', its FIRST and longest candidate, and filling the
-        #     limit there means the ladder found the family it was looking for;
-        #     discarding it lost twenty correct rows. 'termin rozpatrzenia
-        #     reklamacji' answers from 'termin' only after the two MORE SPECIFIC
-        #     tokens found nothing, so the ladder has degraded to its weakest
-        #     term, and that term then matched a boilerplate phrase across the
-        #     noise corpus. Degraded-and-saturated is the signal; either alone is
-        #     not. Both conditions come from machinery already here: the ladder's
-        #     own longest-first ordering, and the caller's own limit.
+        #     fixed-length truncation cannot ('stories' -> 'story').
+        #   stage-2 head (ONE token, last resort) keeps its rows and its order,
+        #     and the shadow is APPENDED after it under the decisive guard. When
+        #     the head already fills the caller's limit there is no room, so the
+        #     head is returned untouched. That is 0.5.0 semantics and it is all
+        #     that happens here.
+        #
+        # NOTHING OVERRIDES THE HEAD. Two revisions of this method carried an
+        # exception that discarded a last-resort head which filled the limit, on
+        # the theory that saturation meant the token had matched indiscriminately.
+        # Both discriminators were refuted by a fresh case that lost correct rows:
+        # saturation alone killed 'quarterly reconciliation' (20 reconciliation
+        # rows replaced by one quartermaster row), and saturation-plus-degraded
+        # killed 'quarterly audits' the same way, because the ladder orders by
+        # raw token LENGTH, a rarity proxy and not a relevance one, so degrading
+        # onto a shorter token is no evidence that the token is wrong. The
+        # exception is deleted rather than narrowed a third time.
+        #
+        # The accepted cost is one query shape: 'termin rozpatrzenia reklamacji'
+        # relaxes to 'termin', which sweeps up the boilerplate phrase in every
+        # stored note and fills the cap with it, so that query is now no better
+        # than released 0.7.0. Deliberate residual, recorded in stage2-report.md
+        # §5 with the acceptance amendment. Ranking a weak head below a better
+        # answer is scoring work, not a query-time special case.
         relaxed_hits: list[dict[str, Any]] = []
         last_resort_head = False
-        degraded = False
-        tried_last_resort = 0
         for relaxed, last_resort in _relaxed_query_variants(query):
-            if last_resort:
-                tried_last_resort += 1
             found = self._search_strict(relaxed, limit=limit, prefix=False,
                                         tiers=tiers)
             if found:
                 relaxed_hits = found
                 last_resort_head = last_resort
-                # True when a more specific candidate was tried first and failed.
-                degraded = last_resort and tried_last_resort > 1
                 break
         if relaxed_hits and not last_resort_head:
             return relaxed_hits
-        if relaxed_hits and not (degraded and len(relaxed_hits) >= limit):
+        if relaxed_hits:
             return self._append_shadow(relaxed_hits, query, limit=limit,
                                        tiers=tiers, decisive_only=True)
-        hits = self._shadow_fallback(query, limit=limit, tiers=tiers,
+        return self._shadow_fallback(query, limit=limit, tiers=tiers,
                                      normalize=True)
-        return hits or relaxed_hits
 
     def _append_shadow(self, hits: list[dict[str, Any]], query: str, *, limit: int,
                        tiers: tuple[str, ...] | None,

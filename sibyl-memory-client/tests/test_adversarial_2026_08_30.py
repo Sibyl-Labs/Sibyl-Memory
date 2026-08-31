@@ -361,16 +361,15 @@ def _recon_store(tmp_path, n_recon, name):
 
 @pytest.mark.parametrize("n_recon,limit", [(25, 20), (4, 5), (3, 20)])
 def test_saturating_last_resort_head_is_not_discarded(tmp_path, n_recon, limit):
-    """FINDING 16 (BLOCKER). 'quarterly reconciliation' has no stopwords, so the
-    stage-1 conjunction is never generated and stage 2 answers with its LONGEST
-    token, 'reconciliation', which legitimately fills the caller's limit. The
-    b0b6e31 exception discarded that head outright because the shadow returned
-    something: 'quarte' at df 1 outscores 'reconciliati' at df 25, so one
-    unrelated quartermaster row replaced every reconciliation row.
+    """FINDING 16. 'quarterly reconciliation' has no stopwords, so the stage-1
+    conjunction is never generated and stage 2 answers with its LONGEST token,
+    'reconciliation', which legitimately fills the caller's limit. Two successive
+    revisions discarded that head because the shadow returned something: 'quarte'
+    at df 1 outscores 'reconciliati' at df 25, so one unrelated quartermaster row
+    replaced every reconciliation row.
 
-    Saturation alone cannot be the discriminator. A token that fills the cap may
-    have matched indiscriminately OR may simply have a large, genuinely relevant
-    family."""
+    Nothing overrides the head any more, so this now holds by construction rather
+    than by a discriminator getting the call right."""
     c = _recon_store(tmp_path, n_recon, f"r{n_recon}-{limit}.db")
     head = _keys(c._search_strict("reconciliation", limit=limit))
     got = _keys(c.search("quarterly reconciliation", limit=limit))
@@ -387,22 +386,6 @@ def test_saturating_head_survives_the_tier_filtered_route(tmp_path):
     c = _recon_store(tmp_path, 25, "tier.db")
     got = _keys(c.search("quarterly reconciliation", limit=20, tiers=("entity",)))
     assert len([k for k in got if k.startswith("reconciliation-")]) >= 19, got
-
-
-def test_degraded_saturating_head_still_yields_to_the_shadow(tmp_path):
-    """The other half of finding 16: the case the exception exists for must keep
-    working. Here the ladder exhausted its two MORE SPECIFIC tokens before
-    falling to 'termin', which then matched a boilerplate phrase across the whole
-    noise corpus. That is a degraded head, and the shadow's answer wins."""
-    ents = [("support", "reklamacja-obsluga",
-             {"text": "Kazda reklamacja musi byc rozpatrzona w 7 dni."})]
-    ents += [("ops", f"note-{i}",
-              {"text": f"Projekt numer {i} jest opozniony, termin przesuniety."})
-             for i in range(30)]
-    c = _store(tmp_path, ents, name="degraded.db")
-    assert len(c._search_strict("termin", limit=20)) == 20, "pre-condition: saturates"
-    got = _keys(c.search("termin rozpatrzenia reklamacji", limit=20))
-    assert got == ["reklamacja-obsluga"], got
 
 
 # --- FINDING 17: the last-resort append is unguarded --------------------------
@@ -467,3 +450,80 @@ def test_migration_busy_timeout_is_set_where_the_waiter_blocks(tmp_path, monkeyp
     assert seen, "no connection observed during open"
     assert max(seen) >= 60000, (
         f"the schema/migration path never widened busy_timeout: {sorted(set(seen))}")
+
+
+# ==========================================================================
+# FINAL RE-VERIFICATION of 880e318. The saturation override is DELETED.
+# ==========================================================================
+
+def _audit_store(tmp_path, n_audit=25, name="audits.db"):
+    """The reviewer's r4_degraded_saturated fixture. 'quarterly' is absent and is
+    the LONGER token, so the ladder degrades onto 'audits', which is both the
+    right answer and saturating."""
+    ents = [("fin", f"audit-{i}", {"text": f"Internal audits worksheet {i}."})
+            for i in range(n_audit)]
+    ents.append(("mil", "quartermaster-stores",
+                 {"text": "Yearlings and Quartermaster stores inventory, building nine."}))
+    ents += [("f", f"filler-{i}", {"text": f"Unrelated note {i}."}) for i in range(20)]
+    return _store(tmp_path, ents, name=name)
+
+
+def test_degraded_saturating_head_is_kept(tmp_path):
+    """FINDING 16, final. The ladder orders by raw token LENGTH, a rarity proxy,
+    not a relevance one, so 'the ladder fell back past a longer candidate' is no
+    evidence at all that the surviving token is weak: a query can carry a long
+    token the store does not hold and a short token that is its actual subject.
+    Here the ladder degrades onto 'audits', which is both correct and saturating,
+    and any override discards 25 correct rows for one unrelated row.
+
+    There is no override any more. A saturated last-resort head is kept as-is,
+    which is baseline semantics."""
+    c = _audit_store(tmp_path)
+    assert _keys(c._search_strict("quarterly", limit=20)) == [], "pre-condition"
+    head = _keys(c._search_strict("audits", limit=20))
+    assert len(head) == 20, "pre-condition: saturates"
+    got = _keys(c.search("quarterly audits", limit=20))
+    delivered = [k for k in got if k.startswith("audit-")]
+    assert len(delivered) == 20, f"audit rows lost: {got}"
+
+
+def test_saturated_head_is_kept_even_when_it_is_a_noise_sweep(tmp_path):
+    """The deliberate residual, pinned so it cannot drift back into a heuristic.
+
+    'termin' matches a boilerplate phrase across the whole noise corpus and fills
+    the cap with it, and the complaints row the question is actually about sits
+    one shadow probe away. Two successive discriminators were built to catch this
+    and BOTH were refuted by a fresh case that lost correct rows, so the exception
+    is gone: the head is returned as-is. This query is therefore no better than
+    released 0.7.0, which is the accepted trade (see stage2-report.md §5). Proper
+    handling belongs in stage-3 scoring, not in a query-time special case."""
+    ents = [("support", "reklamacja-obsluga",
+             {"text": "Kazda reklamacja musi byc rozpatrzona w 7 dni."})]
+    ents += [("ops", f"note-{i}",
+              {"text": f"Projekt numer {i} jest opozniony, termin przesuniety."})
+             for i in range(30)]
+    c = _store(tmp_path, ents, name="sweep.db")
+    got = _keys(c.search("termin rozpatrzenia reklamacji", limit=20))
+    assert len(got) == 20 and all(k.startswith("note-") for k in got), got
+
+
+# --- FINDING 11: the ladder's tie-break must be deterministic -----------------
+
+def test_relaxed_ladder_order_is_deterministic_for_equal_length_tokens():
+    """FINDING 11. `sorted(set(...), key=len)` is a stable sort over a SET, so
+    equal-length tokens came out in randomised string-hash order. That was
+    cosmetic while the ladder returned its head either way, and it stopped being
+    cosmetic the moment any control flow read the order. The tie-break is now the
+    token itself, so the sequence is a pure function of the query."""
+    from sibyl_memory_client.client import _relaxed_query_variants
+    for query in ("ktorym kurierem wysylamy paczki", "yearly audits",
+                  "quarterly reconciliation", "alpha bravo delta gamma"):
+        seq = [c for c, _lr in _relaxed_query_variants(query)]
+        assert seq == sorted(seq, key=lambda t: (-len(t), t)) or len(seq) < 2, seq
+        assert seq == [c for c, _lr in _relaxed_query_variants(query)]
+
+
+def test_equal_length_tie_is_broken_alphabetically():
+    from sibyl_memory_client.client import _relaxed_query_variants
+    seq = [c for c, lr in _relaxed_query_variants("yearly audits") if lr]
+    assert seq == ["audits", "yearly"], seq

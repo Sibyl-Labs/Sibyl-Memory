@@ -81,6 +81,39 @@ Same battery, same 300-entity store, all figures from our own runs
   smaller space-trigram vocabulary. Entity writes cost about 20 percent more
   (3.79 ms vs 3.12 ms per write) and a 300-row backfill 29.8 ms vs 16.0 ms.
 
+### Changed (revision 4, final re-verification 2026-08-30)
+
+Two changes, both in `client.py`, 31 insertions against 35 deletions.
+
+- **The saturation override is DELETED.** Two revisions carried an exception that
+  discarded a last-resort head which filled the caller's limit, and an
+  independent reviewer refuted both discriminators, each with a fresh case that
+  lost 20 correct rows: saturation alone lost `quarterly reconciliation`, and
+  saturation-plus-degraded lost `quarterly audits`. The ladder orders by raw
+  token LENGTH, a rarity proxy and not a relevance one, so degrading onto a
+  shorter token is no evidence that the token is wrong, and any third
+  discriminator built on the ladder's arrival path would share the defect.
+  Nothing overrides the head now: a saturated last-resort head is returned as-is,
+  which is 0.5.0 semantics. Accepted cost, one query shape: `termin rozpatrzenia
+  reklamacji` sweeps up the boilerplate phrase in every stored note and fills the
+  cap with it, matching `lang-core-strip`. Baseline 0.7.0 is one row better there
+  through the F2 append that stage 1 removed on purpose.
+- **The relaxed ladder's tie-break is deterministic.** `sorted(set(...),
+  key=len, reverse=True)` is a stable sort over a SET, so equal-length tokens
+  came out in randomised string-hash order; the key is now `(-len(t), t)`. This
+  was cosmetic while nothing read the order and became a non-deterministic ANSWER
+  once revision 3's override did. Verified across 12 random seeds and three full
+  battery runs at different `PYTHONHASHSEED` values, byte-identical on every row
+  set. `N-pl-13` improved as a side effect and now matches baseline.
+
+Battery, all three builds under `PYTHONHASHSEED=0`. `client.search()` Polish
+16/16 matched, 18/19 natural, 33 noise rows (baseline 15/16, 19/19, 57; stripped
+8/16, 10/19, 26); PL natural rank-1 16 against baseline 15. English unchanged at
+16/16 and 25/25. Default path completely unaffected by this revision: PL 16/16,
+13/19, six abstentions; EN noise 5, equal to stripped. Injection zero-support 0
+everywhere, supported-token 6 on all three builds and 0 on the default path.
+Client suite 418 passed / 11 skipped.
+
 ### Changed (revision 2, after independent adversarial review 2026-08-30)
 
 The first cut of this work was reviewed independently and returned
