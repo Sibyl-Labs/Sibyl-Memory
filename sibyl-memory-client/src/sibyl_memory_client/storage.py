@@ -60,6 +60,7 @@ _FTS_REBUILD_MARKER = 3
 # marker (adversarial review 2026-08-30, finding 3). Marker 4 is the fold-only
 # rendering shipped as 0.7.0; marker 6 is NORMALIZER_VERSION 1.
 from .shadow import SHADOW_MARKER as _SHADOW_MARKER
+from .shadow import assert_sqlite_supported as _assert_sqlite_supported
 
 # Ordinary lock wait, and the widened one that covers a schema apply plus a
 # shadow re-backfill on a large store (review finding 4).
@@ -426,7 +427,14 @@ class Storage:
         After applying the schema, runs any pending migrations. v2 to v3 (2026-05-18)
         is the only migration currently: it reshapes FTS5 tables from standalone
         (body duplicated) to external-content (body lives in base tables only).
-        Migration runs once and is idempotent thereafter."""
+        Migration runs once and is idempotent thereafter.
+
+        The SQLite floor is checked FIRST, before the schema executescript and
+        therefore before any migration write: below it the failure surfaces deep
+        inside the v4 shadow migration as "error in tokenizer constructor", which
+        names neither the minimum nor the found version. One number, enforced,
+        living in shadow.py next to the tokenizer it is a floor for."""
+        _assert_sqlite_supported()
         if not _SCHEMA_PATH.exists():
             raise SchemaError(
                 "Schema file missing from package install",
@@ -450,7 +458,13 @@ class Storage:
             except sqlite3.Error as e:
                 raise SchemaError(
                     f"Failed to apply schema: {e}",
-                    recovery="Check sqlite3 version (need 3.38+ for json_valid). On older systems, upgrade.",
+                    # The floor is asserted above and stated in ONE place
+                    # (shadow.SQLITE_MIN_VERSION). This message used to carry a
+                    # second, different, unverified number ("3.38+ for
+                    # json_valid"); json_valid is present at 3.34 in every build
+                    # that compiles JSON1 in, which CPython's bundled sqlite3 and
+                    # every distro build do, and it is unconditional from 3.38.
+                    recovery="Check disk space and file permissions on the store, then retry.",
                 ) from e
         # Run migrations that need imperative work beyond CREATE IF NOT EXISTS,
         # still under the widened timeout, then restore the default on every

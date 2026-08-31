@@ -4,7 +4,77 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.8.0] - 2026-08-31
+
+The multilingual search stack was rebuilt: the query-time rescue layers that four
+evaluation cycles had accreted are gone, replaced by one versioned write-time
+normalizer, and every zero result now names its own cause. This is a minor-version
+release because the search shadow's stored rendering changed (every existing store
+re-backfills on first open) and because the response of every search entry point
+gained a carrier object.
+
+**Scope, stated plainly.** This release improves the INDEX layer, and that is
+where its measured wins are: inflected and non-spaced languages get word-boundary
+clean stored text, so a term can match at a word start instead of only as a free
+substring. It does NOT solve default-path natural-language recall. The first call
+on the default path still answers 32 of 155 natural paraphrases. What changed is
+that the other 123 now say why, and 99 of them are recoverable by a caller that
+reads the verdict and runs the taught two-retry loop. The 29 negation-phrased
+answerable questions still return nothing on the default path; they now report
+`negation_abstain` or `abstained_on`, and `NEGATION_POLICY` is unchanged. Nothing
+here should be read as a natural-language-recall fix.
+
+### Changed (SQLite floor: measured, and now enforced)
+
+The package carried two different SQLite floors, neither of them run: `shadow.py`
+documented 3.34 as the version where the FTS5 `trigram` tokenizer appears, and
+`storage.py`'s schema-failure recovery told the user to check for "3.38+ for
+json_valid". Meanwhile the stage-2 trigger rewrite, which stages the rendering
+through nested subqueries that read `new.` INSIDE a subquery, had only ever been
+executed on 3.45.1.
+
+- Verified against SQLite built from the amalgamation at **3.34.1** and **3.44.2**
+  (FTS5 + JSON1) and statically linked into a scratch interpreter. The trigger
+  shape parses and fires on all four tiers, the backfill path renders
+  byte-identically to the trigger path, and the shadow rows are byte-identical to
+  3.45.1's on the same DDL. The parser-ceiling constant `_STAGE_OPS` was tuned on
+  3.45.1 only; it is inside the ceiling on 3.34.1 and 3.44.2 as well.
+- One floor now, `shadow.SQLITE_MIN_VERSION = (3, 34, 0)`, and it is **enforced**:
+  `assert_sqlite_supported()` runs at the top of `Storage._ensure_schema`, before
+  the schema apply and therefore before any migration write, and raises
+  `SchemaError` naming the minimum, the found version and the reason. Below the
+  floor the old failure was "error in tokenizer constructor" from inside the v4
+  migration, which named neither. The second, contradictory "3.38+" claim is
+  deleted, and a test asserts no string in `storage.py` states a SQLite version.
+- `shadow.SQLITE_FULL_FOLD_VERSION = (3, 45, 0)` is a FEATURE boundary, not a
+  floor. Below 3.45 the shadow folds the non-decomposables in `FOLD_MAP`
+  (l-stroke, sharp s, o-slash, ae, d-stroke, dotless i, oe, thorn, eth) but not
+  decomposable diacritics, because that fold is the tokenizer's job and
+  `remove_diacritics` reached `trigram` in 3.45. So `Belzyce` does not find
+  `Bełżyce` on 3.34 through 3.44. The store opens, writes, migrates and searches;
+  the primary porter-unicode61 index is unaffected.
+- Measured on the suite, not asserted: 476 passed / 12 skipped on 3.34.1 and on
+  3.44.2, 477 passed / 11 skipped on 3.45.1. The single extra skip is the
+  `Belzyce` test, gated on the 3.45 boundary with the reason naming the version.
+  A companion test with only a non-decomposable fold runs on every version, so
+  the gate cannot become a place where the fold quietly stops being tested.
+
+### Determinism
+
+0.7.0, the released build, was **nondeterministic**: on the LongMemEval slice it
+reproduces 87 of 100 questions across passes. The causes were two ordering bugs,
+both fixed here.
+
+- The shadow's final tie-break was the row's business key, and a journal row's key
+  is a uuid4 minted at write time, so two tied journal rows swapped places between
+  runs of identical code on journal-heavy stores. The tie-break is now the row
+  text.
+- The relaxed ladder used `sorted(set(...), key=len, reverse=True)`, a stable sort
+  over a SET, so equal-length tokens came out in randomised string-hash order. The
+  key is now `(-len(t), t)`.
+
+This build reproduces 100 of 100, and the full battery is byte-identical across
+`PYTHONHASHSEED` 0, 1, 12345 and 98765 on rows and on verdicts.
 
 ### Added
 

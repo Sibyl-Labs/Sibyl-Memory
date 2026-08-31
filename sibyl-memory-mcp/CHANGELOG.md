@@ -4,7 +4,24 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-08-31
+
+Minor version, not a patch: the `memory_search` **response schema changed**. Every
+response, including every zero, now carries an additive `verdict` object, and a
+client that pins the old flat `{ok, query, count, results}` shape should read this
+entry before upgrading. Nothing was removed from the response and no field changed
+meaning.
+
+- Floors `sibyl-memory-client>=0.8.0` and `sibyl-memory-hermes>=0.4.0`. The verdict
+  is produced by the client and forwarded by this server, so an MCP server on the
+  new response schema over an old client would advertise a field the engine below
+  it cannot fill. The hermes floor is there for the same reason: this package's
+  install can pull the provider, and pip's default only-if-needed upgrade strategy
+  leaves an already-satisfying older sibling in place, which is exactly the
+  packaging hazard the 0.1.14 floor raise was for.
+- **Docker-image users must rebuild.** A self-built `sibyl-memory-mcp` image pins
+  its dependencies at image build time; a `pip install -U` on the host does not
+  reach inside it. Rebuild the image to pick this up.
 
 ### Added
 - **`memory_search` responses now carry a `verdict`** (branch

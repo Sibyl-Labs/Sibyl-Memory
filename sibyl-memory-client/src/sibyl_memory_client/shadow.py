@@ -20,6 +20,30 @@ Why a shadow (and why THIS shape):
   * ``trigram`` is built into SQLite (>= 3.34; >= 3.45 for ``remove_diacritics``);
     no native/loadable extension, so the plugin keeps shipping pure-Python wheels.
 
+SQLITE FLOOR — measured, not asserted (v0.8.0, 2026-08-31):
+  The 3.34 number was carried for months as a claim about where the ``trigram``
+  tokenizer first appears, and the stage-2 trigger rewrite (the rendering is now
+  staged through nested subqueries that read ``new.`` INSIDE a subquery) had only
+  ever been run on 3.45.1. Both were verified for this release against SQLite
+  built from the amalgamation at 3.34.1 and 3.44.2 and statically linked into a
+  scratch interpreter: the trigger shape parses and fires on all four tiers, the
+  backfill path renders byte-identically to the trigger path, and the client's
+  full suite runs 470 passed / 2 failed on both. ``SQLITE_MIN_VERSION`` is now
+  ENFORCED at open (``assert_sqlite_supported``, called before any migration
+  write) rather than documented and hoped for.
+
+  The 2 failures are the same two on both old versions, and they are the
+  ``remove_diacritics`` boundary, NOT the trigger shape:
+  ``test_trigram_shadow_2026_08_06::test_cross_tenant_isolation_match_and_like``
+  and ``test_unicode_query_tokens_2026_08_04::test_ascii_query_finds_l_stroke_record``.
+  Below 3.45 the shadow folds non-decomposables (FOLD_MAP: ł ß ø æ đ ı œ þ ð) but
+  NOT decomposable diacritics (ó ż é ñ ...), because that fold is the tokenizer's
+  job and the option that turns it on arrived in 3.45. So ``Belzyce`` does not
+  find ``Bełżyce`` on 3.34-3.44. That is a FEATURE boundary, not a floor: the
+  store opens, writes, migrates and searches, and the primary porter-unicode61
+  index is unaffected. Both numbers are named by ``SQLITE_MIN_VERSION`` and
+  ``SQLITE_FULL_FOLD_VERSION``; nothing else in the package may state a third.
+
 The fold map + runtime tokenizer clause are the single source of truth for both
 the trigger/backfill SQL (index side) and the query side (``fold_py``); keeping
 them here — not in the static ``schema.sql`` — is why the shadow DDL is generated.
@@ -43,6 +67,54 @@ from __future__ import annotations
 import json as _json
 import re
 import sqlite3
+
+from .exceptions import SchemaError
+
+# ---------------------------------------------------------------------------
+# The SQLite floor. ONE enforced number, one feature-boundary number, both
+# measured (see the module docstring). Nothing else in the package states a
+# SQLite version; the storage layer imports these.
+#
+# 3.34.0  the `trigram` tokenizer exists at all. Below it, CREATE VIRTUAL TABLE
+#         fails deep inside the migration with "error in tokenizer constructor",
+#         which names neither the cause nor the fix.
+# 3.45.0  `remove_diacritics` reaches `trigram`. Below it the shadow still folds
+#         non-decomposables, so the store works; accent-insensitive SUBSTRING
+#         recall does not.
+# ---------------------------------------------------------------------------
+SQLITE_MIN_VERSION = (3, 34, 0)
+SQLITE_FULL_FOLD_VERSION = (3, 45, 0)
+
+
+def sqlite_supports_full_fold() -> bool:
+    """True when the running SQLite folds decomposable diacritics in the shadow."""
+    return sqlite3.sqlite_version_info >= SQLITE_FULL_FOLD_VERSION
+
+
+def assert_sqlite_supported() -> None:
+    """Raise before any migration write if the running SQLite is below the floor.
+
+    Called from ``Storage._ensure_schema`` ahead of the schema ``executescript``,
+    so an unsupported interpreter gets a named minimum and a named found version
+    instead of a tokenizer-constructor error from inside the v4 migration — and
+    gets it before the store is touched.
+    """
+    if sqlite3.sqlite_version_info >= SQLITE_MIN_VERSION:
+        return
+    need = ".".join(str(n) for n in SQLITE_MIN_VERSION)
+    full = ".".join(str(n) for n in SQLITE_FULL_FOLD_VERSION)
+    raise SchemaError(
+        f"SQLite {need} or newer is required (found {sqlite3.sqlite_version}): "
+        f"the FTS5 'trigram' tokenizer the search shadow is built on does not "
+        f"exist below {need}.",
+        recovery=(
+            f"Upgrade the SQLite your Python is linked against to at least {need} "
+            f"({full} or newer for accent-insensitive substring matching), or "
+            f"install a Python built against a newer SQLite. Check with "
+            f"python -c \"import sqlite3; print(sqlite3.sqlite_version)\"."
+        ),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Fold map — non-decomposables ONLY. Decomposable diacritics (é ñ ö ż ...) are
@@ -260,6 +332,13 @@ def _sql_str(ch: str) -> str:
 # key columns ride along untouched. Keep this well under the measured ceiling —
 # it is a hard parse-time failure, not a runtime one, so an over-long chain would
 # break DB creation outright rather than degrade.
+#
+# The ceiling was measured on 3.45.1 only. Re-verified for v0.8.0 at the floor:
+# the generated triggers CREATE and fire on SQLite 3.34.1 and 3.44.2 (built from
+# the amalgamation, FTS5 + JSON1), and the four shadow rows they write are
+# byte-identical to 3.45.1's on the same DDL. The nesting depth this constant
+# produces is therefore inside the parser ceiling on every supported version, not
+# just the one it was tuned on.
 _STAGE_OPS = 12
 
 
@@ -376,8 +455,12 @@ def trigram_tokenizer_clause() -> str:
     accent-insensitive SUBSTRING matching in the fallback; whole-word accented
     matching still works via the primary porter-unicode61 index, and fold_py's
     non-decomposable map is unaffected.
+
+    Measured for v0.8.0, not assumed: on 3.34.1 and 3.44.2 the client suite runs
+    470 passed / 2 failed, and both failures are exactly this degradation (the
+    two test ids are named in the module docstring). See SQLITE_MIN_VERSION.
     """
-    if sqlite3.sqlite_version_info >= (3, 45, 0):
+    if sqlite_supports_full_fold():
         return "tokenize = 'trigram remove_diacritics 1'"
     return "tokenize = 'trigram'"
 

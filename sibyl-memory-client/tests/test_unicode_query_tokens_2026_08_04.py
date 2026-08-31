@@ -29,8 +29,12 @@ in both directions, so the strict xfail marker has been DELETED per spec §3/§8
 """
 from __future__ import annotations
 
+import pytest
+
 from sibyl_memory_client import MemoryClient
 from sibyl_memory_client.multi_record import _significant_tokens, multi_record_search
+from sibyl_memory_client.shadow import (
+    SQLITE_FULL_FOLD_VERSION, sqlite_supports_full_fold)
 
 
 # --------------------------------------------------------------------------
@@ -127,6 +131,12 @@ def test_multiword_ascii_linker_not_regressed(tmp_path):
 # is DELETED (spec §3/§8) and it runs as a normal passing test.
 # --------------------------------------------------------------------------
 
+@pytest.mark.skipif(
+    not sqlite_supports_full_fold(),
+    reason=("needs SQLite >= %s: 'Belzyce' -> 'Bełżyce' folds ł via FOLD_MAP but "
+            "ż via the trigram tokenizer's remove_diacritics, which is 3.45+. "
+            "The documented-degradation half is asserted below and runs "
+            "everywhere." % ".".join(str(n) for n in SQLITE_FULL_FOLD_VERSION)))
 def test_ascii_query_finds_l_stroke_record(tmp_path):
     """`Belzyce` should find `Bełżyce` — the reporter's second, valid finding.
 
@@ -138,3 +148,17 @@ def test_ascii_query_finds_l_stroke_record(tmp_path):
     c.set_entity("places", "only-accented", {"address": "Bełżyce, Lublin"})
     hits = multi_record_search(c, "Belzyce", limit=10)
     assert any(h.get("key") == "only-accented" for h in hits), hits
+
+
+def test_the_l_stroke_fold_alone_works_on_every_supported_sqlite(tmp_path):
+    """The half of the fold that does NOT need the 3.45 tokenizer.
+
+    ``Łomza`` carries only the non-decomposable ``Ł``, which FOLD_MAP handles on
+    both sides at any supported version. Keeping this unconditional means the
+    version gate above never becomes a place where the whole fold quietly stops
+    being tested on an older SQLite.
+    """
+    c = MemoryClient.local(tmp_path / "m.db", tenant_id="qa")
+    c.set_entity("places", "l-stroke-only", {"address": "Łomza, Podlasie"})
+    hits = multi_record_search(c, "Lomza", limit=10)
+    assert any(h.get("key") == "l-stroke-only" for h in hits), hits
