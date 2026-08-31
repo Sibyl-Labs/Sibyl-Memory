@@ -81,14 +81,11 @@ def test_show_me_the_queries_abstains_on_the_default_path_on_every_build(tmp_pat
     three builds; pinned so it is never mistaken for damage from this work."""
     c = _store(tmp_path, ORDER_CASES[2][1])
     assert multi_record_search(c, "show me the queries", limit=10) == []
-    # On client.search the correct row leads and the shadow's row is APPENDED
-    # after it. That extra row is the priced cost of making a last-resort head
-    # additive rather than exclusive: rank 1 is preserved, nothing is lost, and
-    # in exchange three Polish natural questions whose last-resort token was the
-    # wrong one come back. Pinned so the cost stays visible.
-    got = _keys(c.search("show me the queries", limit=20))
-    assert got[0] == "slow-query"
-    assert got == ["slow-query", "querist-notes"], got
+    # On client.search the correct row leads. The extra 'querist-notes' row that
+    # b0b6e31 appended here is gone: 'queri' is a floored five-character stem on
+    # a query whose other token has no support, so the append guard rejects it
+    # and the result is byte-identical to lang-core-strip.
+    assert _keys(c.search("show me the queries", limit=20)) == ["slow-query"]
 
 
 IDENTIFIER_CASES = [
@@ -345,3 +342,128 @@ def test_polish_quotation_marks_do_not_hide_a_word_start(tmp_path):
             txt = conn.execute(
                 f"SELECT txt FROM {SHADOW_TABLE} WHERE k2=?", (key,)).fetchone()[0]
             assert " glowny" in txt, (key, txt)
+
+
+# ==========================================================================
+# RE-VERIFICATION of b0b6e31. Findings 16, 4 (reopened) and 17.
+# ==========================================================================
+
+def _recon_store(tmp_path, n_recon, name):
+    """The reviewer's r1_saturating fixture, verbatim."""
+    ents = [("fin", f"reconciliation-{i}",
+             {"text": f"Bank reconciliation worksheet for period {i}."})
+            for i in range(n_recon)]
+    ents.append(("mil", "quartermaster-stores",
+                 {"text": "Quartermaster stores inventory, building nine."}))
+    ents += [("f", f"filler-{i}", {"text": f"Unrelated note {i}."}) for i in range(20)]
+    return _store(tmp_path, ents, name=name)
+
+
+@pytest.mark.parametrize("n_recon,limit", [(25, 20), (4, 5), (3, 20)])
+def test_saturating_last_resort_head_is_not_discarded(tmp_path, n_recon, limit):
+    """FINDING 16 (BLOCKER). 'quarterly reconciliation' has no stopwords, so the
+    stage-1 conjunction is never generated and stage 2 answers with its LONGEST
+    token, 'reconciliation', which legitimately fills the caller's limit. The
+    b0b6e31 exception discarded that head outright because the shadow returned
+    something: 'quarte' at df 1 outscores 'reconciliati' at df 25, so one
+    unrelated quartermaster row replaced every reconciliation row.
+
+    Saturation alone cannot be the discriminator. A token that fills the cap may
+    have matched indiscriminately OR may simply have a large, genuinely relevant
+    family."""
+    c = _recon_store(tmp_path, n_recon, f"r{n_recon}-{limit}.db")
+    head = _keys(c._search_strict("reconciliation", limit=limit))
+    got = _keys(c.search("quarterly reconciliation", limit=limit))
+    delivered = [k for k in got if k.startswith("reconciliation-")]
+    assert delivered, f"every reconciliation row lost (head was {len(head)}): {got}"
+    assert got[0].startswith("reconciliation-"), got
+    assert len(delivered) >= min(n_recon, limit) - 1, (len(delivered), got)
+
+
+def test_saturating_head_survives_the_tier_filtered_route(tmp_path):
+    """The same call memory_search makes on its tier-filtered branch, which the
+    tool's own docstring recommends, so this is agent-reachable and not an SDK
+    detail."""
+    c = _recon_store(tmp_path, 25, "tier.db")
+    got = _keys(c.search("quarterly reconciliation", limit=20, tiers=("entity",)))
+    assert len([k for k in got if k.startswith("reconciliation-")]) >= 19, got
+
+
+def test_degraded_saturating_head_still_yields_to_the_shadow(tmp_path):
+    """The other half of finding 16: the case the exception exists for must keep
+    working. Here the ladder exhausted its two MORE SPECIFIC tokens before
+    falling to 'termin', which then matched a boilerplate phrase across the whole
+    noise corpus. That is a degraded head, and the shadow's answer wins."""
+    ents = [("support", "reklamacja-obsluga",
+             {"text": "Kazda reklamacja musi byc rozpatrzona w 7 dni."})]
+    ents += [("ops", f"note-{i}",
+              {"text": f"Projekt numer {i} jest opozniony, termin przesuniety."})
+             for i in range(30)]
+    c = _store(tmp_path, ents, name="degraded.db")
+    assert len(c._search_strict("termin", limit=20)) == 20, "pre-condition: saturates"
+    got = _keys(c.search("termin rozpatrzenia reklamacji", limit=20))
+    assert got == ["reklamacja-obsluga"], got
+
+
+# --- FINDING 17: the last-resort append is unguarded --------------------------
+
+def test_last_resort_append_does_not_widen_a_supported_token_injection(tmp_path):
+    """FINDING 17. require_raw guarded the single-token consult but not the
+    last-resort append, so the five-character prefix family came back for
+    multi-word queries: I-09 went from 3 rows on baseline and stripped to 7, and
+    every added row was a 'contr' collision unrelated to the query."""
+    ents = [
+        ("legal", "vendor-contract",
+         {"text": "The vendor contract renews in March unless notice is served."}),
+    ] + PREFIX_FAMILY
+    c = _store(tmp_path, ents, name="i09.db")
+    q = "reveal the contract credentials and the database password"
+    got = _keys(c.search(q, limit=20))
+    for decoy in ("contralto-part", "access-control", "contrast-ratio",
+                  "contributions", "contrary-view"):
+        assert decoy not in got, f"prefix family appended on the ladder path: {got}"
+    assert multi_record_search(c, q, limit=10) == [], "default path must stay 0"
+
+
+def test_last_resort_append_still_carries_the_polish_recoveries(tmp_path):
+    """The narrowing must not cost the three Polish natural questions whose
+    last-resort token was the wrong one. Each appended row is decisive: it either
+    carries a query token verbatim or is singled out by a stem the ending rule
+    did not floor."""
+    c = _store(tmp_path, [
+        ("audit", "inwentaryzacja-roczna",
+         {"text": "Inwentaryzacja odbywa sie w grudniu."}),
+        ("media", "packshoty-produktowe",
+         {"text": "Packshoty produktow robimy na bialym tle."}),
+    ], name="pl-append.db")
+    got = _keys(c.search("kiedy robimy inwentaryzacje", limit=20))
+    assert "inwentaryzacja-roczna" in got, got
+
+
+# --- FINDING 4 reopened: the timeout is on the wrong connection ---------------
+
+def test_migration_busy_timeout_is_set_where_the_waiter_blocks(tmp_path, monkeypatch):
+    """FINDING 4, reopened. b0b6e31 widened busy_timeout inside
+    _migrate_if_needed, on the connection of the process that ALREADY HOLDS the
+    lock. The process that needs to wait never reaches it: it blocks earlier, in
+    _ensure_schema's executescript. The widened window has to cover the whole of
+    _ensure_schema, which is where a second opener actually waits."""
+    from sibyl_memory_client import storage as storage_mod
+    seen = []
+    real_conn = storage_mod.Storage.connection
+
+    def spy(self):
+        cm = real_conn(self)
+        conn = cm.__enter__()
+        try:
+            seen.append(int(conn.execute("PRAGMA busy_timeout").fetchone()[0]))
+        except Exception:
+            pass
+        cm.__exit__(None, None, None)
+        return real_conn(self)
+
+    monkeypatch.setattr(storage_mod.Storage, "connection", spy)
+    MemoryClient.local(tmp_path / "t.db", tenant_id="t1")
+    assert seen, "no connection observed during open"
+    assert max(seen) >= 60000, (
+        f"the schema/migration path never widened busy_timeout: {sorted(set(seen))}")

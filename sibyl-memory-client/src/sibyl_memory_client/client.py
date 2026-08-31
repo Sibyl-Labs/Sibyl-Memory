@@ -1411,12 +1411,13 @@ class MemoryClient:
             # replaces fired on EVERY query and cost 39 English noise rows; this
             # one cannot fire on a multi-word query at all.
             if _single_inflected_token(query):
-                # require_raw: the consult fires on a head that ALREADY answered,
-                # so it may only add a row carrying the token verbatim (see
-                # shadow._shadow_search_normalized). The rescue paths below,
-                # where the alternative is a wrong answer or none, do not.
+                # decisive_only: the consult fires on a head that ALREADY
+                # answered, so the shadow may only extend it with a row it
+                # genuinely singled out (see shadow._shadow_search_normalized).
+                # The zero-hit path below, where the alternative is nothing at
+                # all, is deliberately not guarded.
                 hits = self._append_shadow(hits, query, limit=limit, tiers=tiers,
-                                           require_raw=True)
+                                           decisive_only=True)
             return hits
         # v0.5.0 multi-language search (spec §4.3): the folded-trigram shadow,
         # reached ONLY when the strict pass produced nothing, so a non-empty
@@ -1445,42 +1446,57 @@ class MemoryClient:
         #     still required every content token, so it answered the question,
         #     and it is a PORTER answer, which reaches inflections the shadow's
         #     fixed-length truncation cannot ('stories' -> 'story'). This is the
-        #     branch that carries every English case in finding 1, and it is
-        #     byte-identical to 0.5.0.
-        #   stage-2 head (ONE token, last resort) does NOT exclude the shadow. It
-        #     answered a fragment of the question, and which fragment is decided
-        #     by raw token length, so it lands on 'robimy' in 'kiedy robimy
-        #     inwentaryzację' and on 'procent' in 'ile procent wynosi stawka
-        #     ryczałtu'. The shadow's rows are APPENDED after it: the ladder keeps
-        #     its rows and its order, including rank 1, so a correct last-resort
-        #     answer such as 'postgres15' can never be displaced.
-        #   a SATURATED stage-2 head is the exception, and the only place the
-        #     ladder is overridden. Filling the caller's entire limit from one
-        #     token is the index saying that token matched indiscriminately:
-        #     'termin rozpatrzenia reklamacji' relaxes to 'termin', which matches
-        #     the forty stored notes reading "termin przesuniety". There is no
-        #     room to append and nothing worth keeping, so the shadow, which
-        #     answered the whole query, leads. The condition is the caller's own
-        #     limit, not a tuned constant.
+        #     branch that carries every English case in review finding 1, and it
+        #     is byte-identical to 0.5.0.
+        #   stage-2 head (ONE token, last resort) does NOT exclude the shadow.
+        #     It answered a fragment of the question, and which fragment is
+        #     decided by raw token length, so it lands on 'robimy' in 'kiedy
+        #     robimy inwentaryzację'. The shadow's rows are APPENDED after it,
+        #     under the decisive guard, so the ladder keeps its rows and its
+        #     rank 1 and a correct last-resort answer such as 'postgres15' can
+        #     never be displaced.
+        #   a DEGRADED, SATURATED stage-2 head is the one place the ladder is
+        #     overridden, and it needs BOTH conditions. Saturation alone is not
+        #     enough and the b0b6e31 revision was rejected for assuming it was
+        #     (review finding 16): a token can fill the cap because it matched
+        #     indiscriminately, or because it is exactly right and the store has
+        #     that many relevant rows. 'quarterly reconciliation' answers from
+        #     'reconciliation', its FIRST and longest candidate, and filling the
+        #     limit there means the ladder found the family it was looking for;
+        #     discarding it lost twenty correct rows. 'termin rozpatrzenia
+        #     reklamacji' answers from 'termin' only after the two MORE SPECIFIC
+        #     tokens found nothing, so the ladder has degraded to its weakest
+        #     term, and that term then matched a boilerplate phrase across the
+        #     noise corpus. Degraded-and-saturated is the signal; either alone is
+        #     not. Both conditions come from machinery already here: the ladder's
+        #     own longest-first ordering, and the caller's own limit.
         relaxed_hits: list[dict[str, Any]] = []
         last_resort_head = False
+        degraded = False
+        tried_last_resort = 0
         for relaxed, last_resort in _relaxed_query_variants(query):
-            relaxed_hits = self._search_strict(relaxed, limit=limit, prefix=False,
-                                               tiers=tiers)
-            if relaxed_hits:
+            if last_resort:
+                tried_last_resort += 1
+            found = self._search_strict(relaxed, limit=limit, prefix=False,
+                                        tiers=tiers)
+            if found:
+                relaxed_hits = found
                 last_resort_head = last_resort
+                # True when a more specific candidate was tried first and failed.
+                degraded = last_resort and tried_last_resort > 1
                 break
         if relaxed_hits and not last_resort_head:
             return relaxed_hits
-        if relaxed_hits and len(relaxed_hits) < limit:
-            return self._append_shadow(relaxed_hits, query, limit=limit, tiers=tiers)
+        if relaxed_hits and not (degraded and len(relaxed_hits) >= limit):
+            return self._append_shadow(relaxed_hits, query, limit=limit,
+                                       tiers=tiers, decisive_only=True)
         hits = self._shadow_fallback(query, limit=limit, tiers=tiers,
                                      normalize=True)
         return hits or relaxed_hits
 
     def _append_shadow(self, hits: list[dict[str, Any]], query: str, *, limit: int,
                        tiers: tuple[str, ...] | None,
-                       require_raw: bool = False) -> list[dict[str, Any]]:
+                       decisive_only: bool = False) -> list[dict[str, Any]]:
         """Append normalized shadow rows after an existing head, de-duped, capped.
 
         Never reorders, never drops, never re-ranks the head — the head list is
@@ -1489,7 +1505,7 @@ class MemoryClient:
         if len(hits) >= limit:
             return hits
         extra = self._shadow_fallback(query, limit=limit, tiers=tiers,
-                                      normalize=True, require_raw=require_raw)
+                                      normalize=True, decisive_only=decisive_only)
         if not extra:
             return hits
         seen = {(h.get("tier"), h.get("key"), h.get("category")) for h in hits}
@@ -1518,7 +1534,7 @@ class MemoryClient:
     def _shadow_fallback(self, query: str, *, limit: int = 20,
                          tiers: tuple[str, ...] | None = None,
                          normalize: bool = False,
-                         require_raw: bool = False) -> list[dict[str, Any]]:
+                         decisive_only: bool = False) -> list[dict[str, Any]]:
         """Delegate a zero-hit search to the folded-trigram shadow (shadow.py).
 
         A no-op ``[]`` when the shadow table is absent (a pre-migration or
@@ -1536,7 +1552,7 @@ class MemoryClient:
             with self._storage.connection() as conn:
                 return shadow_search(conn, self._tenant_id, query,
                                      limit=limit, tiers=tiers,
-                                     normalize=normalize, require_raw=require_raw)
+                                     normalize=normalize, decisive_only=decisive_only)
         except Exception:
             return []
 

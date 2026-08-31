@@ -61,6 +61,11 @@ _FTS_REBUILD_MARKER = 3
 # rendering shipped as 0.7.0; marker 6 is NORMALIZER_VERSION 1.
 from .shadow import SHADOW_MARKER as _SHADOW_MARKER
 
+# Ordinary lock wait, and the widened one that covers a schema apply plus a
+# shadow re-backfill on a large store (review finding 4).
+_BUSY_TIMEOUT_MS = 5000
+_MIGRATION_BUSY_TIMEOUT_MS = 180000
+
 # v0.4.0 (2026-05-18, KAPPA RED finding): the SQLite DB holds every entity
 # body, not just credentials. docs.sibyllabs.org/memory/install claims 0600
 # but sqlite3.connect inherits the process umask (typically yields 0644).
@@ -332,7 +337,7 @@ class Storage:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")  # safe with WAL, faster than FULL
-        conn.execute("PRAGMA busy_timeout = 5000")  # 5s before SQLITE_BUSY
+        conn.execute(f"PRAGMA busy_timeout = {int(_BUSY_TIMEOUT_MS)}")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -429,6 +434,17 @@ class Storage:
             ) from None
         sql = _SCHEMA_PATH.read_text(encoding="utf-8")
         with self.connection() as conn:
+            # The open path is where a SECOND process WAITS (review finding 4,
+            # reopened). The first opener after a marker bump holds BEGIN
+            # IMMEDIATE for the whole shadow re-backfill, measured at 1.65 s for
+            # 10k rows and 27 s for 100k. b0b6e31 widened busy_timeout inside
+            # _migrate_if_needed, which is the lock HOLDER's connection and is
+            # unreachable code for the waiter: it blocks here, in executescript,
+            # and died at the 5 s connection default above roughly 25k rows.
+            # Widen for the whole of schema-apply plus migration, which is
+            # exactly the span a concurrent opener can be blocked for, then put
+            # it back so the ordinary read path keeps failing fast.
+            conn.execute(f"PRAGMA busy_timeout = {int(_MIGRATION_BUSY_TIMEOUT_MS)}")
             try:
                 conn.executescript(sql)
             except sqlite3.Error as e:
@@ -436,8 +452,14 @@ class Storage:
                     f"Failed to apply schema: {e}",
                     recovery="Check sqlite3 version (need 3.38+ for json_valid). On older systems, upgrade.",
                 ) from e
-        # Run migrations that need imperative work beyond CREATE IF NOT EXISTS.
-        self._migrate_if_needed()
+        # Run migrations that need imperative work beyond CREATE IF NOT EXISTS,
+        # still under the widened timeout, then restore the default on every
+        # connection this Storage holds.
+        try:
+            self._migrate_if_needed()
+        finally:
+            with self.connection() as conn:
+                conn.execute(f"PRAGMA busy_timeout = {int(_BUSY_TIMEOUT_MS)}")
 
     def _migrate_if_needed(self) -> None:
         """Run any pending schema migrations + guarantee the FTS index is built.
@@ -555,20 +577,11 @@ class Storage:
                     or not shadow_rendering_ok):
                 from .shadow import apply_shadow_migration
                 with self.transaction() as conn:
-                    # The re-backfill is O(rows) and holds the write lock for the
-                    # whole of it: measured at 1.65 s for 10k rows and 27 s for
-                    # 100k (adversarial review 2026-08-30, finding 4). The
-                    # connection default of 5 s is well under that, so a second
-                    # process opening the same store during a first-open upgrade
-                    # died with "database is locked" somewhere above ~25k rows.
-                    # Widen the busy timeout for the migration only, then put it
-                    # back, so the ordinary read path keeps failing fast.
-                    conn.execute("PRAGMA busy_timeout = 120000")
-                    try:
-                        apply_shadow_migration(conn)
-                        conn.execute(f"PRAGMA user_version = {int(_SHADOW_MARKER)}")
-                    finally:
-                        conn.execute("PRAGMA busy_timeout = 5000")
+                    # The re-backfill is O(rows) and holds the write lock for
+                    # the whole of it. The busy timeout a concurrent opener needs
+                    # is widened in _ensure_schema, on the connection that waits.
+                    apply_shadow_migration(conn)
+                    conn.execute(f"PRAGMA user_version = {int(_SHADOW_MARKER)}")
         except (sqlite3.Error, StorageError, SchemaError) as e:
             raise SchemaError(
                 f"FTS5 index migration/rebuild failed: {type(e).__name__}",
