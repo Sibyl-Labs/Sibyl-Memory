@@ -4,7 +4,7 @@ All notable changes to `sibyl-memory-langgraph` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
-## [0.2.0] - 2026-08-31
+## [0.2.0] "Lucid" - 2026-08-31
 
 Minor version: `SibylStore` gained `last_search_verdict`, and the underlying
 `search_entities` now returns a `list` subclass. `BaseStore.search` still returns

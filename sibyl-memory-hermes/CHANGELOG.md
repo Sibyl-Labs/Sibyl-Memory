@@ -4,7 +4,7 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
-## [0.4.0] - 2026-08-31
+## [0.4.0] "Lucid" - 2026-08-31
 
 Minor version: `search_multi_record` and `search` now return a `SearchResults`
 list subclass carrying `.verdict`, and the adapter's `sibyl_search` returns

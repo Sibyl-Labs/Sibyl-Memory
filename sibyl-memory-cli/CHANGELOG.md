@@ -4,7 +4,7 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
-## [0.4.0] - 2026-08-31
+## [0.4.0] "Lucid" - 2026-08-31
 
 Minor version: `sibyl memory search` prints a new `cause:` line on the zero path,
 so anything parsing this command's output should read this entry.

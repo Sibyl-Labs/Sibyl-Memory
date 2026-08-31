@@ -4,7 +4,7 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
-## [0.8.0] - 2026-08-31
+## [0.8.0] "Lucid" - 2026-08-31
 
 The multilingual search stack was rebuilt: the query-time rescue layers that four
 evaluation cycles had accreted are gone, replaced by one versioned write-time

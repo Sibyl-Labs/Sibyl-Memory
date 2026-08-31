@@ -1,4 +1,4 @@
-# Sibyl Memory 0.8.0 family: release notes
+# Sibyl Memory 0.8.0 "Lucid" family: release notes
 
 `sibyl-memory-client` 0.8.0 · `sibyl-memory-mcp` 0.2.0 · `sibyl-memory-cli` 0.4.0 ·
 `sibyl-memory-hermes` 0.4.0 · `sibyl-memory-langgraph` 0.2.0

@@ -4,7 +4,7 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
-## [0.2.0] - 2026-08-31
+## [0.2.0] "Lucid" - 2026-08-31
 
 Minor version, not a patch: the `memory_search` **response schema changed**. Every
 response, including every zero, now carries an additive `verdict` object, and a
