@@ -400,6 +400,13 @@ class SearchResults(list):
     returned. `copy.copy` / `copy.deepcopy` / `pickle` DO round-trip the verdict
     (they go through `__reduce_ex__`, which carries `__slots__` state), so a
     result handed across a process boundary keeps its explanation.
+
+    NOT a frozen view. Mutating the list in place (`append`, `+=`, `pop`) leaves
+    `verdict.returned` describing what the SEARCH returned rather than what the
+    list now holds. Nothing in this repo does that, and if something ever needs
+    to, the answer is to build a new `SearchResults` — not to make the list
+    immutable, because behaving exactly like the list it replaced is the whole
+    reason this carrier could be added to a released API at all.
     """
 
     __slots__ = ("verdict",)

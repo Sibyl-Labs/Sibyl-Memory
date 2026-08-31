@@ -638,7 +638,12 @@ def build_server() -> FastMCP:
                         f"unknown tiers: {', '.join(unknown)}; "
                         "valid: entity, state, reference, journal"
                     )
-                results = client.search(query, limit=safe_limit, tiers=tier_tuple or None)
+                # `client.search` is the raw primitive and deliberately does not
+                # pay the empty-store probe (it is called once per token by the
+                # linker), so THIS surface pays it, once, only on a zero.
+                results = refine_zero(
+                    client,
+                    client.search(query, limit=safe_limit, tiers=tier_tuple or None))
             else:
                 # Run15 multi-record fix (Terminal B): route workflow search through
                 # retrieve-then-verify so queries spanning several linked records surface
@@ -649,12 +654,16 @@ def build_server() -> FastMCP:
                 # tool shipped unexplained zeros for four eval cycles — the
                 # server simply never passed it. The verdict now rides on the
                 # RETURN, so there is nothing for a call site to forget.
+                #
+                # NO `refine_zero` on this branch. multi_record_search already
+                # resolves EMPTY_STORE at its own single exit, using the entity
+                # COUNT it had to take anyway; calling refine_zero here as well
+                # re-walked all four tables for a question already answered. One
+                # probe per zero was the design, and running it twice is the kind
+                # of quiet cost that makes an explanation channel expensive
+                # enough to switch off.
                 from sibyl_memory_client.multi_record import multi_record_search
                 results = multi_record_search(client, query, limit=safe_limit)
-            # One probe, only on a zero, only here at the surface: upgrade a bare
-            # NO_MATCH to EMPTY_STORE when the store really is empty. Not paid on
-            # the hot per-token path inside multi_record (see client.search).
-            results = refine_zero(client, results)
             # MH-1/MH-2: fence-scrub + per-hit cap + total-output budget so
             # attacker-controlled bodies can neither inject nor context-flood.
             bounded = _bound_hits(results)

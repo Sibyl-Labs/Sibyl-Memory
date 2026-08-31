@@ -14,6 +14,7 @@ tests close.
 """
 from __future__ import annotations
 
+import ast
 import inspect
 import json
 from pathlib import Path
@@ -22,7 +23,8 @@ from sibyl_memory_hermes import SibylMemoryProvider
 from sibyl_memory_hermes import provider as provider_mod
 from sibyl_memory_hermes._hermes_plugin import adapter as adapter_mod
 # THE canonical vocabulary, imported exactly as the provider imports it.
-from sibyl_memory_client.verdicts import SearchResults, VerdictCode, ZERO_CAUSES
+from sibyl_memory_client.verdicts import (
+    GateCause, SearchResults, VerdictCode, ZERO_CAUSES)
 
 
 def _provider(tmp_path: Path) -> SibylMemoryProvider:
@@ -72,11 +74,49 @@ def test_provider_search_primitive_also_carries_one(tmp_path):
     assert miss == [] and miss.verdict.code is VerdictCode.NO_MATCH
 
 
-def test_provider_search_reports_an_empty_store_as_empty(tmp_path):
+def test_provider_search_leaves_the_empty_store_probe_to_the_surface(tmp_path):
+    """`provider.search()` is the RAW primitive, not a user-facing surface, so it
+    reports the cheap cause and does not pay the probe. A surface that reports
+    the zero calls `refine_zero` once, itself."""
+    from sibyl_memory_client.verdicts import refine_zero
     p = _provider(tmp_path)
     miss = p.search("anything")
     assert miss == []
-    assert miss.verdict.code is VerdictCode.EMPTY_STORE
+    assert miss.verdict.code is VerdictCode.NO_MATCH
+    assert refine_zero(p._client, miss).verdict.code is VerdictCode.EMPTY_STORE
+
+
+def test_prefetch_does_not_probe_the_store_once_per_token(tmp_path):
+    """REGRESSION (adversarial review, 2026-08-31). `provider.search()` briefly
+    called `refine_zero`, which LOOKS like a surface-level probe and is not: the
+    adapter's `prefetch()` calls that method once for the whole query and then
+    once per significant token, so the probe became a per-token probe by another
+    name — 24 COUNT(*) on one turn against an entities-empty store, measured.
+
+    Pinned by counting the real thing rather than by reading the code, because
+    the cost is invisible at every level above the storage layer."""
+    from sibyl_memory_client.storage import Storage
+    a = _adapter(tmp_path)
+    # A journal-only store: `entities` is empty, so `store_is_empty` would walk
+    # all four tables on every probe. This is the worst case, and the one the
+    # review measured at 24.
+    a._sibyl.client.write_event(acted=["a journal row so the store is not empty"])
+
+    calls = {"n": 0}
+    real = Storage.count_rows
+
+    def counting(self, table, tenant_id):
+        calls["n"] += 1
+        return real(self, table, tenant_id)
+
+    Storage.count_rows = counting
+    try:
+        a.prefetch("where are the courier warehouse invoice shelving parcels rates")
+    finally:
+        Storage.count_rows = real
+    # prefetch issues 1 full-query search + up to 5 per-token searches. The raw
+    # primitive must not probe on any of them.
+    assert calls["n"] == 0, f"{calls['n']} COUNT(*) from a prefetch that should issue none"
 
 
 def test_provider_results_stay_list_compatible(tmp_path):
@@ -152,13 +192,68 @@ def test_adapter_tool_schema_teaches_the_cause_scoped_retry(tmp_path):
 # --------------------------------------------------------------------------
 # one vocabulary
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# one vocabulary
+# --------------------------------------------------------------------------
+def _code_only(text: str) -> str:
+    """Strip docstrings and comments, leaving code.
+
+    Parsed, not split on `\"\"\"`. The first version of this helper did
+    `text.replace('\"\"\"', chr(0)).split(chr(0))[0::2]`, which silently INVERTS
+    which half it scans when the marker count is odd — the test would then check
+    the prose and skip the code, and still pass.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:                                # pragma: no cover
+        return text
+    spans = []
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list):                 # ast.IfExp.body is an expr
+            continue
+        for child in body:
+            if (isinstance(child, ast.Expr)
+                    and isinstance(child.value, ast.Constant)
+                    and isinstance(child.value.value, str)):
+                spans.append((child.lineno, child.end_lineno))
+    drop = {i for a, b in spans for i in range(a, b + 1)}
+    return "\n".join(ln.split("#", 1)[0]
+                     for i, ln in enumerate(text.splitlines(), 1) if i not in drop)
+
+
+#: Derived from the enums, so renaming a cause updates the guard automatically.
+CAUSE_LITERALS = tuple([c.value for c in VerdictCode if c is not VerdictCode.OK]
+                       + [g.value for g in GateCause])
+
+
+def _assert_declares_no_vocabulary(*modules):
+    """BOTH quote styles. These tests originally checked only double quotes, and
+    an adversarial review slipped `_LOCAL_CAUSE_COPY = 'abstained_on'` into the
+    MCP server past a green suite — exactly the drift the guard exists to stop."""
+    offenders = []
+    for mod in modules:
+        code = _code_only(inspect.getsource(mod))
+        for lit in CAUSE_LITERALS:
+            if f'"{lit}"' in code or f"'{lit}'" in code:
+                offenders.append((mod.__name__, lit))
+    assert offenders == [], f"cause strings re-declared outside verdicts.py: {offenders}"
+
+
 def test_this_package_imports_the_vocabulary_and_declares_none():
     assert "from sibyl_memory_client.verdicts import" in inspect.getsource(provider_mod)
-    for mod in (provider_mod, adapter_mod):
-        src = inspect.getsource(mod)
-        code = "\n".join(ln.split("#", 1)[0] for ln in src.splitlines())
-        parts = code.replace('"""', "\x00").split("\x00")
-        code_only = "".join(parts[0::2])
-        for lit in ("negation_abstain", "coverage_floor", "anchor_gate",
-                    "prep_filter", "empty_store"):
-            assert f'"{lit}"' not in code_only, (mod.__name__, lit)
+    _assert_declares_no_vocabulary(provider_mod)
+
+
+def test_the_agent_facing_teaching_names_the_causes_the_engine_emits():
+    """The tool schema and system prompt TEACH the cause names, so they are
+    exempt from the no-literals scan. Nothing bound them to the enum until now,
+    so a rename would ship a stale instruction with a green suite."""
+    a = adapter_mod.SibylAdapter()
+    desc = {s["name"]: s for s in a.get_tool_schemas()}["sibyl_search"]["description"]
+    prompt = a.system_prompt_block()
+    for code in (VerdictCode.ABSTAINED_ON, VerdictCode.GATED,
+                 VerdictCode.EMPTY_STORE, VerdictCode.NO_MATCH):
+        assert code.value in desc, ("schema", code)
+        assert code.value in prompt, ("prompt", code)

@@ -21,6 +21,16 @@ follows [SemVer](https://semver.org/).
 - Row handling is untouched. `search_entities` now returns a `list` subclass, and
   the store's slicing, filtering and comprehension over it behave identically.
 
+### Fixed (independent adversarial review, 2026-08-31)
+- **A zero-row page could ship with `verdict.code == "ok"`.** The verdict was
+  recorded from the raw FTS result, before the namespace-prefix filter, the value
+  filter and the offset/limit slice, so a page emptied by any of those three
+  reported `ok` and `explain(): "5 row(s) matched."` to a caller holding zero
+  rows — a confidently wrong explanation, which is worse than the silence this
+  contract replaces. Two further branches (`limit == 0`, and the non-query
+  listing path) never set the verdict at all and retained the previous call's.
+  It is now cleared first on every path and stamped after the final slice.
+
 ## [0.1.1] - 2026-08-06
 
 ### Changed
