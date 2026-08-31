@@ -49,6 +49,9 @@ try:  # client exception surface
         NotFoundError,
         ValidationError,
     )
+    # THE canonical cause vocabulary (stage 3, 2026-08-31). Imported, never
+    # re-declared in this package.
+    from sibyl_memory_client.verdicts import VerdictCode, no_match_verdict
 except Exception as exc:  # pragma: no cover - import-time guard
     raise ImportError(
         "sibyl-memory-langgraph requires sibyl-memory-client. "
@@ -465,11 +468,17 @@ class SibylStore(BaseStore):
 
     def _search(self, op: SearchOp) -> list[SearchItem]:
         prefix = _validate_prefix(() if op.namespace_prefix is None else op.namespace_prefix)
+        # THE VERDICT CONTRACT (stage 3, 2026-08-31). Cleared FIRST, on every
+        # path. A verdict left over from the previous call is worse than no
+        # verdict: it answers a question about a search that already happened,
+        # and it does so confidently.
+        self._last_search_verdict = None
         # R32/R33: normalize limit/offset ONCE. A negative limit can no longer
         # produce a negative-index slice (which broadened the page to nearly all
         # rows), and limit=None no longer trips `offset + limit` arithmetic.
         lim, off = _clamp_page(op.limit, op.offset, default_limit=10)
         if lim == 0:
+            self._last_search_verdict = no_match_verdict()
             return []
         want = min(off + lim, _POOL)
         if op.query:
@@ -483,19 +492,7 @@ class SibylStore(BaseStore):
             # (=_POOL), so total rows materialized here is bounded by _POOL.
             cap = _POOL if (prefix or op.filter) else want
             rows = self._client.search_entities(op.query, limit=cap)
-            # THE VERDICT CONTRACT (stage 3, 2026-08-31). langgraph's BaseStore
-            # fixes the return type as list[SearchItem], so there is nowhere in
-            # that API to hand a caller a verdict object. What this store CAN do
-            # is stop throwing the cause away: an empty FTS result is logged with
-            # the canonical cause, so an operator debugging "the store returns
-            # nothing" reads `empty_store` or `no_match` in the log instead of
-            # silence, and `last_search_verdict` exposes the same fact to anyone
-            # holding the store directly.
-            self._last_search_verdict = getattr(rows, "verdict", None)
-            if not rows and self._last_search_verdict is not None:
-                _log.debug("SibylStore search returned no rows: %s - %s",
-                           self._last_search_verdict.code.value,
-                           self._last_search_verdict.explain())
+            engine_verdict = getattr(rows, "verdict", None)
             if len(rows) >= _POOL:
                 _log.warning(
                     "SibylStore search hit the %d-row FTS ceiling (client "
@@ -510,6 +507,7 @@ class SibylStore(BaseStore):
                     if _decode_namespace(r["category"])[: len(prefix)] == prefix
                 ]
         else:
+            engine_verdict = None
             rows = [
                 r for r in self._list_capped()
                 if _decode_namespace(r["category"])[: len(prefix)] == prefix
@@ -517,6 +515,33 @@ class SibylStore(BaseStore):
         if op.filter:
             rows = [r for r in rows if _match_filter(r.get("body") or {}, op.filter)]
         rows = rows[off : off + lim]
+
+        # THE VERDICT CONTRACT (stage 3, 2026-08-31). langgraph's BaseStore fixes
+        # the return type as list[SearchItem], so there is nowhere in that API to
+        # hand a caller a verdict object. What this store CAN do is stop throwing
+        # the cause away: `last_search_verdict` exposes it, and an empty page is
+        # logged with its cause so an operator debugging "the store returns
+        # nothing" reads a reason instead of silence.
+        #
+        # STAMPED HERE, AFTER the namespace-prefix filter, the value filter and
+        # the offset/limit slice — not on the raw FTS result. Recording the
+        # engine's verdict before those three steps let a page emptied by a
+        # PREFIX MISMATCH, a VALUE FILTER or an OFFSET PAST THE END ship
+        # `code: ok` with `explain(): "5 row(s) matched."` while the caller held
+        # zero rows. A confidently wrong explanation is worse than the silence
+        # this contract exists to delete, so the engine's `OK` is downgraded to
+        # the honest miss whenever this store, rather than the engine, is what
+        # emptied the page.
+        if rows:
+            self._last_search_verdict = engine_verdict
+        elif engine_verdict is not None and engine_verdict.code is not VerdictCode.OK:
+            self._last_search_verdict = engine_verdict      # the engine's own zero
+        else:
+            self._last_search_verdict = no_match_verdict()  # this store emptied it
+        v = self._last_search_verdict
+        if not rows and v is not None:
+            _log.debug("SibylStore search returned no rows: %s - %s",
+                       v.code.value, v.explain())
         return [self._to_search_item(r) for r in rows]
 
     def _list_namespaces(self, op: ListNamespacesOp) -> list[tuple[str, ...]]:

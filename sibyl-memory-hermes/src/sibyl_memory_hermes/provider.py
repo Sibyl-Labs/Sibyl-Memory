@@ -45,7 +45,7 @@ from sibyl_memory_client import DEFAULT_TENANT, MemoryClient
 from sibyl_memory_client.exceptions import NotFoundError
 # THE canonical cause vocabulary (stage 3, 2026-08-31). Imported, never
 # re-declared in this package.
-from sibyl_memory_client.verdicts import SearchResults, refine_zero
+from sibyl_memory_client.verdicts import SearchResults
 from sibyl_memory_client.storage import db_size_bytes
 
 from .credentials import (
@@ -420,10 +420,11 @@ class SibylMemoryProvider:
 
         Returns a ``verdicts.SearchResults`` — a ``list`` subclass, so every
         existing caller is byte-for-byte unaffected — carrying ``.verdict``:
-        ``OK`` when rows came back, ``NO_MATCH`` (or ``EMPTY_STORE``) when they
-        did not. This is the raw primitive, so those are the only causes
-        reachable here; the abstention and relevance-gate causes live on
-        ``search_multi_record``.
+        ``OK`` when rows came back, ``NO_MATCH`` when they did not. This is the
+        raw primitive, so those are the only two causes reachable here; the
+        abstention and relevance-gate causes live on ``search_multi_record``,
+        and ``EMPTY_STORE`` is resolved by whichever surface REPORTS the zero
+        (``verdicts.refine_zero``), not here — see the note on the return.
 
         v0.3.1: search now spans entities + state + reference + journal
         (was: entities only: the marketing claim of "search across all
@@ -456,11 +457,17 @@ class SibylMemoryProvider:
         Raises:
             StorageError: backend failure
         """
-        # One probe, only on a zero, only at this surface: upgrade a bare
-        # NO_MATCH to EMPTY_STORE when the store really is empty.
-        return refine_zero(self._client,
-                           self._client.search(query, limit=limit, prefix=prefix,
-                                               tiers=tiers))
+        # NO `refine_zero` on this line. It LOOKS like a user-facing surface and
+        # is not: the adapter's `prefetch()` calls this method once for the whole
+        # query and then once per significant token (up to five more), so a probe
+        # here is a per-token probe by another name — measured at 24 COUNT(*) per
+        # turn on an entities-empty store. That is exactly the cost
+        # `client.search` documents itself as deliberately not paying, and moving
+        # it one wrapper up does not make it cheaper.
+        #
+        # A surface that REPORTS this zero to a person or an agent calls
+        # `verdicts.refine_zero(client, results)` itself, once.
+        return self._client.search(query, limit=limit, prefix=prefix, tiers=tiers)
 
     def search_multi_record(self, query: str, *, limit: int = 20,
                              diagnostics: dict | None = None) -> SearchResults:

@@ -31,6 +31,17 @@ follows [SemVer](https://semver.org/).
   field of the full 88-query battery, `hermes-agent==0.19.0`, adapter still bound
   to the live ABC.
 
+### Fixed (independent adversarial review, 2026-08-31)
+- **`provider.search()` no longer calls `refine_zero`.** It looks like a
+  user-facing surface and is not: the adapter's `prefetch()` calls it once for
+  the whole query and then once per significant token, so the probe became a
+  per-token probe by another name — measured at 24 `COUNT(*)` on one turn against
+  an entities-empty store, where the pre-contract build took 0. It is the raw
+  primitive and reports `ok` / `no_match`; a surface that REPORTS the zero calls
+  `verdicts.refine_zero` itself, once.
+- The tool schema and system-prompt cause names are now asserted against the
+  `VerdictCode` values rather than exempted from the vocabulary scan.
+
 ## [0.3.16] - 2026-08-22
 
 ### Changed

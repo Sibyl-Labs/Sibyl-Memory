@@ -467,9 +467,12 @@ def multi_record_search(client, query: str, *, limit: int = 10,
     new. That invariant is asserted by the battery's byte-parity check against
     ef98f5b and by ``tests/test_verdict_contract_2026_08_31.py``.
 
-    `diagnostics` (N1', 2026-08-18) — DEPRECATED, kept working. Pass a dict to
-    have it populated exactly as before (same keys, same values, same exits), so
-    no existing caller breaks. Prefer ``result.verdict``: the dict channel is
+    `diagnostics` (N1', 2026-08-18) — DEPRECATED, kept working. Pass a dict and
+    it is populated with the same keys and the same values, on every exit that
+    ever wrote it, so no existing caller breaks. It is ALSO populated now on the
+    three exits that previously wrote nothing at all (an empty token set, and the
+    two all-tokens-dropped paths) — additive, and the only observable difference
+    from the pre-contract build. Prefer ``result.verdict``: the dict channel is
     optional, so a caller who forgets it is back to an unexplained zero, which is
     the whole defect. The legacy shape:
       abstained         bool  — True if the query hit the content-shaped df==0
@@ -519,10 +522,22 @@ def multi_record_search(client, query: str, *, limit: int = 10,
         v = out.verdict
         # An empty result against a store with nothing in it is EMPTY_STORE
         # whatever the local cause was: "one word blocked your query" is useless
-        # advice when there is nothing to block. Probed (all four searchable
-        # tiers), never inferred, and only ever on the zero path — one indexed
-        # COUNT in the common case, since `entities` short-circuits it.
-        if not rows and store_is_empty(client):
+        # advice when there is nothing to block. Probed across all four
+        # searchable tiers, never inferred, and only on the zero path.
+        #
+        # `not corpus_n` short-circuits the probe to ZERO extra queries on any
+        # store that has entities: `corpus_n` is the `entities` COUNT this
+        # function already took for IDF weighting, and a non-zero one proves the
+        # store is not empty. Without this guard the probe re-counted `entities`
+        # on every zero — a second COUNT for a fact already in hand, and a
+        # measurable cost on a path that fires on every abstention. Only an
+        # entities-empty store pays the remaining three counts, which is exactly
+        # the case where they are load-bearing (a store holding nothing but
+        # journal events is NOT empty, and `corpus_n` alone would say it is).
+        #
+        # If a caller passes its own `corpus_n` hint and gets it wrong, the cost
+        # is a less specific cause, never a wrong row.
+        if not rows and not corpus_n and store_is_empty(client):
             v.code = VerdictCode.EMPTY_STORE
             v.gate = None
             v.tokens = []
@@ -725,7 +740,15 @@ def multi_record_search(client, query: str, *, limit: int = 10,
     # The one exit that can be either outcome. Rows -> OK (stamp() sets it).
     # No rows -> GATED when a gate actually dropped something (with the dominant
     # gate named), otherwise the honest miss: stage 1 gathered nothing to gate.
+    #
+    # The GATED test keys on `scored`, NOT on `result`. `result` is
+    # `scored[:limit]`, so with limit <= 0 a candidate that cleared every gate is
+    # removed by the SLICE and blaming a gate for the empty result would be
+    # simply false — `explain()` would report "N candidates were dropped by the
+    # coverage_floor gate" about a row that passed it. Not reachable through MCP
+    # (`safe_limit` clamps to >= 1) but reachable from any direct SDK call and
+    # from `provider.search_multi_record(q, limit=0)`.
     dominant = gates.dominant()
-    if not result and dominant is not None:
+    if not scored and dominant is not None:
         return _finish(result, gated_verdict(dominant, gates))
     return _finish(result, no_match_verdict())

@@ -44,6 +44,18 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 - Search behaviour is untouched. The MCP stdio path is byte-identical to
   `ef98f5b` on every quality field of the full multilingual battery.
 
+### Fixed (independent adversarial review, 2026-08-31)
+- **The empty-store probe ran twice on the default path** (8 `COUNT(*)` per zero
+  where the pre-contract build took 1): the engine resolves `EMPTY_STORE` at its
+  own single exit, and this tool called `refine_zero` on top. `refine_zero` now
+  runs on the `tiers` branch only, where `client.search` genuinely does not
+  probe. Back to 1 `COUNT(*)` per zero.
+- The no-server-retry test asserts the absence of `ast.For` / `ast.While` rather
+  than grepping for the words, which had it firing on the tool docstring and on a
+  legitimate generator expression. The docstring's cause names are now asserted
+  against the `VerdictCode` values, so a rename cannot ship a stale instruction
+  to the agent with a green suite.
+
 ## [0.1.14] - 2026-08-22
 
 ### Changed

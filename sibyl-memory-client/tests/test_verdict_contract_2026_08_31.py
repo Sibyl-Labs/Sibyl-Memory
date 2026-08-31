@@ -26,9 +26,10 @@ and the deprecated `diagnostics=` dict keeps its historical keys and values.
 """
 from __future__ import annotations
 
+import ast
 import inspect
 import json
-import re
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -171,6 +172,27 @@ def test_gated_by_the_prep_filter_on_a_terminal_state_query(tmp_path):
     assert v.gates.prep_filter == 1
 
 
+def test_gated_is_not_reported_when_the_limit_slice_emptied_the_result(tmp_path):
+    """REGRESSION (adversarial review, 2026-08-31). The GATED test used to key on
+    `result` (`scored[:limit]`) rather than on `scored`, so with `limit <= 0` a
+    candidate that cleared EVERY gate was removed by the slice and the verdict
+    blamed a gate for it — `explain()` reported rows "dropped by the
+    coverage_floor gate" about a row that passed the coverage floor. Not
+    reachable through MCP (`safe_limit` clamps to >= 1), but reachable from any
+    direct SDK call and from `provider.search_multi_record(q, limit=0)`."""
+    c = _client(tmp_path, "limit0.db")
+    c.set_entity("ops", "warehouse-lodz", {"text": "warehouse lodz shelving"})
+    c.set_entity("ops", "other", {"text": "warehouse other"})
+    full = multi_record_search(c, "warehouse lodz shelving", limit=10)
+    assert full and full.verdict.code is VerdictCode.OK
+    assert full.verdict.gates.coverage_floor > 0, "a gate DID fire on this query"
+    for lim in (0, -1):
+        res = multi_record_search(c, "warehouse lodz shelving", limit=lim)
+        assert res == []
+        assert res.verdict.code is VerdictCode.NO_MATCH, (lim, res.verdict.code)
+        assert res.verdict.gate is None
+
+
 def test_anchor_gate_counts_its_drops_even_when_rows_survive(tmp_path):
     """A gate counter is not only for empty results. `anchor_gate` dropped nine
     cross-cluster candidates here while one row still came back; the counter
@@ -215,53 +237,136 @@ def test_no_match_on_a_query_with_no_significant_tokens(tmp_path):
 # --------------------------------------------------------------------------
 # 3. STRUCTURAL: the single exit, asserted against the source
 # --------------------------------------------------------------------------
+def _mr_ast():
+    """The AST of `multi_record_search`, plus its nested `_finish`."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(multi_record_search)))
+    fn = tree.body[0]
+    finish = next(n for n in fn.body
+                  if isinstance(n, ast.FunctionDef) and n.name == "_finish")
+    return fn, finish
+
+
 def test_multi_record_search_has_no_bare_return_outside_the_single_exit():
     """The whole point of stage 3. A `return []` here is how the silent zero
-    comes back, so it is banned at the source level, not by convention."""
-    src = inspect.getsource(multi_record_search)
-    returns = [ln.strip() for ln in src.splitlines()
-               if re.match(r"^\s*return\b", ln)]
-    assert returns, "sanity: the function returns something"
-    for ln in returns:
-        assert ln.startswith("return _finish(") or ln.startswith("return out"), ln
-    # ...and not hidden anywhere else either. Strip prose first: the docstring
-    # and the comments SAY `return []` a great deal, because explaining the
-    # banned shape is most of why the ban is legible.
-    code = re.sub(r'"""(?:.|\n)*?"""', "", src)
-    code = "\n".join(ln.split("#", 1)[0] for ln in code.splitlines())
-    assert "return []" not in code
+    comes back, so it is banned at the source level, not by convention.
+
+    PARSED, not string-matched. The first version of this test checked that each
+    `return` LINE started with `return _finish(` and that the substring
+    `"return []"` was absent — and an adversarial review defeated it in one
+    edit: `return _finish([], abstained_on_verdict(t)) if False else []`
+    satisfies both checks and reintroduces the silent zero. A guard the commit
+    message leans on has to actually hold, so it reads the tree instead.
+    """
+    fn, finish = _mr_ast()
+    finish_returns = {id(n) for n in ast.walk(finish) if isinstance(n, ast.Return)}
+    returns = [n for n in ast.walk(fn) if isinstance(n, ast.Return)]
+    assert len(returns) >= 7, "sanity: the function still has its exits"
+    outer = 0
+    for node in returns:
+        if id(node) in finish_returns:
+            continue                                  # `return out`, _finish's own
+        outer += 1
+        val = node.value
+        # not a conditional, not a boolean short-circuit, not a subscript —
+        # a direct call to _finish and nothing else
+        assert isinstance(val, ast.Call), ast.dump(node)
+        assert isinstance(val.func, ast.Name) and val.func.id == "_finish", \
+            ast.dump(node)
+    assert outer >= 6, "every exit must be a direct _finish call"
 
 
-def test_every_verify_gate_increments_a_counter():
-    """Each `continue` that discards a candidate must be preceded by a
-    `gates.record(...)`. Counted at the source so a fourth gate added later
-    cannot be silent by omission."""
-    src = inspect.getsource(multi_record_search)
-    # the scoring loop only
-    body = src.split("scored = []", 1)[1].split("scored.sort", 1)[0]
-    continues = [i for i, ln in enumerate(body.splitlines())
-                 if ln.strip().startswith("continue")]
-    records = [ln for ln in body.splitlines() if "gates.record(" in ln]
-    assert len(continues) == 3, "three verify gates; update this test if that changes"
-    assert len(records) == 3, "every gate must count its drop"
+def test_every_verify_gate_pairs_its_continue_with_a_distinct_counter():
+    """Each `continue` that discards a candidate must be IMMEDIATELY preceded by
+    a `gates.record(GateCause.X)` naming a distinct gate.
+
+    Counting alone was not enough (adversarial review): three `continue`s and
+    three `gates.record(...)` calls anywhere in the loop passed even if two
+    gates recorded the SAME cause, and a filter written before `scored = []`
+    was outside the scanned window entirely. This pairs them structurally and
+    scans the whole function.
+    """
+    fn, _finish = _mr_ast()
+    # The VERIFY loop specifically — `for e in cand.values():`. Stage 1's own
+    # `for t in toks:` also contains a `continue`, but that one skips
+    # ACCUMULATING a candidate for a droppable zero-df token; it discards
+    # nothing, so it is not a gate and must not be counted as one.
+    loops = [n for n in ast.walk(fn)
+             if isinstance(n, ast.For)
+             and isinstance(n.iter, ast.Call)
+             and isinstance(n.iter.func, ast.Attribute)
+             and n.iter.func.attr == "values"]
+    assert len(loops) == 1, "expected exactly one verify loop over cand.values()"
+    loop = loops[0]
+    recorded = []
+    for parent in ast.walk(loop):
+        body = getattr(parent, "body", None)
+        if not isinstance(body, list):
+            continue
+        for i, stmt in enumerate(body):
+            if not isinstance(stmt, ast.Continue):
+                continue
+            assert i > 0, "a `continue` with nothing before it records no drop"
+            prev = body[i - 1]
+            assert isinstance(prev, ast.Expr) and isinstance(prev.value, ast.Call), \
+                ast.dump(prev)
+            call = prev.value
+            assert isinstance(call.func, ast.Attribute) and call.func.attr == "record", \
+                ast.dump(call)
+            arg = call.args[0]
+            assert isinstance(arg, ast.Attribute), ast.dump(arg)
+            recorded.append(arg.attr)
+    assert len(recorded) == 3, f"three verify gates; found {recorded}"
+    assert len(set(recorded)) == 3, f"each gate must name a DISTINCT cause: {recorded}"
+    assert set(recorded) == {g.name for g in GateCause}
+
+
+def _code_only(text: str) -> str:
+    """Strip docstrings and comments, leaving code. Robust to an odd number of
+    triple-quote markers (a naive split-and-take-alternate-halves silently
+    INVERTS which half it scans when the count is odd, so the test would check
+    the prose and skip the code while still passing)."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:                                # pragma: no cover
+        return text
+    spans = []
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list):       # ast.IfExp.body is an expression
+            continue
+        for child in body:
+            if (isinstance(child, ast.Expr)
+                    and isinstance(child.value, ast.Constant)
+                    and isinstance(child.value.value, str)):
+                spans.append((child.lineno, child.end_lineno))
+    lines = text.splitlines()
+    drop = {i for a, b in spans for i in range(a, b + 1)}
+    return "\n".join(ln.split("#", 1)[0]
+                     for i, ln in enumerate(lines, 1) if i not in drop)
+
+
+#: The literals no package outside verdicts.py may spell. Derived from the enums
+#: so renaming a member updates the guard automatically.
+CAUSE_LITERALS = tuple([c.value for c in VerdictCode if c is not VerdictCode.OK]
+                       + [g.value for g in GateCause])
 
 
 def test_the_cause_vocabulary_is_declared_in_exactly_one_module():
     """One vocabulary, one module. A second declaration of these strings is how
     a surface drifts from the engine and reports a cause the engine never
-    emitted — which is the shape of the defect this stage closes."""
+    emitted — which is the shape of the defect this stage closes.
+
+    BOTH quote styles. The sibling packages' copies of this test originally
+    checked only double quotes, and an adversarial review slipped
+    `_LOCAL_CAUSE_COPY = 'abstained_on'` into the MCP server past a green suite.
+    """
     pkg = Path(inspect.getfile(mr)).parent
-    literals = ("abstained_on", "negation_abstain", "empty_store", "no_match",
-                "coverage_floor", "anchor_gate", "prep_filter")
     offenders = []
     for path in sorted(pkg.glob("*.py")):
         if path.name == "verdicts.py":
             continue
-        text = path.read_text(encoding="utf-8")
-        # strip comments + docstrings crudely: only flag STRING LITERALS in code
-        code = re.sub(r'"""(?:.|\n)*?"""', "", text)
-        code = re.sub(r"#.*", "", code)
-        for lit in literals:
+        code = _code_only(path.read_text(encoding="utf-8"))
+        for lit in CAUSE_LITERALS:
             if f'"{lit}"' in code or f"'{lit}'" in code:
                 offenders.append((path.name, lit))
     assert offenders == [], f"cause strings re-declared outside verdicts.py: {offenders}"

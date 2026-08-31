@@ -50,7 +50,9 @@ five reached the caller as the same four bytes.
 
 - **`multi_record_search(..., diagnostics=<dict>)`.** Still populated, with
   identical keys and values on every exit that previously wrote it, plus an
-  additive `verdict` key. Prefer `result.verdict`: an optional channel is one a
+  additive `verdict` key. It is also populated now on the three exits that
+  previously wrote nothing at all, which is the only observable difference from
+  the pre-contract build. Prefer `result.verdict`: an optional channel is one a
   caller can forget, and forgetting it is the whole defect.
 
 ### Unchanged (asserted, not assumed)
@@ -359,6 +361,23 @@ behaviour they asserted stays on the record:
 `test_shadow_append_2026_08_12.py` individually. Client suite: 340 passed before,
 327 passed / 13 skipped after, zero failures. mcp, hermes and langgraph suites
 unchanged.
+
+### Fixed (independent adversarial review, 2026-08-31)
+- **`gated` could name a gate that did not fire.** The GATED decision keyed on
+  `scored[:limit]` rather than on `scored`, so with `limit <= 0` a candidate that
+  cleared every gate was removed by the SLICE and the verdict blamed a gate for
+  it. Unreachable through MCP (`safe_limit` clamps to >= 1); reachable from any
+  direct SDK call.
+- **The empty-store probe re-counted `entities`.** It is now short-circuited by
+  the `corpus_n` the function already takes for IDF weighting, so it costs
+  nothing on any store with entities and only walks the other three tiers when
+  `entities` is empty — the case where it is load-bearing.
+- **Two structural guards did not hold.** The single-exit test was defeated by
+  `return _finish(...) if False else []` and is now parsed rather than
+  string-matched; the one-vocabulary test missed single-quoted literals and now
+  derives its literal list from `VerdictCode` / `GateCause`; the gate-counter
+  test now pairs each `continue` with a `gates.record()` naming a DISTINCT gate
+  instead of counting both.
 
 ## [0.7.0] - 2026-08-22
 
