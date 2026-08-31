@@ -81,6 +81,40 @@ Same battery, same 300-entity store, all figures from our own runs
   smaller space-trigram vocabulary. Entity writes cost about 20 percent more
   (3.79 ms vs 3.12 ms per write) and a 300-row backfill 29.8 ms vs 16.0 ms.
 
+### Documentation (ratification pass 2026-08-31)
+
+Verdict PROMOTE. Two corrections; no behaviour change in this commit.
+
+- **Report corrections.** `46a3abf7` is 5 rows / 3 answer-bearing, not 10 / 3
+  (a transcription error against this repository's own recorded results). The two
+  residual LongMemEval suspects are reclassified from "clean non-losses" to real
+  losses: `e982271f` drops the session recording which venue was recommended LAST
+  and keeps only an interchangeable venue card that contains the gold string, and
+  `gpt4_f420262c` drops the EARLIEST session on an earliest-to-latest ordering
+  question. The stated root cause was also wrong for `e982271f`: raising the limit
+  to 11, 12, 13 or 15 does not recover its row, so an N2 holdback would not close
+  it and it needs a RANKING change, which is scoring work and is not excluded by
+  the constraint against head overrides. `gpt4_f420262c` does close at limit 11
+  via a holdback, which is excluded. Both are now recorded as known losses at
+  limit 10, clean at limit 25, deferred with reasons. The English noise accounting
+  gains the `N-en-11` line it previously omitted.
+- **OPEN, reported not decided: the append budget bounds only the coverage-1
+  class.** Rows covering two or more terms are unbounded, so boilerplate carrying
+  TWO of the query's terms produces 19 appended rows where 0.7.0 produces none. A
+  per-coverage-level budget was built and measured and is NOT shippable: it costs
+  35 answer-bearing rows across 7 LongMemEval questions. The distributions
+  overlap (a legitimate level needs 12 rows at 1 term, 9 at 2 and 7 at 4; the
+  sweep has 30 at 3), so no monotone query-shape budget separates them and a
+  tie-group bound fails identically. Behaviour is unchanged and pinned by
+  `test_corroborated_class_is_NOT_bounded_open_finding`. Contained meanwhile by
+  the preserved strict head, an untouched default path and the MCP byte budget.
+
+Gates re-run on the unchanged code: LongMemEval suspects 2, coverage 152 against a
+shipped envelope of 112 to 121, both recovered questions still recovered, 100 of
+100 deterministic. Battery PL 16/16 and 18/19, EN noise 20, injection 6 / 0,
+byte-identical across `PYTHONHASHSEED` 0/1/42/12345. Client suite 427 passed /
+11 skipped.
+
 ### Changed (revision 5, LongMemEval retrieval parity 2026-08-31)
 
 A replayed-ingest retrieval diagnostic over the 100-question LongMemEval parity

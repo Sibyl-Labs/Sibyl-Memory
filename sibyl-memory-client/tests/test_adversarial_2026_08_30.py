@@ -660,3 +660,56 @@ def test_append_never_reorders_or_drops_the_strict_head(tmp_path):
             got = c.search(q, limit=limit)
             assert ident(got)[:len(strict)] == ident(strict), (q, limit)
             assert len(got) <= limit, (q, limit)
+
+
+def test_corroborated_class_is_NOT_bounded_open_finding(tmp_path):
+    """CHARACTERIZATION of an OPEN finding, deliberately pinned rather than fixed.
+
+    Ratification pass finding A: the append budget bounds only the coverage-1
+    class. Rows covering two or more terms are admitted without any bound, so the
+    sweep returns the moment boilerplate carries TWO of the query's terms instead
+    of one. Reviewer's r7_budget case B, reproduced here: released 0.7.0 and
+    lang-core-strip both return one row.
+
+    A per-coverage-level budget was built and measured, and it is NOT shippable:
+    it costs 35 answer-bearing rows across 7 LongMemEval questions. The two
+    distributions overlap and no monotone query-shape budget separates them. The
+    rows that must survive need 12 at one level for a 1-term query (caf9ead2),
+    9 for a 2-term query (681a1674) and 7 for a 4-term query (7e974930), so any
+    monotone budget admits at least ~8 at 3 terms, while the sweep to stop has 30
+    rows at 3 terms. Numbers in stage2-report.md §11.
+
+    What contains it meanwhile: the strict head is preserved and leads, so no
+    correct row is lost; the default path is untouched (multi_record decomposes to
+    single tokens and its own gates filter); and the MCP output budget caps bytes.
+    This test exists so the behaviour cannot drift silently while the tension is
+    with the operator.
+    """
+    ents = [("policy", "complaint-policy",
+             {"text": "Complaint review deadline is fourteen days from receipt."})]
+    ents += [("ops", f"note-{i}",
+              {"text": f"Status review for project {i}, deadline moved."})
+             for i in range(30)]
+    c = _store(tmp_path, ents, name="corroborated.db")
+    got = _keys(c.search("complaint review deadline", limit=20))
+    assert got[0] == "complaint-policy", "the correct row still leads"
+    notes = [k for k in got if k.startswith("note-")]
+    assert len(notes) == 19, f"open finding changed shape: {len(notes)} notes"
+    # the containment that keeps this a FIX and not a blocker
+    assert multi_record_search(
+        c, "complaint review deadline", limit=10)[0]["key"] == "complaint-policy"
+    assert len([h for h in multi_record_search(c, "complaint review deadline", limit=10)
+                if h["key"].startswith("note-")]) == 0, "default path must stay clean"
+
+
+def test_coverage_1_class_is_bounded(tmp_path):
+    """The half of the budget that IS a bound, reviewer's r7_budget case A."""
+    ents = [("policy", "complaint-policy",
+             {"text": "Complaint review deadline is fourteen days from receipt."})]
+    ents += [("ops", f"note-{i}",
+              {"text": f"Project {i} is delayed, the deadline moved."})
+             for i in range(30)]
+    c = _store(tmp_path, ents, name="cov1.db")
+    got = _keys(c.search("complaint review deadline", limit=20))
+    assert got[0] == "complaint-policy"
+    assert len([k for k in got if k.startswith("note-")]) <= 3, got
