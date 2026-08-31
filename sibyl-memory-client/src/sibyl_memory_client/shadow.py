@@ -795,9 +795,27 @@ def _content_terms(
             if a or (len(t) >= 3 and _is_unspaced(t))]
 
 
+def _is_decisive(v: dict, match_terms: list[tuple[str, bool, str]]) -> bool:
+    """The append guard, per candidate row. See _shadow_search_normalized.
+
+    The bar scales with the corroboration the QUERY can offer. A single-token
+    query has none: no second term to agree, no surrounding words, nothing but
+    one truncated stem, so the only evidence accepted there is the token itself,
+    verbatim. That is what keeps 'contracts' from reaching a row that opens with
+    "Contrails": both truncate to a six-character stem at a word start and
+    nothing shorter than the whole token separates them."""
+    if any(raw in v["txt"] for _t, _a, raw in match_terms):
+        return True
+    if len(match_terms) < 2:
+        return False
+    if len(v["cover"]) > 1:
+        return True
+    return any(len(term) > _STEM_FLOOR for term in v["cover"])
+
+
 def _shadow_search_normalized(conn: sqlite3.Connection, tenant_id: str, query: str,
                               limit: int, allowed: set,
-                              require_raw: bool = False) -> list[dict] | None:
+                              decisive_only: bool = False) -> list[dict] | None:
     """The normalized shadow pass: match the normalized query against the
     normalized rendering, and return the rows that cover the MOST query terms.
 
@@ -815,21 +833,37 @@ def _shadow_search_normalized(conn: sqlite3.Connection, tenant_id: str, query: s
     inside the rescue, not a gate deciding whether the rescue runs — the caller
     decides that, and this function always does the same work.
 
-    ``require_raw`` narrows the result to rows that carry one of the query's
-    tokens VERBATIM as a substring, not merely its stem. It is set by the
-    single-token consult on a non-empty strict head (client.search), and it is
-    what keeps that consult narrow in English (adversarial review 2026-08-30,
-    finding 2): the ending rule truncates every 6-to-8 character token to its
-    first five characters, so 'contract' becomes 'contr' and an unrestricted
-    probe reaches control, contrast, contribution, contrary and contralto. That
-    inflated df up to sevenfold, which deflated idf, which pushed correct rows
-    under multi_record's coverage floor and removed them from the DEFAULT path.
-    Requiring the raw token keeps exactly the shape the consult exists for, a
-    stored inflection that EXTENDS the query token ('packshot' inside
-    'packshoty'), which is precisely what porter's whole-token matching cannot
-    reach. Ending-REPLACEMENT inflections ('reklamacje' against a stored
-    'reklamacja') are unaffected: those reach the zero-hit path, where the strict
-    pass returned nothing and no narrowing applies.
+    ``decisive_only`` is the APPEND GUARD. It is set on both paths where the
+    caller ALREADY has an answer and the shadow is only allowed to extend it: the
+    single-token consult on a non-empty strict head, and the append onto a
+    last-resort relaxed head. It is never set on the zero-hit path, where the
+    alternative is returning nothing.
+
+    A row survives the guard when it carries at least one of three kinds of
+    evidence, in this order:
+
+      1. it contains one of the query's tokens VERBATIM, so the match is a stored
+         inflection that EXTENDS the token ('packshot' inside 'packshoty'), which
+         is precisely what porter's whole-token matching cannot reach;
+      2. it covers MORE THAN ONE query term, so several independent probes agree;
+      3. the single term it covers is LONGER than _STEM_FLOOR, meaning the ending
+         rule did not have to floor it and the stem still carries most of its
+         word.
+
+    All three are evidence that the row was singled out rather than swept up. The
+    floor is where the collisions live: the review measured that 17 of 21 ordinary
+    English content words truncate to exactly five characters, so 'contract'
+    becomes 'contr' and an unguarded probe reaches control, contrast,
+    contribution, contrary and contralto. That inflated df up to sevenfold, which
+    deflated idf, which pushed correct rows under multi_record's coverage floor
+    and removed them from the DEFAULT path (finding 2), and it doubled the rows a
+    supported-token injection query could reach on the ladder path (finding 17).
+    Meanwhile the Polish recoveries all clear the guard: 'inwentaryza' is 11
+    characters and was never floored, and the rows for 'stawka ryczałtu' and
+    'kurierem wysyłamy' carry their raw tokens outright.
+
+    Ending-REPLACEMENT inflections ('reklamacje' against a stored 'reklamacja')
+    are unaffected by the guard, because they reach the zero-hit path.
 
     Returns None when the query carries no content-shaped term at all, which
     tells the caller to fall through to the 0.5.0 raw-folded pass instead.
@@ -895,12 +929,6 @@ def _shadow_search_normalized(conn: sqlite3.Connection, tenant_id: str, query: s
                 if all(t in v["txt"] for t in like_terms)}
         if not cand:
             return []
-    if require_raw:
-        raws = [raw for _t, _a, raw in match_terms]
-        cand = {k: v for k, v in cand.items()
-                if any(raw in v["txt"] for raw in raws)}
-        if not cand:
-            return []
 
     # Coverage top-up + word-start scoring, both from the text already in hand.
     # A very common term's own probe is capped at `fetch`, so a row that
@@ -933,6 +961,11 @@ def _shadow_search_normalized(conn: sqlite3.Connection, tenant_id: str, query: s
         # Rounded so float addition order can never split an otherwise exact tie.
         v["score"] = round(sum(weight[t] for t in v["cover"]), 9)
 
+    if decisive_only:
+        cand = {k: v for k, v in cand.items() if _is_decisive(v, match_terms)}
+        if not cand:
+            return []
+
     # ELIGIBILITY is score alone; `exact` and `anchored` only ORDER the rows that
     # tied on it. That separation is load-bearing: 'packshot' scores the English
     # and the Polish row identically, and only the English one carries the whole
@@ -949,7 +982,7 @@ def _shadow_search_normalized(conn: sqlite3.Connection, tenant_id: str, query: s
 def shadow_search(conn: sqlite3.Connection, tenant_id: str, query: str,
                   *, limit: int = 20, tiers: tuple[str, ...] | None = None,
                   normalize: bool = False,
-                  require_raw: bool = False) -> list[dict]:
+                  decisive_only: bool = False) -> list[dict]:
     """Folded-trigram substring fallback. Returns ``_search_strict``-shaped dicts.
 
     Substring semantics via the trigram MATCH (>=3-char folded tokens) with a
@@ -977,7 +1010,7 @@ def shadow_search(conn: sqlite3.Connection, tenant_id: str, query: str,
     if normalize:
         try:
             out = _shadow_search_normalized(conn, tenant_id, query, limit, allowed,
-                                            require_raw=require_raw)
+                                            decisive_only=decisive_only)
         except (sqlite3.OperationalError, sqlite3.DatabaseError) as err:
             if _is_healable(err):
                 _heal(conn)
