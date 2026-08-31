@@ -6,6 +6,81 @@ follows [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+Write-time normalization for the search shadow (branch `lang-core-normalize`,
+2026-08-30). One versioned normalizer, `shadow.NORMALIZER_VERSION = 1`, replaces
+the query-time rescue layers stripped below. It renders the stored text at WRITE
+time and the query at READ time from the same code.
+
+- **`normalize_py` / `normalize_select`** — the rendering: `fold` (unchanged)
+  plus boundary normalization, every punctuation and whitespace character
+  collapsed to a single space, plus one leading and one trailing pad. The stored
+  shadow text is now word-boundary clean, so a term can be matched at a WORD
+  START; previously a word inside a JSON body was usually preceded by `"` or `:`
+  and only a free-floating substring match was possible. Injected at the four
+  per-tier expressions `_entity_txt` / `_state_txt` / `_reference_txt` /
+  `_journal_txt`, shared verbatim by the triggers and the backfill, so both write
+  paths render byte-identically. The rendering is staged through nested
+  subqueries because SQLite's trigger parser overflows at about 27 nested
+  function calls and the chain needs 51.
+- **`normalize_token` / `normalize_terms`** — the ending rule, recovered from the
+  removed D2L block with its tuned parameters intact (min 5, drop 3, floor 5) and
+  two new guards: never truncate a token carrying a digit, and never truncate a
+  token from an unspaced script (Han, Kana, Hangul, Thai, Lao, Khmer, Myanmar,
+  Tibetan), which is what protects the CJK tail matching the shadow exists for.
+- **`shadow_search(..., normalize=True)`** — the normalized pass. One probe per
+  content term, always, in a fixed order, with no early stop and no selectivity
+  re-ordering; rows are then scored by `sum(len(term) / df(term))` over the terms
+  they cover, and the top-scoring rows are returned, ordered by whole-word
+  exactness, then word-start matches, then BM25. Terms the ending rule did not
+  shorten carry no score: that single rule, and no stoplist, is what stops 'and'
+  or 'gdzie' from scoring every row in the store.
+- **Twin masking closed** (2026-08-07 Finding 2). A single-token query whose
+  token the normalizer shortened consults the shadow even on a NON-empty strict
+  head, and appends. This is deliberately narrower than the 0.7.0 F2
+  unconditional append it replaces: it cannot fire on a multi-word query at all,
+  and it cannot fire on a token the ending rule leaves alone.
+- **Order change below an empty strict head.** The normalized shadow now runs
+  BEFORE the relaxed variants. Both are rescues, but the shadow answers the whole
+  query while the relaxed ladder's last resort answers one token of it. The
+  relaxed ladder still runs, unchanged, whenever the shadow has nothing.
+- **Two bug fixes found on the way.** A short non-ASCII token was a hard AND
+  requirement on every shadow candidate, so an accented 2-char Polish function
+  word ('są') silently zeroed the fallback; only unspaced scripts keep that
+  status now. And the journal cap `max(1, limit // 4)` was applied per pass, so
+  strict and shadow caps could stack; it is now enforced across the whole result.
+
+### Changed
+
+- `_SHADOW_MARKER` 4 -> 5. Marker 4 is the fold-only rendering, marker 5 is
+  NORMALIZER_VERSION 1; PRAGMA user_version is the on-disk stamp, so every
+  existing store drops, recreates and re-backfills its shadow on the next open.
+- `apply_shadow_migration` DROPs the ten maintenance triggers before recreating
+  them. `CREATE TRIGGER IF NOT EXISTS` alone would have left a pre-existing store
+  running the OLD rendering in its triggers while the backfill wrote the new one.
+- `normalize_terms` returns `(term, anchored, raw)` triples.
+
+### Measured effect
+
+Same battery, same 300-entity store, all figures from our own runs
+(`lang-core-rebuild/results/normalized.json`, three-way table in `delta3.txt`):
+
+- `client.search()`: Polish matched recall 16/16 (baseline 0.7.0 was 15/16,
+  stripped 8/16), Polish natural 19/19 (19/19, 11/19), Polish noise rows 17
+  (57, 25). English unchanged at 16/16 and 14/14 on every path.
+- Default path (`multi_record_search` and MCP): Polish matched recall 16/16
+  (15/16, 8/16), Polish natural 13/19 (13/19, 5/19), answerable Polish queries
+  returning nothing 6 (6, 20).
+- Injection battery zero rows on all three paths, no injection token with any
+  corpus support.
+- Storage: the normalized rendering REPLACES the folded one, no second copy. On
+  the 300-entity fixture the shadow text grows by 600 characters (the two pad
+  characters per row; the boundary substitution is 1:1 in length) and the DB
+  shrinks by 4096 bytes, one page, because punctuation trigrams give way to a
+  smaller space-trigram vocabulary. Entity writes cost about 20 percent more
+  (3.79 ms vs 3.12 ms per write) and a 300-row backfill 29.8 ms vs 16.0 ms.
+
 ### Removed
 
 Query-time multilingual rescue layers stripped out of `MemoryClient.search()`

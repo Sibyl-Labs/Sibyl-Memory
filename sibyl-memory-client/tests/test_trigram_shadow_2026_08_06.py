@@ -23,7 +23,8 @@ from sibyl_memory_client import MemoryClient
 from sibyl_memory_client.exceptions import SchemaError
 from sibyl_memory_client import shadow
 from sibyl_memory_client.shadow import (
-    FOLD_MAP, SHADOW_TABLE, fold_py, shadow_search, trigram_tokenizer_clause,
+    FOLD_MAP, SHADOW_TABLE, fold_py, normalize_py, shadow_search,
+    trigram_tokenizer_clause,
     create_table_sql,
 )
 from sibyl_memory_client.storage import _FTS_REBUILD_MARKER, _SHADOW_MARKER
@@ -69,14 +70,14 @@ def test_entity_triggers_keep_shadow_in_sync(tmp_path):
     with c.storage.connection() as conn:
         row = conn.execute(
             "SELECT name, category, body FROM entities WHERE name='Anteṙ'").fetchone()
-        expected = fold_py(f"{row[0]} {row[1]} {row[2]}")
+        expected = normalize_py(f"{row[0]} {row[1]} {row[2]}")
         assert _shadow_txt(conn, "entity", "Anteṙ", "t1") == expected
     # UPDATE (set_entity on existing key -> real UPDATE -> AU trigger)
     c.set_entity("città", "Anteṙ", {"note": "moved to Kraków"})
     with c.storage.connection() as conn:
         row = conn.execute(
             "SELECT name, category, body FROM entities WHERE name='Anteṙ'").fetchone()
-        assert _shadow_txt(conn, "entity", "Anteṙ", "t1") == fold_py(
+        assert _shadow_txt(conn, "entity", "Anteṙ", "t1") == normalize_py(
             f"{row[0]} {row[1]} {row[2]}")
         # exactly one shadow row for this key (no stale duplicate from the update)
         n = conn.execute(
@@ -95,12 +96,12 @@ def test_state_triggers_keep_shadow_in_sync(tmp_path):
     with c.storage.connection() as conn:
         body = conn.execute(
             "SELECT body FROM state_documents WHERE document_key='cfg-北京'").fetchone()[0]
-        assert _shadow_txt(conn, "state", "cfg-北京", "t1") == fold_py(f"cfg-北京 {body}")
+        assert _shadow_txt(conn, "state", "cfg-北京", "t1") == normalize_py(f"cfg-北京 {body}")
     c.set_state("cfg-北京", {"note": "上海"})  # ON CONFLICT DO UPDATE -> AU
     with c.storage.connection() as conn:
         body = conn.execute(
             "SELECT body FROM state_documents WHERE document_key='cfg-北京'").fetchone()[0]
-        assert _shadow_txt(conn, "state", "cfg-北京", "t1") == fold_py(f"cfg-北京 {body}")
+        assert _shadow_txt(conn, "state", "cfg-北京", "t1") == normalize_py(f"cfg-北京 {body}")
     # AD via raw DELETE (no public delete_state API)
     raw = _raw(c.storage.db_path)
     raw.execute("DELETE FROM state_documents WHERE tenant_id='t1' AND document_key='cfg-北京'")
@@ -113,11 +114,11 @@ def test_reference_triggers_keep_shadow_in_sync(tmp_path):
     c = MemoryClient.local(tmp_path / "m.db", tenant_id="t1")
     c.set_reference("doc-łódź", "Notes about Łódź, Poland")
     with c.storage.connection() as conn:
-        assert _shadow_txt(conn, "reference", "doc-łódź", "t1") == fold_py(
+        assert _shadow_txt(conn, "reference", "doc-łódź", "t1") == normalize_py(
             "doc-łódź Notes about Łódź, Poland")
     c.set_reference("doc-łódź", "Updated Łódź notes")  # ON CONFLICT DO UPDATE -> AU
     with c.storage.connection() as conn:
-        assert _shadow_txt(conn, "reference", "doc-łódź", "t1") == fold_py(
+        assert _shadow_txt(conn, "reference", "doc-łódź", "t1") == normalize_py(
             "doc-łódź Updated Łódź notes")
     raw = _raw(c.storage.db_path)
     raw.execute("DELETE FROM reference_documents WHERE tenant_id='t1' AND doc_key='doc-łódź'")
@@ -133,7 +134,7 @@ def test_journal_trigger_keeps_shadow_in_sync(tmp_path):
         row = conn.execute(
             "SELECT evaluated, acted, forward, extra FROM journal_events WHERE id=?",
             (ev_id,)).fetchone()
-        expected = fold_py(
+        expected = normalize_py(
             f"{row[0] or ''} {row[1] or ''} {row[2] or ''} {row[3] or ''}")
         assert _shadow_txt(conn, "journal", ev_id, "t1") == expected
 
@@ -204,7 +205,7 @@ def test_v3_to_v4_migration_backfills_and_stamps(tmp_path):
     assert _user_version(path) == 3
     # opening under 0.5.0 migrates v3 -> v4
     c = MemoryClient.local(path, tenant_id="t1")
-    assert _user_version(path) == _SHADOW_MARKER == 4
+    assert _user_version(path) == _SHADOW_MARKER
     with c.storage.connection() as conn:
         assert shadow.shadow_table_exists(conn)
         # backfill: one shadow row per base row across all four tiers
@@ -212,8 +213,8 @@ def test_v3_to_v4_migration_backfills_and_stamps(tmp_path):
                    for t in ("entities", "state_documents",
                              "reference_documents", "journal_events"))
         assert _shadow_count(conn) == base == 5
-        # a backfilled folded row is queryable and byte-identical to fold_py
-        assert _shadow_txt(conn, "entity", "beijing", "t1") == fold_py(
+        # a backfilled row is queryable and byte-identical to normalize_py
+        assert _shadow_txt(conn, "entity", "beijing", "t1") == normalize_py(
             'beijing places {"t":"北京烤鸭"}')
     # the folded content is reachable through the fallback (was 0 under v3)
     assert any(h["key"] == "beijing" for h in c.search("北京", limit=10))
@@ -242,7 +243,7 @@ def test_v3_to_v4_crash_rollback_leaves_marker_3(tmp_path, monkeypatch):
     # next clean open completes the migration
     monkeypatch.undo()
     c = MemoryClient.local(path, tenant_id="t1")
-    assert _user_version(path) == 4
+    assert _user_version(path) == _SHADOW_MARKER
     with c.storage.connection() as conn:
         assert shadow.shadow_table_exists(conn)
 
@@ -277,14 +278,14 @@ def test_old_client_raw_writes_are_mirrored(tmp_path):
             "INSERT INTO entities (id, tenant_id, category, name, status, body) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             ("x1", "t1", "places", "gdansk", None, '{"a":"Gdańsk"}'))
-        assert _shadow_txt(conn, "entity", "gdansk", "t1") == fold_py(
+        assert _shadow_txt(conn, "entity", "gdansk", "t1") == normalize_py(
             'gdansk places {"a":"Gdańsk"}')
         # exact 0.4.19 UPDATE shape
         conn.execute(
             "UPDATE entities SET status = ?, body = ?, "
             "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
             (None, '{"a":"Wrocław"}', "x1"))
-        assert _shadow_txt(conn, "entity", "gdansk", "t1") == fold_py(
+        assert _shadow_txt(conn, "entity", "gdansk", "t1") == normalize_py(
             'gdansk places {"a":"Wrocław"}')
         # exact 0.4.19 DELETE shape
         conn.execute(
@@ -304,12 +305,12 @@ def test_dropped_shadow_rebuilt_on_next_open(tmp_path):
     c = MemoryClient.local(path, tenant_id="t1")
     c.set_entity("places", "beijing", {"t": "北京烤鸭"})
     c.storage.close()
-    # simulate corruption: drop the shadow + triggers, leave marker at 4
+    # simulate corruption: drop the shadow + triggers, leave the marker set
     conn = _raw(path)
     shadow.drop_shadow(conn)
     conn.close()
-    assert _user_version(path) == 4
-    # reopen: marker>=4 but shadow missing -> migration rebuilds it
+    assert _user_version(path) == _SHADOW_MARKER
+    # reopen: marker current but shadow missing -> migration rebuilds it
     c2 = MemoryClient.local(path, tenant_id="t1")
     with c2.storage.connection() as conn:
         assert shadow.shadow_table_exists(conn)
@@ -320,7 +321,7 @@ def test_dropped_shadow_rebuilt_on_next_open(tmp_path):
 def test_dropped_shadow_trigger_self_heals_on_next_open(tmp_path, monkeypatch):
     """F1 (Fable hardening 2026-08-06): the v4 fast path requires the shadow
     TABLE *and* all 10 maintenance triggers. An out-of-band drop of ONE trigger
-    (table intact, marker still 4, other 9 triggers present) must NOT be read as
+    (table intact, marker still current, other 9 triggers present) must NOT be read as
     'already migrated' — otherwise the shadow silently stops being maintained
     and a later query risks a stale/false-positive fallback hit. The next open
     must fall through to the idempotent apply_shadow_migration: recreate the
@@ -336,12 +337,12 @@ def test_dropped_shadow_trigger_self_heals_on_next_open(tmp_path, monkeypatch):
     dropped_count = shadow.shadow_trigger_count(conn)
     table_present = shadow.shadow_table_exists(conn)
     conn.close()
-    assert _user_version(path) == 4                       # marker untouched
+    assert _user_version(path) == _SHADOW_MARKER          # marker untouched
     assert table_present                                  # table still there
     assert dropped_count == len(shadow.SHADOW_TRIGGER_NAMES) - 1 == 9
     assert not (dropped_count == len(shadow.SHADOW_TRIGGER_NAMES))  # incomplete
 
-    # reopen: table present + marker>=4, but triggers incomplete -> self-heal.
+    # reopen: table present + marker current, triggers incomplete -> self-heal.
     c2 = MemoryClient.local(path, tenant_id="t1")
     with c2.storage.connection() as conn:
         assert shadow.shadow_trigger_count(conn) == 10           # recreated

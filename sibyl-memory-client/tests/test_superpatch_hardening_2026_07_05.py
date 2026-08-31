@@ -36,6 +36,7 @@ from sibyl_memory_client import (
     TierCacheEntry,
 )
 from sibyl_memory_client import storage as storage_mod
+from sibyl_memory_client.storage import _SHADOW_MARKER
 
 
 # ======================================================================
@@ -292,10 +293,10 @@ def test_real3_fresh_open_stamps_rebuild_marker(tmp_path: Path) -> None:
     c.set_entity("notes", "seed", {"text": "hello"})
     with c._storage.connection() as conn:
         # v0.5.0 (schema v4): the crash-atomic PRAGMA user_version marker now
-        # terminates at _SHADOW_MARKER (4) — stamped only after the FTS rebuild
-        # AND the folded-trigram shadow are committed. 4 >= _FTS_REBUILD_MARKER,
+        # terminates at _SHADOW_MARKER — stamped only after the FTS rebuild
+        # AND the folded-trigram shadow are committed. It is >= _FTS_REBUILD_MARKER,
         # so the "FTS was rebuilt" guarantee this test pins still holds.
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == _SHADOW_MARKER
     c._storage.close()
 
 
@@ -331,7 +332,7 @@ def test_real3_crashed_migration_rebuilds_fts_on_open(tmp_path: Path) -> None:
     with c2._storage.connection() as conn:
         # v0.5.0 (schema v4): marker restamped to the v4 terminal value after the
         # crash rebuild (FTS rebuilt + shadow rebuilt/committed).
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4  # marker restamped
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == _SHADOW_MARKER  # restamped
     c2._storage.close()
 
 
