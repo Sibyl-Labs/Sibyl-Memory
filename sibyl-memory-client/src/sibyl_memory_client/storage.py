@@ -51,15 +51,15 @@ _FTS_REBUILD_MARKER = 3
 # rebuild marker. Marker >= _SHADOW_MARKER (and the shadow table present) is the
 # fast-path signal that v4 is fully applied.
 #
-# v0.8.0 stage 2 (2026-08-30): bumped 4 -> 5. The shadow's stored rendering
-# changed from fold_sql to normalize_sql (shadow.py NORMALIZER_VERSION = 1), so
-# every existing store must drop, recreate and re-backfill its shadow on the next
-# open or it would keep serving the old rendering. This marker IS the normalizer
-# version stamp on disk: marker 4 == fold-only rendering, marker 5 ==
-# NORMALIZER_VERSION 1. Any future change to the four per-tier expressions in
-# shadow.py must bump it again, and apply_shadow_migration now drops its triggers
-# before recreating them so a changed trigger BODY actually takes effect.
-_SHADOW_MARKER = 5
+# v0.8.0 stage 2 (2026-08-30): the shadow's stored rendering changed from
+# fold_sql to normalize_sql, so every existing store must drop, recreate and
+# re-backfill its shadow on the next open or it would keep serving the old
+# rendering. The value now lives in shadow.py, NEXT TO the rendering it stamps,
+# because the migration here is not the only writer of that rendering:
+# shadow._heal rewrites it on the portability path and must stamp the same
+# marker (adversarial review 2026-08-30, finding 3). Marker 4 is the fold-only
+# rendering shipped as 0.7.0; marker 6 is NORMALIZER_VERSION 1.
+from .shadow import SHADOW_MARKER as _SHADOW_MARKER
 
 # v0.4.0 (2026-05-18, KAPPA RED finding): the SQLite DB holds every entity
 # body, not just credentials. docs.sibyllabs.org/memory/install claims 0600
@@ -501,9 +501,16 @@ class Storage:
             # to the idempotent apply_shadow_migration, which recreates every
             # trigger — the same self-heal the v3 FTS triggers get on each open.
             shadow_triggers_ok = shadow_triggers_complete(conn)
+            # The marker is necessary but not sufficient evidence (adversarial
+            # review 2026-08-30, finding 3): the rendering has a second writer
+            # in shadow._heal, and a store healed by an OLD client keeps the NEW
+            # marker over the OLD rendering. One O(1) sampled row closes that,
+            # whoever wrote it and whatever the marker claims.
+            from .shadow import rendering_is_current
+            shadow_rendering_ok = rendering_is_current(conn)
 
         if (not needs_v3_shape and marker >= _SHADOW_MARKER
-                and shadow_ok and shadow_triggers_ok):
+                and shadow_ok and shadow_triggers_ok and shadow_rendering_ok):
             # v3 external-content shape, the index was rebuilt + committed under
             # this client, AND the v4 shadow is present WITH its full trigger set.
             # Fast path: O(1), no scan, no rebuild, no shadow count(*) probe
@@ -544,11 +551,24 @@ class Storage:
             # a dropped/corrupt shadow. apply_shadow_migration is idempotent
             # (CREATE IF NOT EXISTS + DELETE + backfill), so recreating triggers
             # and re-backfilling restores shadow↔base consistency.
-            if marker < _SHADOW_MARKER or not shadow_ok or not shadow_triggers_ok:
+            if (marker < _SHADOW_MARKER or not shadow_ok or not shadow_triggers_ok
+                    or not shadow_rendering_ok):
                 from .shadow import apply_shadow_migration
                 with self.transaction() as conn:
-                    apply_shadow_migration(conn)
-                    conn.execute(f"PRAGMA user_version = {int(_SHADOW_MARKER)}")
+                    # The re-backfill is O(rows) and holds the write lock for the
+                    # whole of it: measured at 1.65 s for 10k rows and 27 s for
+                    # 100k (adversarial review 2026-08-30, finding 4). The
+                    # connection default of 5 s is well under that, so a second
+                    # process opening the same store during a first-open upgrade
+                    # died with "database is locked" somewhere above ~25k rows.
+                    # Widen the busy timeout for the migration only, then put it
+                    # back, so the ordinary read path keeps failing fast.
+                    conn.execute("PRAGMA busy_timeout = 120000")
+                    try:
+                        apply_shadow_migration(conn)
+                        conn.execute(f"PRAGMA user_version = {int(_SHADOW_MARKER)}")
+                    finally:
+                        conn.execute("PRAGMA busy_timeout = 5000")
         except (sqlite3.Error, StorageError, SchemaError) as e:
             raise SchemaError(
                 f"FTS5 index migration/rebuild failed: {type(e).__name__}",
