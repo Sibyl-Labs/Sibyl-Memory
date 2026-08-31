@@ -10,6 +10,13 @@ and a no-rescue query is byte-identical to today.
 """
 from __future__ import annotations
 
+import pytest
+
+# N2 relaxed-single holdback/backfill (existed only to give D2L headroom): removed 2026-08-30 lang-core-strip (operator directive).
+# The module is kept, not deleted, so the behaviour it pinned stays on
+# the record and can be re-read when stage 2 replaces it at write time.
+pytestmark = pytest.mark.skip(reason="removed 2026-08-30 lang-core-strip (operator directive)")
+
 from sibyl_memory_client import MemoryClient
 
 
