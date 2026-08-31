@@ -81,6 +81,46 @@ Same battery, same 300-entity store, all figures from our own runs
   smaller space-trigram vocabulary. Entity writes cost about 20 percent more
   (3.79 ms vs 3.12 ms per write) and a 300-row backfill 29.8 ms vs 16.0 ms.
 
+### Changed (revision 5, LongMemEval retrieval parity 2026-08-31)
+
+A replayed-ingest retrieval diagnostic over the 100-question LongMemEval parity
+slice found this branch retrieving a strict SUBSET of released 0.7.0 on long
+natural-language English queries: 9 of 100 questions lost answer-bearing context
+and 2 lost it entirely. The cause was removing 0.7.0's F2 unconditional shadow
+append wholesale. F2's diseases came from the append being UNGUARDED, not from the
+append existing, so it is back with the guard in front of it.
+
+- **The non-empty-head append is no longer single-token.** It fires for any query
+  except a single token the ending rule left alone, always behind `decisive_only`.
+  The strict head keeps its rows and its order; only the tail grows.
+- **A relaxed head no longer blocks the append.** A stage-1 conjunction head used
+  to return outright; on the Downtown Farmers Market question that head is one raw
+  session and the row stating the figure was one guarded probe away.
+- **Eligibility is coverage COUNT; the idf score only orders.** Letting the score
+  filter collapsed a long question to one row: every candidate covered one of
+  three terms and a CO2 fertiliser row matching the rare `curren` outscored every
+  row matching `frien`.
+- **Weakly-corroborated rows are budgeted on the append paths.** Rows covering two
+  or more terms all stand; rows covering exactly one are admitted best-first up to
+  the query's content-term count. Refusing them loses the row that states the
+  answer; admitting them all appends nineteen stored notes to `complaint review
+  deadline`. The zero-hit path keeps its strict argmax.
+- **Determinism fix.** The shadow's final tie-break was the row's business key,
+  and a journal row's key is a uuid4 minted at write time, so two tied journal
+  rows swapped places between runs of identical code on journal-heavy stores. The
+  tie-break is now the row text.
+
+Measured. LongMemEval: changed-suspect questions 9 to 2, answer-bearing rows 107
+to 152 against shipped's 114 to 119, both total-loss questions recovering their
+gold rows, `L1` and the 1,573-entity recall sweep still identical, and 100 of 100
+questions deterministic across three passes (shipped 0.7.0 manages 87). The two
+remaining are cap-boundary effects at limit 10, clean at limit 25, neither a
+recall loss; closing them needs the N2 holdback, which is a head override.
+Battery: PL 16/16 matched and 18/19 natural unchanged, PL noise 33 to 42 against
+0.7.0's 57; EN 16/16 and 25/25 unchanged, EN noise 6 to 20 against 0.7.0's 46,
+every added row guarded; injection supported-class 6 on all three builds and 0 on
+the default path. Client suite 425 passed / 11 skipped.
+
 ### Changed (revision 4, final re-verification 2026-08-30)
 
 Two changes, both in `client.py`, 31 insertions against 35 deletions.
