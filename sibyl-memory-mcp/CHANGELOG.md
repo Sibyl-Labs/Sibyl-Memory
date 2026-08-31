@@ -4,6 +4,46 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **`memory_search` responses now carry a `verdict`** (branch
+  `lang-core-verdict`, 2026-08-31). Until this release `server.py` called
+  `multi_record_search(client, query, limit=safe_limit)` with **no
+  `diagnostics=` kwarg**, so the SDK's optional explanation channel — which had
+  existed since 0.1.14 — was unreachable from the tool an agent actually calls.
+  A `count: 0` reached the agent as `{ok, query, count, results}` and could not
+  be told apart from an empty store. The verdict now rides on the RETURN of
+  `multi_record_search`, so there is no call-site kwarg left to forget, and the
+  response gains one additive, bounded `verdict` object naming exactly one of
+  `abstained_on` / `negation_abstain` / `gated` / `empty_store` / `no_match`,
+  with `recovery` and a plain-language `explain`.
+- The verdict passes through `_scrub_value` and sits beside the fenced payload.
+  It carries numbers, enum values and the caller's own query tokens — never
+  stored-record text — so it composes with the MH-1 fence and the MH-2 output
+  budget rather than becoming a second, unfenced channel out of the store. It is
+  reconciled against `count` after `_bound_hits`, so the two can never disagree.
+- **The `_MIN_QUERY_LEN` short-query guard names a cause too.** It was the one
+  place a `count: 0` shipped with nothing attached at all.
+- The tier-filtered (`tiers=`) path carries a verdict as well: bypassing the
+  linker does not bypass the contract.
+
+### Changed
+- **The `memory_search` docstring no longer teaches `tiers="entity"` as the
+  escape hatch from an abstention.** That advice routed around every precision
+  gate, including the one that makes injection-shaped queries return nothing. It
+  is replaced by the cause-scoped recovery: on `abstained_on`, drop the one token
+  named in `verdict.tokens[0]` and retry with every gate still armed, at most
+  twice. `tiers` remains documented as the linker bypass, with its precision
+  tradeoff stated. **No server-side auto-retry** — the loop stays agent-side,
+  because a silent server-side retry is indistinguishable from the silent zero
+  this contract deletes. A test asserts the server calls `multi_record_search`
+  exactly once per request.
+
+### Unchanged
+- Search behaviour is untouched. The MCP stdio path is byte-identical to
+  `ef98f5b` on every quality field of the full multilingual battery.
+
 ## [0.1.14] - 2026-08-22
 
 ### Changed

@@ -345,6 +345,22 @@ class SibylStore(BaseStore):
                     kw["tenant_id"] = resolved
             self._client = MemoryClient.local(path, **kw)
             self._owns_client = True
+        # Verdict contract (stage 3, 2026-08-31): the cause of the most recent
+        # FTS-backed search, or None if none has run. BaseStore's signature has
+        # no slot for it, so this is where it is reachable.
+        self._last_search_verdict = None
+
+    @property
+    def last_search_verdict(self):
+        """The canonical cause of the most recent query-backed ``search()``.
+
+        ``None`` before any query search has run. langgraph's ``BaseStore``
+        fixes ``search`` to return ``list[SearchItem]``, so a zero cannot carry
+        its own explanation through that API; this is the store-level escape
+        hatch, and the debug log carries the same fact for operators who are not
+        holding the object.
+        """
+        return self._last_search_verdict
 
     # ---- lifecycle -------------------------------------------------------
     def close(self) -> None:
@@ -467,6 +483,19 @@ class SibylStore(BaseStore):
             # (=_POOL), so total rows materialized here is bounded by _POOL.
             cap = _POOL if (prefix or op.filter) else want
             rows = self._client.search_entities(op.query, limit=cap)
+            # THE VERDICT CONTRACT (stage 3, 2026-08-31). langgraph's BaseStore
+            # fixes the return type as list[SearchItem], so there is nowhere in
+            # that API to hand a caller a verdict object. What this store CAN do
+            # is stop throwing the cause away: an empty FTS result is logged with
+            # the canonical cause, so an operator debugging "the store returns
+            # nothing" reads `empty_store` or `no_match` in the log instead of
+            # silence, and `last_search_verdict` exposes the same fact to anyone
+            # holding the store directly.
+            self._last_search_verdict = getattr(rows, "verdict", None)
+            if not rows and self._last_search_verdict is not None:
+                _log.debug("SibylStore search returned no rows: %s - %s",
+                           self._last_search_verdict.code.value,
+                           self._last_search_verdict.explain())
             if len(rows) >= _POOL:
                 _log.warning(
                     "SibylStore search hit the %d-row FTS ceiling (client "

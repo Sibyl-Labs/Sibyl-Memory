@@ -60,6 +60,21 @@ from .learning import (
 )
 from .lint import Finding, LintReport, Linter
 from .storage import Storage
+# The verdict contract (stage 3, 2026-08-31). THE canonical cause vocabulary for
+# the whole package family — mcp, hermes, cli and langgraph import these names
+# from here, and none of them declares a cause string of its own. Re-declaration
+# is how a surface drifts from the engine and starts reporting a cause the engine
+# never emitted.
+from .verdicts import (
+    GateCause,
+    GateCounters,
+    SearchResults,
+    Verdict,
+    VerdictCode,
+    ZERO_CAUSES,
+    explain,
+    refine_zero,
+)
 
 # Single-sourced from installed metadata so the wheel + code never drift
 # (C2 audit fix v0.3.3). Source-tree fallback for editable installs that
@@ -104,6 +119,15 @@ __all__ = [
     "Linter",
     "LintReport",
     "Finding",
+    # verdict contract (stage 3, 2026-08-31)
+    "SearchResults",
+    "Verdict",
+    "VerdictCode",
+    "GateCause",
+    "GateCounters",
+    "ZERO_CAUSES",
+    "explain",
+    "refine_zero",
     # meta
     "__version__",
 ]

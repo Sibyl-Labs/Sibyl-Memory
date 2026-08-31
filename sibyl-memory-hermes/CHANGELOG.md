@@ -4,6 +4,33 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **`search_multi_record` returns the cause by default** (branch
+  `lang-core-verdict`, 2026-08-31). The provider's own docstring already
+  DOCUMENTED this failure mode — "abstains ... the moment one significant query
+  token is content-shaped and has zero corpus support anywhere", citing the
+  Kravento PL eval — while offering only an opt-in `diagnostics=` dict to see it.
+  Documented-but-unreachable is what this closes: the return is now a
+  `verdicts.SearchResults` (a `list` subclass, so every existing caller is
+  unaffected) carrying `.verdict` with no kwarg to pass.
+- `search()` carries one too (`ok` / `no_match` / `empty_store` via one
+  zero-path probe), as the raw primitive.
+- **The Hermes adapter forwards it.** `sibyl_search` returns
+  `{"results": [...], "verdict": {...}}`, scrubbed like every other surfaced
+  value, and both the tool schema and the system-prompt block teach the
+  cause-scoped recovery so an agent knows what to do with an `abstained_on`.
+
+### Deprecated
+- `search_multi_record(..., diagnostics=<dict>)` — still populated identically,
+  plus an additive `verdict` key. Prefer `result.verdict`.
+
+### Unchanged
+- Both hermes provider paths are byte-identical to `ef98f5b` on every quality
+  field of the full 88-query battery, `hermes-agent==0.19.0`, adapter still bound
+  to the live ABC.
+
 ## [0.3.16] - 2026-08-22
 
 ### Changed

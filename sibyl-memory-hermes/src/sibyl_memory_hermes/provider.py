@@ -43,6 +43,9 @@ from typing import Any
 
 from sibyl_memory_client import DEFAULT_TENANT, MemoryClient
 from sibyl_memory_client.exceptions import NotFoundError
+# THE canonical cause vocabulary (stage 3, 2026-08-31). Imported, never
+# re-declared in this package.
+from sibyl_memory_client.verdicts import SearchResults, refine_zero
 from sibyl_memory_client.storage import db_size_bytes
 
 from .credentials import (
@@ -412,8 +415,15 @@ class SibylMemoryProvider:
     # ------------------------------------------------------------------
     def search(self, query: str, *, limit: int = 20,
                prefix: bool = False,
-               tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
+               tiers: tuple[str, ...] | None = None) -> SearchResults:
         """Cross-tier FTS5 full-text search across all four searchable tiers.
+
+        Returns a ``verdicts.SearchResults`` — a ``list`` subclass, so every
+        existing caller is byte-for-byte unaffected — carrying ``.verdict``:
+        ``OK`` when rows came back, ``NO_MATCH`` (or ``EMPTY_STORE``) when they
+        did not. This is the raw primitive, so those are the only causes
+        reachable here; the abstention and relevance-gate causes live on
+        ``search_multi_record``.
 
         v0.3.1: search now spans entities + state + reference + journal
         (was: entities only: the marketing claim of "search across all
@@ -446,10 +456,14 @@ class SibylMemoryProvider:
         Raises:
             StorageError: backend failure
         """
-        return self._client.search(query, limit=limit, prefix=prefix, tiers=tiers)
+        # One probe, only on a zero, only at this surface: upgrade a bare
+        # NO_MATCH to EMPTY_STORE when the store really is empty.
+        return refine_zero(self._client,
+                           self._client.search(query, limit=limit, prefix=prefix,
+                                               tiers=tiers))
 
     def search_multi_record(self, query: str, *, limit: int = 20,
-                             diagnostics: dict | None = None) -> list[dict[str, Any]]:
+                             diagnostics: dict | None = None) -> SearchResults:
         """Two-stage retrieve-then-verify search for workflow / linked-record
         queries (whose answer spans several related records, e.g. feedback + bug +
         journal). Surfaces all the linked records instead of only the single
@@ -458,16 +472,46 @@ class SibylMemoryProvider:
         Same hit shape as ``search()``. For exact single-entity lookups use
         ``recall()``. Backed by ``sibyl_memory_client.multi_record``.
 
-        This path abstains (returns ``[]``) the moment one significant query
-        token is content-shaped and has zero corpus support anywhere — an
-        ordinary paraphrase carrying one unsupported content word can return
-        nothing even when ``search()`` would have found the answer (Kravento
-        PL eval, 2026-08-18). Pass ``diagnostics={}`` to see which token
-        triggered an abstention or was dropped, rather than reading an empty
-        result as "nothing was stored"; retry via ``search()`` directly if so.
+        EVERY ZERO EXPLAINS ITSELF (verdict contract, 2026-08-31). The return is
+        a ``verdicts.SearchResults`` — a ``list`` subclass, so every existing
+        caller is unaffected — carrying ``.verdict`` by default, with no kwarg to
+        pass and nothing to opt into. When the result is empty, ``verdict.code``
+        is exactly one of:
+
+          ``abstained_on``      one CONTENT-shaped query token has zero corpus
+                                support; the token is in ``verdict.tokens``.
+                                This is the precision gate that makes injection
+                                and made-up-term queries return nothing.
+                                RECOVERY: drop that one token and call again
+                                with every gate still armed. If a second, different
+                                token blocks the retry, drop that one too, then
+                                STOP — at most two retries. Two is where the
+                                rescue lives (16/16 on the customer's eval; 99 of
+                                122 blocked-but-answerable questions on our own
+                                155-question set, 70 of them in the first retry)
+                                and it is the bound past which the loop stops
+                                recovering the question and starts answering a
+                                shorter one built from whatever fragment the
+                                store happens to support. Do NOT reach for
+                                ``search()`` to escape the gate: that path has no
+                                abstention gate, which means it has no injection
+                                gate either.
+          ``negation_abstain``  the query is negated; answering would return the
+                                record asserting the opposite.
+          ``gated``             rows were found and dropped by a relevance gate
+                                (``verdict.gate``, ``verdict.gates`` counters,
+                                ``best_pre_gate_coverage``).
+          ``empty_store``       nothing has been written yet.
+          ``no_match``          the honest miss.
+
+        ``diagnostics`` is DEPRECATED but still honoured: pass a dict and it is
+        populated exactly as before (plus an additive ``verdict`` key). Prefer
+        ``result.verdict`` — an optional channel is one a caller can forget, and
+        forgetting it is the whole defect this replaces.
         """
         from sibyl_memory_client.multi_record import multi_record_search
-        return multi_record_search(self._client, query, limit=limit, diagnostics=diagnostics)
+        return multi_record_search(self._client, query, limit=limit,
+                                   diagnostics=diagnostics)
 
     # ------------------------------------------------------------------
     # Diagnostics

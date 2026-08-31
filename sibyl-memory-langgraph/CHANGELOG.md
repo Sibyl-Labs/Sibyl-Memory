@@ -4,6 +4,23 @@ All notable changes to `sibyl-memory-langgraph` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **`SibylStore.last_search_verdict`** (branch `lang-core-verdict`,
+  2026-08-31). langgraph's `BaseStore.search` signature is fixed as
+  `list[SearchItem]`, so a zero cannot carry its own explanation through that
+  API. What this store can do is stop throwing the cause away: the canonical
+  verdict of the most recent query-backed search is exposed on the store, and an
+  empty FTS result is logged at DEBUG with its cause, so an operator debugging
+  "the store returns nothing" reads `empty_store` or `no_match` instead of
+  silence.
+- This package declares no cause vocabulary of its own — asserted by a test.
+
+### Unchanged
+- Row handling is untouched. `search_entities` now returns a `list` subclass, and
+  the store's slicing, filtering and comprehension over it behave identically.
+
 ## [0.1.1] - 2026-08-06
 
 ### Changed

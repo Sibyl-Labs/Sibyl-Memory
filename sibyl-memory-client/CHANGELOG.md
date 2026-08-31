@@ -8,6 +8,59 @@ follows [SemVer](https://semver.org/).
 
 ### Added
 
+**The cause-carrying verdict contract** (branch `lang-core-verdict`,
+2026-08-31). Four external evaluation cycles reduced to one defect: a zero result
+that cannot explain itself. `multi_record_search` could return `[]` for five
+structurally different reasons — an unsupported discriminating term, the negation
+policy, three separate scoring gates, an empty store, an honest miss — and all
+five reached the caller as the same four bytes.
+
+- **`verdicts.py`, the ONE canonical cause vocabulary.** A closed enum
+  (`VerdictCode`: `ok` / `abstained_on` / `negation_abstain` / `gated` /
+  `empty_store` / `no_match`), the three gate names (`GateCause`:
+  `coverage_floor` / `anchor_gate` / `prep_filter`), the `Verdict` envelope, and
+  a plain-language `explain()` generated from the enum. Every package in the
+  family imports these names; none re-declares one, and a contract test in each
+  package asserts it. Re-declaration is how a surface drifts from the engine and
+  starts reporting a cause the engine never emitted.
+- **`SearchResults`, a `list` subclass carrying `.verdict`.** The verdict is part
+  of the RETURN, not an optional kwarg, because the defect it closes was exactly
+  that the only explanation channel was opt-in — and the MCP server never opted
+  in. Every existing caller (`len`, iteration, indexing, `== []`, `json.dumps`,
+  `isinstance(x, list)`) is byte-for-byte unaffected.
+- **A single exit in `multi_record_search`.** Six `return` statements, all
+  through one internal `_finish` that stamps a verdict. A bare `return []` is now
+  a source-level contract violation, asserted by a test that reads the function's
+  own source. The three verify gates each count their drops (per-gate counters
+  plus the best coverage any candidate reached), so a `gated` zero can say which
+  gate emptied it and how close the best row came.
+- **`empty_store` is probed, never inferred** — a count across all four
+  searchable tiers, taken only on the zero path, once per zero. `entities` alone
+  would have lied about a store holding only journal or reference rows.
+  `refine_zero(client, results)` is the one-probe upgrade a user-facing surface
+  (CLI, MCP) applies to a bare `no_match`.
+- **All three SDK search entry points stamp a verdict**: `search()`,
+  `search_entities()` and `multi_record_search()`. The two primitives can only
+  report `ok` / `no_match` (they carry no abstention and no relevance gate), and
+  deliberately do NOT pay the empty-store probe — `multi_record` calls `search()`
+  once per query token, and a COUNT per token would be a real per-query cost for
+  an explanation only the outermost caller needs.
+
+### Deprecated
+
+- **`multi_record_search(..., diagnostics=<dict>)`.** Still populated, with
+  identical keys and values on every exit that previously wrote it, plus an
+  additive `verdict` key. Prefer `result.verdict`: an optional channel is one a
+  caller can forget, and forgetting it is the whole defect.
+
+### Unchanged (asserted, not assumed)
+
+No gate, threshold, lexicon, ordering or early-return condition was touched. The
+full multilingual battery (PL/EN at 300 and 1400 entities, UA/TR, the 155-query
+paraphrase set, and the hermes provider paths) is **byte-identical to `ef98f5b`
+on every quality field** — ordered row keys, recall, rank-1, noise counts and
+every aggregate. This stage adds explanation, not behaviour.
+
 Write-time normalization for the search shadow (branch `lang-core-normalize`,
 2026-08-30). One versioned normalizer, `shadow.NORMALIZER_VERSION = 1`, replaces
 the query-time rescue layers stripped below. It renders the stored text at WRITE
