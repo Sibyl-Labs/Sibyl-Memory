@@ -4,6 +4,76 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Removed
+
+Query-time multilingual rescue layers stripped out of `MemoryClient.search()`
+(operator directive, branch `lang-core-strip`, 2026-08-30). Four external
+evaluation cycles accreted these layers at QUERY time, each compensating for the
+previous one's side effects. They are being removed so the replacement can be
+built at WRITE time on a clean base. This is a deliberate, measured recall
+regression in Polish, not a bug fix.
+
+- **F2 unconditional shadow append.** The folded-trigram shadow no longer runs on
+  every query with its hits appended after the head. It is once again a
+  ZERO-HIT-ONLY fallback, exactly as in 0.5.0: reached only when the strict pass
+  and every relaxed variant returned nothing. This restores the 0.5.0 behaviour
+  the 2026-08-07 report filed as Finding 2 (a weak English primary hit again
+  hides a same-fact row in another language).
+- **D2L coverage-gated stem rescue, and its probe ladder in full.** Deleted:
+  `_stem_token`, `_stem_truncated_query`, `_head_searchable_text`,
+  `_uncovered_stem_tokens`, and the constants `_STEM_MIN_TOKEN`, `_STEM_DROP`,
+  `_STEM_FLOOR`, `_GATE_ROW_BYTES`. Deleted from `search()`: the coverage gate,
+  the fully-stemmed probe, the selectivity-ordered probe loop (N3) and its
+  no-early-stop behaviour (N3').
+- **N2 relaxed-single holdback and backfill.** Existed only to reserve cap
+  headroom for the D2L rescue; with the rescue gone it has nothing to reserve for.
+
+`search()` is now exactly: strict head, relaxed variants on zero, zero-hit shadow
+fallback. Nothing else.
+
+### Kept (explicitly not part of this removal)
+
+- `shadow.py` in full: the trigram shadow table, its triggers, backfill and
+  diacritic folding (`fold_py`). This is the 0.5.0 foundation and the intended
+  delivery vehicle for the write-time replacement.
+- `multi_record.py` in full: the abstention side is unchanged — N4 any-df
+  function-word drop, N5 negation abstention, the `df == 0` content-shaped
+  abstention, the anchor/coverage gates, and the N1' diagnostics channel.
+- The MCP fence/scrub stack and every other search behaviour.
+
+### Measured effect
+
+In-house battery, 300-entity store, 32 matched PL/EN queries + 35 natural
+questions + 8 injection-shaped queries, all figures from our own runs
+(`lang-core-rebuild/results/`):
+
+- Polish `client.search()` matched recall 15/16 to 8/16; natural battery
+  19/19 to 11/19. English unchanged at 16/16 and 14/14 on every path.
+- The DEFAULT path moved just as far as the SDK path (PL matched recall
+  15/16 to 8/16, natural 13/19 to 5/19) even though none of its own layers were
+  touched. `multi_record_search` computes `df[t]` and gathers Stage-1 candidates
+  with `client.search(t)`, so removing the rescue drives PL tokens to `df == 0`,
+  where the kept content-shaped abstention zeroes the whole query.
+- Precision improved: English `client.search()` noise rows 39 to 0; Polish
+  57 to 25. One query ('aktualizacja cennika hurtowego') went from 20 rows with
+  19 noise rows to 0 rows, which is the N7 regression disappearing along with
+  the ladder that caused it.
+- The injection-shaped battery returns zero rows on all three paths before and
+  after, unchanged.
+
+### Tests
+
+Suites that pinned the removed semantics are SKIPPED with the reason
+`removed 2026-08-30 lang-core-strip (operator directive)`, not deleted, so the
+behaviour they asserted stays on the record:
+`test_covgate_stem_2026_08_12.py`, `test_probe_selectivity_2026_08_16.py` and
+`test_capfill_rescue_2026_08_16.py` at module level; two tests in
+`test_shadow_append_2026_08_12.py` individually. Client suite: 340 passed before,
+327 passed / 13 skipped after, zero failures. mcp, hermes and langgraph suites
+unchanged.
+
 ## [0.7.0] - 2026-08-22
 
 Multi-language search, part 4 (Kravento / Bilbo Polish evaluation, closing out

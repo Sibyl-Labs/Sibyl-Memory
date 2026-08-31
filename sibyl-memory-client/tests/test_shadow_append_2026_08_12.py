@@ -9,6 +9,8 @@ hit hid a same-fact row in another language (the packshot case).
 """
 from __future__ import annotations
 
+import pytest
+
 import sqlite3
 
 from sibyl_memory_client import MemoryClient
@@ -33,6 +35,7 @@ def _packshot_store(tmp_path):
     return c
 
 
+@pytest.mark.skip(reason="F2 unconditional shadow append: removed 2026-08-30 lang-core-strip (operator directive)")
 def test_packshot_english_strict_first_polish_appended(tmp_path):
     c = _packshot_store(tmp_path)
     strict = c._search_strict("packshot", limit=10)
@@ -135,6 +138,7 @@ def test_shadow_error_contained_primary_returned(tmp_path, monkeypatch):
 # under the coverage gate because the empty head covers nothing)
 # --------------------------------------------------------------------------
 
+@pytest.mark.skip(reason="D2L stem rescue: removed 2026-08-30 lang-core-strip (operator directive)")
 def test_stem_pass_recovers_inflection_append_only(tmp_path):
     c = MemoryClient.local(tmp_path / "m.db", tenant_id="t1")
     c.set_entity("support", "reklamacja-obsluga",

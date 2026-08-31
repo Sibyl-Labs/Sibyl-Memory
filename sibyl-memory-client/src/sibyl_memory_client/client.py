@@ -562,80 +562,15 @@ def _relaxed_query_strings(query: str):
             yield tok
 
 
-# D2L — coverage-gated stem rescue (Kravento PL eval 2026-08-12). Fusional
-# languages inflect by REPLACING endings (reklamacj-a/-e/-i share the stem
-# 'reklamac'), so query-token == stored-token (porter FTS) and
-# query-is-substring-of-stored (trigram shadow) BOTH fail. Truncating each query
-# token to a stem turns that ending-replacement into the substring problem the
-# folded-trigram shadow already solves.
-#
-# Crude fixed-length truncation is deliberate, NOT a placeholder for a real
-# stemmer: there is no Polish snowball/porter analyzer in the stdlib, and
-# precisely BECAUSE it is crude it survives the stem-internal palatalization a
-# rule-based stemmer would diverge on (wysyłka/wysyłce both keep the 'wysył'
-# prefix). drop=3 covers the 2-3 char ending classes of Polish/Czech/Russian
-# declension (drop=2 misses -ach locatives: magazynach); floor=5 keeps stems
-# long enough to avoid cross-lemma collisions at scale (measured free-or-better
-# vs floor 4 on the 38-query battery). The whole stage runs ONLY in the
-# append-only rescue path of search(), gated on coverage — never on the strict
-# path — so the primary index and its ranking are untouched. F3 (index-time
-# language-aware lemmatization) is the real fix and stays roadmap.
-_STEM_MIN_TOKEN = 5     # tokens shorter than this are never truncated
-_STEM_DROP = 3          # drop up to this many trailing chars
-_STEM_FLOOR = 5         # never truncate a stem below this many chars
-_GATE_ROW_BYTES = 4096  # per-row cap on head text fed to the coverage gate
-
-
-def _stem_token(tok: str) -> str:
-    if len(tok) < _STEM_MIN_TOKEN or any(ch.isdigit() for ch in tok):
-        return tok  # short tokens and identifiers (q3, v2, k8) stay exact
-    return tok[:max(_STEM_FLOOR, len(tok) - _STEM_DROP)]
-
-
-def _stem_truncated_query(query: str) -> str:
-    """The fully-stemmed query (every token stemmed, still AND-ed) for the
-    shadow's substring semantics. Returns "" when no token changed (the raw
-    passes already cover it)."""
-    toks = _match_tokens(query)
-    stems = [_stem_token(t) for t in toks]
-    if not stems or stems == toks:
-        return ""
-    return " ".join(stems)
-
-
-def _head_searchable_text(rows: list[dict[str, Any]]) -> str:
-    """Folded searchable text (key + category + body) of the head rows, for the
-    D2L coverage gate. Each row is capped at ``_GATE_ROW_BYTES`` before folding;
-    truncation errs toward RUNNING the stem pass (the recall-safe direction),
-    never toward suppressing it."""
-    from .shadow import fold_py
-    parts = []
-    for h in rows:
-        row = " ".join((
-            _normalize_text(h.get("key") or ""),
-            _normalize_text(h.get("category") or ""),
-            _normalize_text(h.get("body")),
-        ))
-        parts.append(row[:_GATE_ROW_BYTES])
-    return fold_py(" ".join(parts))
-
-
-def _uncovered_stem_tokens(query: str, rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
-    """The query tokens whose stem is NOT already substring-covered by the head
-    text — the ONLY tokens the D2L rescue may probe. A token whose stem equals
-    the token (no truncation) is skipped: the raw passes already cover it.
-    Returns ``[(token, stem), ...]``. When empty, the stem stage does no work at
-    all — English that porter already served almost never triggers it."""
-    from .shadow import fold_py
-    txt = _head_searchable_text(rows)
-    uncovered: list[tuple[str, str]] = []
-    for tok in _match_tokens(query):
-        stem = _stem_token(tok)
-        if stem == tok:
-            continue
-        if fold_py(stem) not in txt:
-            uncovered.append((tok, stem))
-    return uncovered
+# D2L (the coverage-gated stem rescue: _stem_token / _stem_truncated_query /
+# _head_searchable_text / _uncovered_stem_tokens, plus _STEM_MIN_TOKEN,
+# _STEM_DROP, _STEM_FLOOR and _GATE_ROW_BYTES) was REMOVED on 2026-08-30 by
+# the lang-core-strip operator directive, together with its probe ladder in
+# search(). It was a QUERY-time compensation for fusional morphology; the
+# replacement is a WRITE-time normalization built on the shadow table (stage
+# 2). The folding primitive it used, shadow.fold_py, is untouched and is the
+# intended basis for that build. Git history at 63a5ea9 holds the removed
+# code verbatim if it is ever needed for reference.
 
 
 # F5 (red-team 2026-06-17): sanity ceiling on a single serialized body. The 5 MB
@@ -1385,173 +1320,59 @@ class MemoryClient:
     @_track_op("search")
     def search(self, query: str, *, limit: int = 20, prefix: bool = False,
                tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
-        """Cross-tier search: strict/relaxed primary hits, then an APPENDED shadow.
+        """Cross-tier search with a zero-hit paraphrase fallback.
 
         Runs the strict AND + proximity search first (``_search_strict``,
-        unchanged behavior). When that returns nothing and the query is a
-        multi-word non-prefix query it retries with relaxed variants (stopwords
-        stripped, then the rarest token). The primary (strict/relaxed) hits are
-        the head of the result and are NEVER reordered or dropped, so ranking and
-        recall of existing hits cannot regress, and single-token / prefix queries
-        (the multi_record path) never trigger the relaxed retry. (paraphrase
-        recall, beta deadguy 2026-06-14: NL queries miss under strict token-AND.)
+        unchanged behavior). ONLY when that returns nothing and the query is a
+        multi-word non-prefix query does it retry with relaxed variants
+        (stopwords stripped, then the rarest token). This is strictly additive: a
+        non-empty strict result is returned untouched, so ranking and recall of
+        existing hits cannot regress, and single-token / prefix queries (the
+        multi_record path) never trigger the fallback. (paraphrase recall, beta
+        deadguy 2026-06-14: NL queries miss under strict token-AND.)
 
-        N2 (Kravento PL eval 2026-08-16): the one exception to a contiguous head
-        is the relaxed SINGLE-TOKEN last resort. When that variant (and only that
-        variant) fills the cap with rows sharing one common token, its tail is
-        trimmed by a small reserve so the F2/D2L rescue stages have headroom to
-        run; the trimmed rows are re-appended (backfill) AFTER the rescue. A
-        non-empty strict head is never trimmed (relaxed_single is only set when
-        strict returned []), and when the rescue appends nothing the output is
-        byte-identical to the pre-holdback result.
+        LANG-CORE-STRIP (operator directive, 2026-08-30): the 0.6.0/0.6.1/0.7.0
+        QUERY-TIME rescue layers that used to sit here were removed and this body
+        reverted to its 0.5.0 form. Removed: the F2 unconditional shadow append
+        (the shadow is once again a zero-hit-only fallback), the D2L coverage-
+        gated stem rescue and its selectivity-ordered probe ladder (N3/N3'), and
+        the N2 relaxed-single holdback/backfill that existed only to give that
+        rescue headroom. search() is now exactly: strict head, relaxed variants
+        on zero, zero-hit shadow fallback, nothing else.
 
-        F2 (Kravento PL eval 2026-08-12): the v0.5.0 folded-trigram shadow now runs
-        UNCONDITIONALLY and its hits are APPENDED after the primary hits (deduped
-        on the identity triple, capped at ``limit``) — it previously fired only on
-        a total zero-hit, so ANY weak/English primary hit hid same-fact rows in
-        other languages (query 'packshot' returned the English 'packshots' row and
-        skipped the Polish 'packshoty' row; worse as the store fills). Append-only:
-        the shadow can only extend the tail, never touch the primary head, so
-        English recall and existing ranking still cannot regress. prefix queries
-        early-return (prefix intent != substring fallback).
+        What is deliberately NOT removed: shadow.py in full (the folded-trigram
+        shadow table, its triggers, backfill and diacritic folding are the 0.5.0
+        foundation and the delivery vehicle for the stage-2 write-time
+        normalization), and multi_record.py in full (the abstention side — N4
+        any-df function-word drop, N5 negation abstention, the df==0 abstention
+        and the diagnostics channel — is not part of this removal).
 
-        D2L (Kravento PL eval 2026-08-12): a coverage-gated stem rescue with a
-        rescue ladder, appended after the F2 raw shadow. The GATE probes only the
-        query tokens whose stem is not already substring-covered by the head, so a
-        query porter (or the raw shadow) already answered runs no stem work at all
-        — this is what keeps the pass off English at scale. When some token is
-        uncovered the LADDER runs the fully-stemmed query first; if that appends
-        nothing it tries the uncovered stems as single-token probes, longest-first,
-        stopping at the first that appends. This turns fusional ending-replacement
-        (reklamacj-a/-e/-i) into the substring match the shadow solves and rescues
-        the realistic multi-token Polish class the raw shadow alone still misses
-        ('status reklamacji'). Still strictly append-only — every stage only
-        extends the tail, deduped and capped.
+        Rationale: four external evaluation cycles accreted these layers at
+        QUERY time, each one compensating for the previous one's side effects
+        (F2's unconditional append polluted df, N2 held rows back to make room
+        for D2L, N3 reordered D2L's probes, N3' removed its early stop and cost
+        18 junk rows on a single query). The fix belongs at WRITE time. This
+        strip restores a clean base to build that on; it is a deliberate,
+        measured recall regression in Polish, not a bug.
         """
         hits = self._search_strict(query, limit=limit, prefix=prefix, tiers=tiers)
-        if prefix:
-            return hits  # prefix intent != substring fallback (unchanged, v0.5.0)
-        relaxed_single = False
+        if hits or prefix:
+            return hits
+        for relaxed in _relaxed_query_strings(query):
+            hits = self._search_strict(relaxed, limit=limit, prefix=False, tiers=tiers)
+            if hits:
+                return hits
+        # v0.5.0 multi-language search (spec §4.3): zero-hit folded-trigram shadow
+        # fallback. Strictly additive — reached ONLY when the strict pass AND every
+        # relaxed variant produced nothing, so a non-empty result is never
+        # reordered or dropped and English/ranking behaviour cannot regress.
+        # prefix queries already returned above (prefix intent != substring
+        # fallback). The shadow gives substring semantics (matches inside an
+        # unbroken CJK/Thai/Bantu/compound token) + a folded copy for the
+        # non-decomposable ł/ß/ø/... class, in any language.
         if not hits:
-            for relaxed in _relaxed_query_strings(query):
-                hits = self._search_strict(relaxed, limit=limit, prefix=False, tiers=tiers)
-                if hits:
-                    # N2: record whether the winning variant was the single-token
-                    # last resort. Stopword-stripped multi-token winners are
-                    # excluded on purpose — they matched every content token, so
-                    # the D2L gate would already find those stems covered.
-                    relaxed_single = len(_match_tokens(relaxed)) == 1
-                    break
-        cap = _clamp_limit(limit)
-        # N2 (Kravento PL eval, 2026-08-16): relaxed single-token holdback. When
-        # the ONLY head came from the single-token last resort and it filled the
-        # cap with rows sharing one common token, reserve a slice of the tail so
-        # the F2 + D2L rescue stages below have headroom to run — a cap-filling
-        # relaxed head otherwise suppresses the very rescue that surfaces the
-        # inflected target (target loses the FTS-rank lottery for head slots). The
-        # held rows are re-appended after the rescue (backfill), so when the
-        # ladder rescues nothing the output is byte-identical to today, and when
-        # it rescues K rows the result is the truncated head + K rescue rows +
-        # backfilled held rows, still exactly cap. The strict head is untouched by
-        # construction: relaxed_single can only be True when _search_strict
-        # returned [] (the sole path into the relaxed loop).
-        held: list[dict[str, Any]] = []
-        if relaxed_single and cap >= 2 and len(hits) >= cap:
-            reserve = max(1, cap // 4)
-            held = hits[cap - reserve:]
-            hits = hits[:cap - reserve]
-        out = list(hits)
-        seen = {(h.get("tier"), h.get("category"), h.get("key")) for h in out}
-
-        def _append(rows) -> int:
-            """Append-only tail extension: add new-identity rows until the cap,
-            never touching or reordering the head. Returns the count appended."""
-            added = 0
-            for h in rows:
-                if len(out) >= cap:
-                    break
-                ident = (h.get("tier"), h.get("category"), h.get("key"))
-                if ident in seen:
-                    continue
-                seen.add(ident)
-                out.append(h)
-                added += 1
-            return added
-
-        # F2: the v0.5.0 folded-trigram shadow, run UNCONDITIONALLY and APPENDED
-        # after the head. It previously fired only on a total zero-hit, so any
-        # weak/English primary hit hid same-fact rows in other languages
-        # ('packshot' returned the English 'packshots' row and skipped the Polish
-        # 'packshoty' row; worse as the store fills). Append-only: it can only
-        # extend the tail, so English recall and existing ranking cannot regress.
-        if len(out) < cap:
-            _append(self._shadow_fallback(query, limit=limit, tiers=tiers))
-
-        # D2L: coverage-gated stem rescue with a rescue ladder. GATE — probe only
-        # tokens whose stem is not already substring-covered by the head text, so
-        # a query the strict/raw passes already answered runs no stem work at all.
-        # LADDER — run the fully-stemmed query first; if it appends nothing, try
-        # the uncovered stems as single-token probes, longest-first, stopping at
-        # the first that appends. Turns fusional ending-replacement into the
-        # substring match the shadow solves; every probe goes through
-        # _shadow_fallback (errors stay []) and stays append-only.
-        if len(out) < cap:
-            uncovered = _uncovered_stem_tokens(query, out)
-            if uncovered:
-                stemmed = _stem_truncated_query(query)
-                added = _append(self._shadow_fallback(stemmed, limit=limit, tiers=tiers)) if stemmed else 0
-                if not added and len(out) < cap:
-                    # N3 (Kravento PL eval, 2026-08-16; panel-hardened): selectivity-
-                    # ordered probe ladder, keeping the pinned stop-at-first-append
-                    # discipline WITHOUT truncating the candidate set. 0.6.0 probed
-                    # EVERY uncovered stem (longest-first, stopping at the first that
-                    # appended); this probes every uncovered stem too — so no
-                    # reachable target is dropped when a query has many uncovered
-                    # stems — but ORDERS by MEASURED selectivity: the probe returning
-                    # the FEWEST rows is the most discriminating and runs first, so a
-                    # saturated high-frequency stem ('aktualiza', 20 rows) can no
-                    # longer fill the tail ahead of a discriminating one ('cenni', 1
-                    # row incl. the target). Stem length is the tie-break, preserving
-                    # 0.6.0's winner (and its stop-at-first-append output) when probes
-                    # tie on hit count. The interim build capped the SELECTION at
-                    # _STEM_PROBE_MAX=8 longest stems to bound fan-out; that was
-                    # reverted before release because slicing the candidate set
-                    # TRUNCATED D2L recall (a target reachable only via a stem past
-                    # position 8 was never probed, a regression vs 0.6.0). Fan-out is
-                    # bounded exactly as in 0.6.0 — by the uncovered-stem count, which
-                    # equals the query's match-token count — with no NEW exposure: the
-                    # default MCP path reaches search() with single-token queries
-                    # (<=1 uncovered stem) and multi_record bounds its caller upstream
-                    # via _MAX_FANOUT_TOKENS. The loop keeps `if _append(rows)` (not
-                    # break-after-fetch) so a most-selective probe whose rows all dedup
-                    # against the head falls through to the next.
-                    # N3' (Kravento PL eval, 2026-08-18): the ladder used to
-                    # stop at the first probe that appended anything. For a
-                    # query naming TWO concepts ('reklamacji magazynie') that's
-                    # wrong: both rows answer the query, and stopping after the
-                    # first discards a row that was already fetched and paid
-                    # for. Continue the ladder while len(out) < cap instead of
-                    # breaking at the first append; the cap already bounds
-                    # fan-out (probes are all fetched up front, above), and the
-                    # tie-break ORDER this used to encode — longer/more-
-                    # selective stem leads — is unchanged, only the early stop
-                    # is gone.
-                    probes = sorted(uncovered, key=lambda p: len(p[1]), reverse=True)
-                    fetched = [(stem, self._shadow_fallback(stem, limit=limit, tiers=tiers))
-                               for _tok, stem in probes]
-                    fetched = [sr for sr in fetched if sr[1]]  # drop empty probes
-                    fetched.sort(key=lambda sr: (len(sr[1]), -len(sr[0])))
-                    for _stem, rows in fetched:
-                        _append(rows)
-                        if len(out) >= cap:
-                            break
-        # N2 backfill: re-append the held relaxed-single tail after the rescue. If
-        # the ladder appended nothing every held row returns in its original order
-        # (byte-identical to pre-holdback); otherwise the rescued rows take the
-        # reserved slots first and the remainder backfill — still dedup-safe and
-        # capped via _append.
-        _append(held)
-        return out
+            hits = self._shadow_fallback(query, limit=limit, tiers=tiers)
+        return hits
 
     def _shadow_fallback(self, query: str, *, limit: int = 20,
                          tiers: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
