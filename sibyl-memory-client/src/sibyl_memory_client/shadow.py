@@ -795,6 +795,20 @@ def _content_terms(
             if a or (len(t) >= 3 and _is_unspaced(t))]
 
 
+def _append_order(v: dict):
+    """Total, content-stable ordering for shadow candidates.
+
+    Coverage first, then the idf-weighted score, then whole-word exactness, then
+    word-start matches, then BM25. The final tie-break is the row TEXT, not its
+    key: a journal row's business key is a uuid4 minted at write time, so ordering
+    two otherwise-tied journal rows by k2 made the RESULT ORDER depend on which
+    uuid happened to be generated, and the journal-heavy LongMemEval stores
+    produced two adjacent journal rows swapping places between runs of identical
+    code. Text is content-derived and therefore stable across rebuilds."""
+    return (-len(v["cover"]), -v["score"], -v["exact"], -v["anchored"],
+            v["rank"], v["tier"], v["k1"], v["txt"], v["k2"])
+
+
 def _is_decisive(v: dict, match_terms: list[tuple[str, bool, str]]) -> bool:
     """The append guard, per candidate row. See _shadow_search_normalized.
 
@@ -966,15 +980,79 @@ def _shadow_search_normalized(conn: sqlite3.Connection, tenant_id: str, query: s
         if not cand:
             return []
 
-    # ELIGIBILITY is score alone; `exact` and `anchored` only ORDER the rows that
-    # tied on it. That separation is load-bearing: 'packshot' scores the English
-    # and the Polish row identically, and only the English one carries the whole
-    # word, so letting exactness filter would drop the Polish twin and re-create
-    # the very masking this build exists to close. It orders, it does not select.
-    best = max(v["score"] for v in cand.values())
-    keep = [v for v in cand.values() if v["score"] == best]
-    keep.sort(key=lambda v: (-v["exact"], -v["anchored"], v["rank"],
-                             v["tier"], v["k1"], v["k2"]))
+    # ELIGIBILITY is COVERAGE COUNT: how many distinct query terms the row
+    # satisfies. Everything else (the idf-weighted score, whole-word exactness,
+    # word-start matches, BM25) only ORDERS the rows that tied on it.
+    #
+    # That separation is load-bearing three times over. 'packshot' scores the
+    # English and the Polish row identically and only the English one carries the
+    # whole word, so letting exactness filter would drop the Polish twin and
+    # re-create the masking this build exists to close. And letting the idf SCORE
+    # filter was measured, on the LongMemEval English workload, to collapse a long
+    # natural-language question to a single row: on 'How many tanks do I currently
+    # have, including the one I set up for my friend's kid?' every candidate
+    # covers exactly ONE of the three content terms, and a CO2 fertiliser row
+    # matching the rare 'curren' outscored every row matching 'frien', so the four
+    # rows that actually answered the question were discarded. Rarity is a fine
+    # reason to rank one row above another and a terrible reason to delete the
+    # rest: coverage says how much of the question a row answers, which is what
+    # eligibility should mean, and it still returns exactly one row for
+    # 'aktualizacja cennika hurtowego', where the pricelist row covers three terms
+    # and the noise rows cover one.
+    if decisive_only:
+        # APPEND path. Narrowing to the single best-covered group here is what
+        # made the branch retrieve a strict SUBSET of 0.7.0 on long English
+        # questions: on 'How much did I earn at the Downtown Farmers Market on my
+        # most recent visit?' the row stating the answer covers one term fewer
+        # than the session record and was dropped for it. Taking EVERYTHING the
+        # guard passes is the other extreme and is just as wrong: 'complaint
+        # review deadline' then appends nineteen stored notes, every one of which
+        # legitimately carries the word "deadline" and none of which is about a
+        # complaint.
+        #
+        # The rule between them is CORROBORATION, the same principle _is_decisive
+        # already applies to a single-token query: a row must satisfy at least TWO
+        # of the query's content terms to be appended to an answer that already
+        # exists. When no row in the store manages two, there is nothing to
+        # corroborate with and the argmax stands, which is what keeps the
+        # single-term twin recovery ('packshot' finding 'packshoty') working.
+        best = max(len(v["cover"]) for v in cand.values())
+        if best < 2:
+            # Nothing in the store corroborates, so there is nothing to rank
+            # against and every guarded row stands. This is the single-term twin
+            # recovery ('packshot' finding 'packshoty').
+            keep = list(cand.values())
+        else:
+            # Rows that satisfy two or more terms corroborate and all stand.
+            # Rows that satisfy exactly ONE are weak evidence, so they are
+            # BUDGETED rather than admitted or refused wholesale: at most as many
+            # of them as the query has content terms, best-scoring first. Both
+            # extremes were measured and both are wrong. Refusing them loses the
+            # row that states the answer on 'What type of camera lens did I
+            # purchase most recently?' and half the tank rows on 'How many tanks
+            # do I currently have'. Admitting them all appends nineteen stored
+            # notes to 'complaint review deadline', every one carrying the word
+            # "deadline" and none about a complaint. The budget is the query's own
+            # term count, the only query-derived bound available here, so it does
+            # not scale with the store and cannot be tuned against a corpus.
+            strong = [v for v in cand.values() if len(v["cover"]) >= 2]
+            weak = [v for v in cand.values() if len(v["cover"]) == 1]
+            weak.sort(key=_append_order)
+            keep = strong + weak[:len(match_terms)]
+    else:
+        # ZERO-HIT path. Nothing else filters here, so coverage argmax is the only
+        # precision control and it stays: 'aktualizacja cennika hurtowego' returns
+        # the one pricelist row covering three terms instead of the forty noise
+        # rows covering one, which is the whole of the N7 finding.
+        best = max(len(v["cover"]) for v in cand.values())
+        keep = [v for v in cand.values() if len(v["cover"]) == best]
+    # The final tie-break is the row TEXT, not its key. A journal row's business
+    # key is a uuid4 minted at write time, so ordering two otherwise-tied journal
+    # rows by k2 made the RESULT ORDER depend on which uuid happened to be
+    # generated: the LongMemEval store, which is journal-heavy, produced two
+    # adjacent journal rows swapping places between runs of identical code. Text
+    # is content-derived and therefore stable across rebuilds of the same store.
+    keep.sort(key=_append_order)
     return _shape_rows(conn, tenant_id, [(v["txt"], v["tier"], v["k1"], v["k2"],
                                           v["rank"]) for v in keep], limit)
 

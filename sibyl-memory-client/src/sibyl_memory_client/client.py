@@ -596,20 +596,19 @@ def _relaxed_query_variants(query: str):
 # removed code verbatim if it is ever needed for reference.
 
 
-def _single_inflected_token(query: str) -> bool:
-    """True for a one-token query whose token the normalizer actually shortened.
+def _unshortened_single_token(query: str) -> bool:
+    """True for a ONE-token query whose token the ending rule left alone.
 
-    This is the ONLY condition under which search() consults the shadow on a
-    NON-empty strict head (§ twin masking, below). Deliberately narrow:
-      * one token, so every multi-word query keeps the pure zero-hit contract;
-      * shortened, so 'stock' / 'form' / 'k8' — anything the ending rule leaves
-        alone — behave exactly as they did on the stripped base. That is what
-        preserves the precision the strip bought ('stock' no longer dragging in
-        'stocktake' through a substring append).
+    The single shape that gets no shadow consult on a non-empty strict head. Such
+    a token has nothing to recover and nothing to corroborate with: no inflected
+    variant the truncation could reach, and no second term to agree with it. So
+    'stock', 'form' and 'k8' behave exactly as they did on the stripped base,
+    which is what keeps 'stock' from dragging in 'stocktake' through a substring
+    append and keeps df at 1 where the strip put it.
     """
     from .shadow import normalize_terms
     terms = normalize_terms(query)
-    return len(terms) == 1 and terms[0][1]
+    return len(terms) == 1 and not terms[0][1]
 
 
 # F5 (red-team 2026-06-17): sanity ceiling on a single serialized body. The 5 MB
@@ -1398,28 +1397,36 @@ class MemoryClient:
         if prefix:
             return hits
         if hits:
-            # TWIN MASKING (2026-08-07 Finding 2; back after lang-core-strip,
-            # closed here). A single-token query can be SATISFIED by a row in the
-            # other language and thereby hide the row in the query's own language:
-            # 'packshot' porter-matches the English 'packshots' row, the head is
-            # non-empty, the zero-hit gate is satisfied, and the Polish
-            # 'Packshoty produktów' row is never reached. A whole-query zero gate
-            # structurally cannot see this, so the ONE case where a non-empty head
-            # still consults the shadow is a single token the normalizer
-            # shortened — which is also exactly the shape multi_record's df probes
-            # take, so it is what makes df truthful for inflected forms.
+            # THE NON-EMPTY-HEAD APPEND. The strict head is returned first and
+            # untouched, always; the shadow may only extend its tail, under the
+            # decisive guard, and only when it has something the head lacks.
             #
-            # Strictly append-only: the strict head keeps its order and its rows,
-            # shadow rows are appended after it, identity triples are de-duped and
-            # the caller's limit still caps the total. The 0.7.0 F2 append this
-            # replaces fired on EVERY query and cost 39 English noise rows; this
-            # one cannot fire on a multi-word query at all.
-            if _single_inflected_token(query):
-                # decisive_only: the consult fires on a head that ALREADY
-                # answered, so the shadow may only extend it with a row it
-                # genuinely singled out (see shadow._shadow_search_normalized).
-                # The zero-hit path below, where the alternative is nothing at
-                # all, is deliberately not guarded.
+            # Two distinct recalls ride on this, and they were closed at different
+            # times for different reasons.
+            #
+            # TWIN MASKING (2026-08-07 Finding 2). A single-token query can be
+            # SATISFIED by a row in the other language and thereby hide the row in
+            # the query's own: 'packshot' porter-matches the English 'packshots'
+            # row, the head is non-empty, and the Polish 'Packshoty produktów' row
+            # is never reached. A whole-query zero gate structurally cannot see
+            # this. It is also the shape multi_record's df probes take, so this is
+            # what makes df truthful for inflected forms.
+            #
+            # LONG NATURAL-LANGUAGE RECALL (LongMemEval parity, 2026-08-31). The
+            # 0.7.0 F2 append also served real recall on MULTI-WORD queries with a
+            # non-empty head, and removing it wholesale made this branch retrieve a
+            # strict SUBSET of 0.7.0 on that workload: 9 of 100 questions lost
+            # answer-bearing context and 2 lost it entirely, because a long
+            # question's strict AND head is often one weak row and everything that
+            # actually answered it arrived in the appended tail. F2's diseases came
+            # from the append being UNGUARDED, not from the append existing, so the
+            # append is back for multi-token queries with the guard in front of it.
+            #
+            # The single exception is a single token the ending rule left alone
+            # ('stock', 'form', 'k8'): those have no inflected form to recover and
+            # no second term to corroborate, so they get no probe at all, which is
+            # what preserves the precision the strip bought.
+            if not _unshortened_single_token(query):
                 hits = self._append_shadow(hits, query, limit=limit, tiers=tiers,
                                            decisive_only=True)
             return hits
@@ -1474,17 +1481,21 @@ class MemoryClient:
         # §5 with the acceptance amendment. Ranking a weak head below a better
         # answer is scoring work, not a query-time special case.
         relaxed_hits: list[dict[str, Any]] = []
-        last_resort_head = False
-        for relaxed, last_resort in _relaxed_query_variants(query):
+        for relaxed, _last_resort in _relaxed_query_variants(query):
             found = self._search_strict(relaxed, limit=limit, prefix=False,
                                         tiers=tiers)
             if found:
                 relaxed_hits = found
-                last_resort_head = last_resort
                 break
-        if relaxed_hits and not last_resort_head:
-            return relaxed_hits
         if relaxed_hits:
+            # Either stage's head keeps its rows and its order, and the shadow is
+            # APPENDED after it under the guard. Until 2026-08-31 a stage-1
+            # conjunction head returned outright with no append, and the
+            # LongMemEval parity run measured what that costs: on 'How much did I
+            # earn at the Downtown Farmers Market on my most recent visit?' the
+            # conjunction answers with one raw session and the row that states the
+            # figure was one guarded probe away. A head is a reason to rank the
+            # shadow below it, not a reason to refuse to look.
             return self._append_shadow(relaxed_hits, query, limit=limit,
                                        tiers=tiers, decisive_only=True)
         return self._shadow_fallback(query, limit=limit, tiers=tiers,

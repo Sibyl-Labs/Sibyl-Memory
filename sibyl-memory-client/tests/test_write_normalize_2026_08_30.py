@@ -262,15 +262,22 @@ def test_twin_masking_single_token_surfaces_the_other_language(tmp_path):
     assert "packshoty-produktowe" in keys          # masked twin recovered
 
 
-def test_twin_append_does_not_fire_on_a_multiword_query(tmp_path):
-    """The append is deliberately single-token. A multi-word query with a
-    non-empty strict head is returned byte-identical to the strict head — this is
-    what keeps the 0.7.0 F2 English noise from coming back with the fix."""
+def test_multiword_append_keeps_the_strict_head_as_a_prefix(tmp_path):
+    """SUPERSEDES the 2026-08-30 version of this test, which asserted that a
+    multi-word query with a non-empty strict head is returned byte-identical to
+    the head. That was the design until the LongMemEval parity run measured what
+    it costs on long English questions (see test_adversarial), and the append is
+    now allowed on multi-word queries too, behind the same guard.
+
+    What still holds, and is the actual contract: the strict head keeps its rows
+    AND its order at the front of the result. Only the tail may grow."""
     c = _twin_store(tmp_path)
     q = "product packshot white"
     strict = c._search_strict(q, limit=10)
     assert strict, "pre-condition: strict must be non-empty"
-    assert c.search(q, limit=10) == strict
+    got = c.search(q, limit=10)
+    ident = lambda rows: [(h["tier"], h["category"], h["key"]) for h in rows]
+    assert ident(got)[:len(strict)] == ident(strict)
 
 
 def test_twin_append_does_not_fire_on_an_untruncated_token(tmp_path):

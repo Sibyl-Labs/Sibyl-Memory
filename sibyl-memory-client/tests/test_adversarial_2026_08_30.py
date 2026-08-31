@@ -527,3 +527,136 @@ def test_equal_length_tie_is_broken_alphabetically():
     from sibyl_memory_client.client import _relaxed_query_variants
     seq = [c for c, lr in _relaxed_query_variants("yearly audits") if lr]
     assert seq == ["audits", "yearly"], seq
+
+
+# ==========================================================================
+# LongMemEval retrieval parity (2026-08-31). Long natural-language English
+# queries with a non-empty head, and the F2 pollution that must stay rejected.
+# ==========================================================================
+# The 0.7.0 F2 unconditional shadow append served real recall on multi-word
+# queries; removing it wholesale made the branch retrieve a strict SUBSET of
+# 0.7.0 on that workload. The append is back for multi-token queries, behind the
+# decisive guard plus a budget on weakly-corroborated rows. Fixtures below are
+# reduced from the questions quoted in the parity report.
+
+def test_lme_tanks_recovers_the_friend_rows(tmp_path):
+    """46a3abf7, one of the two total-loss questions. The strict head is a CO2
+    fertiliser row that has nothing to do with counting tanks; everything that
+    answers the question arrived in 0.7.0's appended tail."""
+    c = _store(tmp_path, [
+        ("purchases", "api_co2_booster",
+         {"item": "API_CO2_Booster", "usage": "plant_fertilization",
+          "status": "currently_using"}),
+        ("session_record", "s1_answer",
+         {"text": "I currently have two tanks at home, including the 1 gallon "
+                  "tank I set up for my friend's kid."}),
+        ("people", "friends_kid", {"relation": "friend's kid", "gift": "1 gallon tank"}),
+        ("possessions", "1_gallon_tank_friends_kid",
+         {"size_gallons": 1, "setup_for": "friends_kid", "inhabitants": ["guppies"]}),
+    ], name="tanks.db")
+    q = ("How many tanks do I currently have, including the one I set up for "
+         "my friend's kid?")
+    strict = c._search_strict(q, limit=10)
+    got = c.search(q, limit=10)
+    ident = lambda rows: [(h["tier"], h["category"], h["key"]) for h in rows]
+    assert ident(got)[:len(strict)] == ident(strict), "strict head is a prefix"
+    keys = _keys(got)
+    assert "s1_answer" in keys, keys
+    assert "friends_kid" in keys or "1_gallon_tank_friends_kid" in keys, keys
+
+
+def test_lme_volleyball_recovers_the_later_session(tmp_path):
+    """c7dc5443, the other total-loss question. Knowledge-update: the branch kept
+    only the EARLIER of two sessions, which is the wrong one."""
+    c = _store(tmp_path, [
+        ("session_record", "s1_answer",
+         {"text": "Joined a recreational volleyball league, our record is 2-1 so far."}),
+        ("session_record", "s2_answer",
+         {"text": "Volleyball league update: our current record is 5-2 after "
+                  "the weekend games."}),
+        ("plans", "office_basketball_league", {"text": "Office basketball league sign-up."}),
+    ], name="volley.db")
+    got = _keys(c.search(
+        "What is my current record in the recreational volleyball league?", limit=10))
+    assert "s2_answer" in got, f"lost the session carrying the record: {got}"
+
+
+def test_lme_farmers_market_recovers_the_row_stating_the_figure(tmp_path):
+    """7e974930. The row that states the answer covers one term FEWER than the
+    raw session record, so a best-covered-group argmax dropped it."""
+    c = _store(tmp_path, [
+        ("session_record", "s2_answer",
+         {"text": "At the Downtown Farmers Market most recent visit I earned 420 dollars."}),
+        ("events", "downtown_farmers_market_2023_03_18",
+         {"venue": "Downtown Farmers Market", "revenue": 220}),
+        ("events", "downtown_farmers_market_recent_2023_09",
+         {"venue": "Downtown Farmers Market", "date": "2023-09", "revenue": 420}),
+    ], name="market.db")
+    got = _keys(c.search(
+        "How much did I earn at the Downtown Farmers Market on my most recent visit?",
+        limit=10))
+    assert "downtown_farmers_market_recent_2023_09" in got, got
+
+
+def test_multiword_append_does_not_readmit_the_contr_family(tmp_path):
+    """The historic F2 pollution, on the path the append was just re-opened on.
+    'contract' truncates to the five-character 'contr', which as a free substring
+    reaches control, contrast, contribution, contrary and contralto."""
+    c = _store(tmp_path, [
+        ("legal", "vendor-contract", {"text": "The vendor contract renews in March."}),
+        ("plan", "renewal-dates", {"text": "Renewal dates for every insurance policy."}),
+    ] + PREFIX_FAMILY, name="contr-multi.db")
+    for q in ("contract renewal terms", "when does the contract renew",
+              "contract renewal"):
+        got = _keys(c.search(q, limit=20))
+        for decoy in ("contrast-ratio", "access-control", "contributions",
+                      "contrary-view", "contralto-part"):
+            assert decoy not in got, f"{q!r} re-admitted {decoy}: {got}"
+
+
+def test_multiword_append_does_not_readmit_the_our_courier_pollution(tmp_path):
+    """The N4 substring-'our' case (Kravento PL eval 2026-08-18): 'our' matches
+    inside 'c-our-ier'. It cannot pollute the append because a three-character
+    token is never shortened and so is never a content term at all."""
+    from sibyl_memory_client.shadow import _content_terms, normalize_terms
+    assert not any(t == "our" for t, _a, _r in
+                   _content_terms(normalize_terms("where are our warehouses")))
+    c = _store(tmp_path, [
+        ("storage", "main-warehouse", {"text": "The main warehouse is in Belzyce."}),
+        ("delivery", "courier-pickups", {"text": "Courier pickups happen every day."}),
+    ], name="our.db")
+    got = _keys(c.search("where are our warehouses", limit=20))
+    assert "courier-pickups" not in got, got
+
+
+def test_weakly_corroborated_rows_are_budgeted_not_swept(tmp_path):
+    """A term every stored note happens to carry must not drag them all in. The
+    budget is the query's own content-term count, so this cannot scale with the
+    store."""
+    ents = [("support", "complaints-handling",
+             {"text": "Every complaint must be resolved within 7 days; that "
+                      "deadline is firm."})]
+    ents += [("ops", f"note-{i}",
+              {"text": f"Project {i} is delayed, the deadline moved."})
+             for i in range(20)]
+    c = _store(tmp_path, ents, name="deadline.db")
+    got = _keys(c.search("complaint review deadline", limit=20))
+    assert got[0] == "complaints-handling"
+    notes = [k for k in got if k.startswith("note-")]
+    assert len(notes) <= 3, f"budget breached, {len(notes)} notes appended: {got}"
+
+
+def test_append_never_reorders_or_drops_the_strict_head(tmp_path):
+    """The invariant the whole append rests on, checked across query shapes."""
+    c = _store(tmp_path, [
+        ("legal", "vendor-contract", {"text": "The vendor contract renews in March."}),
+        ("plan", "renewal-dates", {"text": "Renewal dates for every insurance policy."}),
+    ] + PREFIX_FAMILY, name="headinv.db")
+    ident = lambda rows: [(h["tier"], h["category"], h["key"]) for h in rows]
+    for q in ("contract", "contract renewal", "vendor contract renewal terms",
+              "renewal dates policy"):
+        for limit in (1, 3, 10, 20):
+            strict = c._search_strict(q, limit=limit)
+            got = c.search(q, limit=limit)
+            assert ident(got)[:len(strict)] == ident(strict), (q, limit)
+            assert len(got) <= limit, (q, limit)
