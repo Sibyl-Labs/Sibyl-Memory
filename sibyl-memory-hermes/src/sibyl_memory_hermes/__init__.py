@@ -38,7 +38,7 @@ HERMES INSTALL FLOW
     #   memory:
     #     provider: sibyl
 
-    # (optional) bind your account to lift the 2 MB free-tier cap:
+    # (optional) bind your account to lift the 5 MB free-tier cap:
     pip install sibyl-memory-cli
     sibyl init
 

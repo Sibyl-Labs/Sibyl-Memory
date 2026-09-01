@@ -11,7 +11,7 @@
   - memory_record_event    append a COLD-tier journal event
 
 All operations run against the local SQLite at ~/.sibyl-memory/memory.db.
-The cap gate (free-tier 2 MB hard cap, paid-tier uncapped) is enforced
+The cap gate (free-tier 5 MB hard cap, paid-tier uncapped) is enforced
 automatically by the underlying sibyl-memory-client SDK: the MCP server
 just surfaces the typed errors back to the caller.
 
@@ -222,7 +222,7 @@ def _err(e: Exception) -> NoReturn:
     payload = {"error": cls, "message": str(e)}
     if isinstance(e, CapExceededError):
         payload["code"] = "CAP_EXCEEDED"
-        payload["recovery"] = "Run `sibyl upgrade` to lift the 2 MB free-tier cap."
+        payload["recovery"] = "Run `sibyl upgrade` to lift the 5 MB free-tier cap."
         payload["upgrade_url"] = getattr(e, "upgrade_url", "https://sibyllabs.org/plugin/upgrade")
     elif isinstance(e, TierGateError):
         payload["code"] = "TIER_GATED"
