@@ -130,7 +130,7 @@ Full docs at [docs.sibyllabs.org/memory/integrations](https://docs.sibyllabs.org
 
 ## Tier behavior
 
-- **Free tier**: 8 tools work. Hard-capped at 2 MB of local storage. Writes that would push past the cap return `CAP_EXCEEDED` with an `upgrade_url`. Self-learning and memory-check-up tools are not exposed on free tier.
+- **Free tier**: 8 tools work. Hard-capped at 5 MB of local storage. Writes that would push past the cap return `CAP_EXCEEDED` with an `upgrade_url`. Self-learning and memory-check-up tools are not exposed on free tier.
 - **Paid tiers** (Sync / Stake / Lifetime / Enterprise): cap removed. All tools enabled.
 
 The cap-gate runs against the **server-authoritative** tier (verified via HMAC-signed credentials): the MCP server can't bypass it by editing the local file.

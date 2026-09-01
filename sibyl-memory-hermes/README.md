@@ -31,7 +31,7 @@ Restart Hermes. Four tools become available to the agent:
 - `sibyl_search(query)`. FTS5 search across **all four tiers** (entities, state, journal, reference); hits are tier-tagged
 - `sibyl_list(category?, status?)`: browse what's remembered
 
-Optional: lift the 2 MB free-tier cap by binding your account:
+Optional: lift the 5 MB free-tier cap by binding your account:
 
 ```bash
 pip install sibyl-memory-cli
@@ -112,7 +112,7 @@ provider = SibylMemoryProvider(
 
 ## Free tier
 
-- 2 MB local soft cap (with server-authoritative tier verification at the cap boundary)
+- 5 MB local soft cap (with server-authoritative tier verification at the cap boundary)
 - Single device
 - All five tiers (HOT/WARM/COLD/REFERENCE/ARCHIVE)
 - FTS5 full-text search across entities + state + reference + journal

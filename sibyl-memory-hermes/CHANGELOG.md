@@ -4,6 +4,12 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- User-facing copy corrected from 2 MB to 5 MB to match the free-tier cap
+  raised in `sibyl-memory-client` 0.5.0. No behaviour change.
+
 ## [0.4.0] "Lucid" - 2026-08-31
 
 Minor version: `search_multi_record` and `search` now return a `SearchResults`
