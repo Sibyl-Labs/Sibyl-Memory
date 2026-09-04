@@ -66,7 +66,10 @@ from .exceptions import (  # noqa: F401  (re-exported for backwards compat)
 # v0.5.0 folded-trigram search shadow's added on-disk footprint (spec §6).
 FREE_TIER_CAP_BYTES = 5 * 1024 * 1024  # 5 MB (5,242,880 bytes)
 GRACE_PERIOD_SECONDS = 7 * 24 * 60 * 60  # 7 days
-PAID_TIERS = frozenset({"sync", "team", "lifetime", "stake", "enterprise"})
+# 'pro' is THE single upgraded tier as of 2026-09-03: card (Stripe), USDC
+# (x402), and staker qualification all resolve to it server-side. The other
+# names are legacy labels still live on historical subscription rows.
+PAID_TIERS = frozenset({"pro", "sync", "team", "lifetime", "stake", "enterprise"})
 
 DEFAULT_CHECK_WRITE_URL = "https://api.sibyllabs.org/api/plugin/check-write"
 DEFAULT_UPGRADE_URL = "https://docs.sibyllabs.org/memory/tiers"
