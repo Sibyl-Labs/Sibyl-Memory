@@ -695,11 +695,20 @@ def cmd_status(args: argparse.Namespace) -> int:
             # write burst (committed pages still in memory.db-wal), so the
             # displayed size/percentage would otherwise disagree with the gate.
             from sibyl_memory_client.storage import db_size_bytes
+            from sibyl_memory_client._capcheck import FREE_TIER_CAP_BYTES, PAID_TIERS
 
             size = db_size_bytes(db_path)
-            pct = size / 2_097_152 * 100
-            size_label = f"{size:,} bytes ({size / (1024 * 1024):.2f} MB · {pct:.1f}% of free cap)"
-            size_color = "warn" if pct > 80 else "soft"
+            # Panel fix 2026-09-04: the divisor was a hardcoded pre-2026-08-06
+            # 2 MiB; the free cap is FREE_TIER_CAP_BYTES (5 MiB). And a paid
+            # tier has no cap, so no percentage is shown for it.
+            tier_now = (creds.get("tier") or "free") if creds else "free"
+            if tier_now in PAID_TIERS:
+                size_label = f"{size:,} bytes ({size / (1024 * 1024):.2f} MB · uncapped)"
+                size_color = "soft"
+            else:
+                pct = size / FREE_TIER_CAP_BYTES * 100
+                size_label = f"{size:,} bytes ({size / (1024 * 1024):.2f} MB · {pct:.1f}% of free cap)"
+                size_color = "warn" if pct > 80 else "soft"
             print(a.kv("DB path", str(db_path)))
             print(a.kv("DB size", size_label, value_color=size_color))
     else:
