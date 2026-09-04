@@ -4,6 +4,24 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.8.1] - 2026-09-03
+
+### Added
+- Tier `pro` is recognized as a paid tier everywhere a tier name is consulted
+  (`PAID_TIERS` in the cap check, `_PAID_ONLY_TIERS` feature gates,
+  `TIER_SOFT_CAPS` in the linter). `pro` is now THE single upgraded tier:
+  card purchases (Stripe), USDC purchases (x402), and $SIBYL staker
+  qualification all resolve to it server-side. Legacy paid tier names
+  (`sync`, `team`, `lifetime`, `stake`, `enterprise`) remain recognized for
+  historical subscriptions.
+- Dated regression tests pin the three tier surfaces to each other so a
+  server-side tier name the client does not know can never silently demote
+  a paying user again (`tests/test_pro_tier_2026_09_03.py`).
+
+### Fixed
+- Free-tier cap copy now says 5 MB everywhere (the cap itself has been
+  5 MiB since 0.5.0; 0.8.0 shipped with two stale 2 MB strings).
+
 ## [0.8.0] "Lucid" - 2026-08-31
 
 The multilingual search stack was rebuilt: the query-time rescue layers that four
