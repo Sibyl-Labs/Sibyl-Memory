@@ -297,7 +297,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         existing = read_credentials(cred_path) or {}
         print(a.section_header("already activated", subtitle="use --force to re-activate"))
         print()
-        print(a.kv("Account", short(existing.get("account_id"))))
+        print(a.kv("Account", existing.get("account_id") or "—"))
         print(a.kv("Tier", (existing.get("tier") or "free").upper(), value_color="accent"))
         print(a.kv("Credentials", str(cred_path)))
         print()
@@ -439,7 +439,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             print()
             print(a.success_line("Activated."))
             print()
-            print(a.kv("Account", short(creds.get("account_id"))))
+            print(a.kv("Account", creds.get("account_id") or "—"))
             print(a.kv("Tier", (creds.get("tier") or "free").upper(), value_color="accent"))
             print(a.kv("Wallet", creds.get("wallet") or "—"))
             print(a.kv("Email", creds.get("email") or "—"))
@@ -508,7 +508,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     print()
     print(a.section_header("upgrade", subtitle="lift the 5 MB free-tier cap"))
     print()
-    print(a.kv("Account", short(account_id)))
+    print(a.kv("Account", account_id or "—"))
     print(a.kv("Current tier", current_tier.upper(), value_color="accent"))
     # F3 (red-team 2026-06-17): never print the bearer to stdout (terminal
     # scrollback / tmux / CI logs / screen-shares) — restores the invariant
@@ -672,7 +672,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     # Local view
     print(a.eyebrow("local"))
     print(a.kv("Credentials", str(cred_path)))
-    print(a.kv("Account", short(creds.get("account_id"))))
+    print(a.kv("Account", creds.get("account_id") or "—"))
     print(a.kv("Tier", (creds.get("tier") or "free").upper(), value_color="accent"))
     print(a.kv("Wallet", creds.get("wallet") or "—"))
     print(a.kv("Email", creds.get("email") or "—"))
@@ -852,13 +852,90 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     wallet = creds.get("wallet") if full else _mask_wallet(creds.get("wallet"))
 
     print()
-    print(f"  {a.color('account', a.INK_FAINT)}  {a.bold(short(acct))}  {a.dim(a.GLYPH_DOT)}  {a.gradient_gold(tier)}")
+    print(f"  {a.color('account', a.INK_FAINT)}  {a.bold(acct or "—")}  {a.dim(a.GLYPH_DOT)}  {a.gradient_gold(tier)}")
     print(f"  {a.color('wallet ', a.INK_FAINT)}  {a.color(wallet or '—', a.INK)}")
     print(f"  {a.color('email  ', a.INK_FAINT)}  {a.color(email or '—', a.INK)}")
     os_label = _detect_os_family() or "unknown"
     device_line = f"sibyl-memory-cli/{_client_version()} {os_label}"
     print(f"  {a.color('device ', a.INK_FAINT)}  {a.dim(device_line)}")
     print()
+    return 0
+
+
+# ---- `sibyl claim` -----------------------------------------------------
+
+def _looks_like_checkout_code(cs: str) -> bool:
+    """Mirror of the server's CS_ID_RE without importing re: cs_ prefix,
+    optional test_/live_ marker, then 10..240 alphanumerics."""
+    if not cs.startswith("cs_"):
+        return False
+    rest = cs[3:]
+    for marker in ("test_", "live_"):
+        if rest.startswith(marker):
+            rest = rest[len(marker):]
+            break
+    return 10 <= len(rest) <= 240 and rest.isalnum()
+
+
+def cmd_claim(args: argparse.Namespace) -> int:
+    """Link a card purchase (Stripe checkout) to this account.
+
+    Buy-before-install: the page after checkout shows the buyer their
+    checkout code (cs_...). This redeems it onto the account activated on
+    this machine — email or wallet activation both work. The bearer rides
+    along as session_token so the server verifies the caller controls the
+    destination account, not just the receipt.
+    """
+    cs = (getattr(args, "checkout_code", "") or "").strip()
+    if not _looks_like_checkout_code(cs):
+        print(a.warn_line("That does not look like a checkout code."))
+        print(a.dim("  It starts with cs_ and appears on the page you landed on after paying"))
+        print(a.dim("  (sibyllabs.org/pro/welcome). Copy the whole code."))
+        return 1
+
+    creds = read_credentials(Path(args.credentials).expanduser())
+    if not creds or not creds.get("account_id"):
+        print(a.warn_line("Not activated."))
+        print(a.dim("  Run `sibyl init` first, then `sibyl claim` again."))
+        return 1
+    account_id = creds["account_id"]
+
+    body: dict = {"cs": cs, "account_id": account_id}
+    token = creds.get("bearer_token") or creds.get("session_token")
+    if token:
+        body["session_token"] = token
+
+    try:
+        resp = http_request("POST", "/api/plugin/stripe-claim", body=body)
+    except HttpError as e:
+        msg = e.body.get("error") if isinstance(e.body, dict) else None
+        print(a.warn_line(f"Claim failed ({e.status or 'network'})."))
+        if msg:
+            print(a.dim(f"  {msg}"))
+        if e.status == 403:
+            print(a.dim("  This session does not match the account. Run `sibyl init`, then retry."))
+        elif e.status == 0:
+            print(a.dim("  Could not reach the server. Check your connection and retry."))
+        return 1
+
+    tier = (resp.get("tier") or "pro").upper()
+    print()
+    print(a.success_line(f"Purchase linked. Tier: {tier}"))
+    if resp.get("expires_at"):
+        print(a.kv("Covers through", str(resp["expires_at"])))
+    print(a.dim("  Run `sibyl status` to see it. Your agent picks it up next session."))
+    print()
+
+    # Sync local state so the very next write sees the new tier.
+    try:
+        creds["tier"] = resp.get("tier") or "pro"
+        write_credentials_atomic(creds, Path(args.credentials).expanduser())
+    except Exception:
+        pass  # server is the source of truth; local hint refreshes on next access check
+    try:
+        invalidate_tier_cache()
+    except Exception:
+        pass
     return 0
 
 
@@ -1428,6 +1505,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_up = sub.add_parser("upgrade", help="Open the upgrade flow (stake or subscribe)")
     p_up.set_defaults(func=cmd_upgrade)
+
+    p_claim = sub.add_parser("claim", help="Link a card purchase to this account (code from sibyllabs.org/pro/welcome)")
+    p_claim.add_argument("checkout_code", help="The cs_... checkout code shown after paying")
+    p_claim.set_defaults(func=cmd_claim)
 
     p_st = sub.add_parser("status", help="Show local + server tier / DB stats")
     p_st.set_defaults(func=cmd_status)
