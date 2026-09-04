@@ -11,7 +11,7 @@ Shape:
       "tenant_id":    "uuid OR email-like string",
       "email":        "alice@example.com",  // optional
       "wallet":       "0x...",              // optional
-      "tier":         "free | sync | team | lifetime | stake | enterprise",
+      "tier":         "free | pro | sync | team | lifetime | stake | enterprise",
       "issued_at":    "2026-05-21T14:32:18Z",
       "schema_version": 1
     }

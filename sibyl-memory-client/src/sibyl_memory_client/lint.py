@@ -59,6 +59,7 @@ EXPECTED_SCHEMA_VERSION = 2
 # Tier → soft cap mapping. None means uncapped.
 TIER_SOFT_CAPS: dict[str, int | None] = {
     "free": 5 * 1024 * 1024,        # 5 MB (raised 2026-08-06, see DEFAULT_SOFT_CAP_BYTES)
+    "pro": None,                     # uncapped: THE upgraded tier (card / usdc / staker)
     "sync": None,                    # uncapped: paid subscription
     "team": None,                    # uncapped: paid subscription
     "lifetime": None,                # uncapped: one-time payment

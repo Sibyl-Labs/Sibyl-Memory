@@ -683,7 +683,7 @@ class MemoryClient:
 
     # Paid-tier-only features. Free tier raises TierGateError; upgrading to any
     # paid tier unlocks both self-learning and the memory linter.
-    _PAID_ONLY_TIERS = frozenset({"sync", "team", "lifetime", "stake", "enterprise"})
+    _PAID_ONLY_TIERS = frozenset({"pro", "sync", "team", "lifetime", "stake", "enterprise"})
 
     def __init__(
         self,
