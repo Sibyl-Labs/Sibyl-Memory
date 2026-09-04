@@ -4,6 +4,24 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.4.1] - 2026-09-04
+
+### Added
+- `sibyl claim <code>`: links a card purchase (Stripe checkout) made at
+  sibyllabs.org/pro to the account activated on this machine. Works with
+  email and wallet activation alike. Sends the bearer as session_token so
+  the server verifies the caller controls the destination account, not
+  just the receipt. On success the local tier hint and tier cache sync
+  immediately.
+
+### Changed
+- The account id now prints IN FULL on every display surface (`whoami`,
+  `status`, `upgrade`, `init`) instead of the truncated `12345678…abcd`
+  form. It is a routing identifier the claim flow and the upcoming
+  accounts page require users to read verbatim; it is not a bearer secret,
+  and the never-print-the-bearer invariant is unchanged. Email and wallet
+  masking are unchanged (`--full` still governs those).
+
 ## [0.4.0] "Lucid" - 2026-08-31
 
 Minor version: `sibyl memory search` prints a new `cause:` line on the zero path,
