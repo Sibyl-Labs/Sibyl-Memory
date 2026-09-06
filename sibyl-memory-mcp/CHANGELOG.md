@@ -4,7 +4,24 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.2.1] - 2026-09-06
+
+### Changed
+- **Dependency floor raised to `sibyl-memory-client>=0.8.1`.** 0.8.1 carries the
+  Darwin trust-store fix (macOS framework-build Pythons could not verify
+  api.sibyllabs.org) and the cross-tier IDF corpus count. Without the floor a
+  `pip install -U sibyl-memory-mcp` could leave an unpatched client underneath,
+  which is the hazard the 0.7.0 floor bump closed the last time.
+- The `Operating System :: OS Independent` classifier was wrong and is replaced
+  by `Operating System :: POSIX :: Linux` and `Operating System :: MacOS`.
+  Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows
+  through WSL2. Native Windows is not supported. Classifiers are
+  informational; pip does not enforce them, and WSL2 installs look like Linux
+  to pip, which is correct.
+- The one-probe-per-zero cost pin in `test_verdict_contract_2026_08_31.py` now
+  reads four `COUNT(*)` instead of one, because client 0.8.1 made the IDF
+  corpus count cross-tier. The regression it guards, a DOUBLE walk of the
+  tables on a single zero, is still exactly what it fails on.
 
 ### Fixed
 - User-facing copy corrected from 2 MB to 5 MB to match the free-tier cap

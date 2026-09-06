@@ -21,6 +21,8 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Topic :: Database",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
 ]
 dependencies = [
   "certifi>=2024.7.4",

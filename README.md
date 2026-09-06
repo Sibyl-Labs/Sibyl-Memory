@@ -32,6 +32,8 @@
 
 Five PyPI packages, one schema family, one architecture.
 
+**Runs on** Linux, macOS (Apple Silicon and Intel), and Windows through WSL2. Native Windows is not supported.
+
 `sibyl-memory-client` is a local-first agentic memory SDK. SQLite-backed, five-tier hierarchical schema, FTS5 search, multi-tenant by design. No vector database. No embedding model. No external retrieval service. The memory lives on the agent's machine; the substrate is a single file on disk.
 
 > **Privacy disclosure.** Your memory content never leaves the machine. The only outbound network call is tier verification: when an activated account writes past its tier cap, the client calls `api.sibyllabs.org/api/plugin/check-write` with account metadata only (account id, session token, and the database's byte size and proposed delta) — never the contents of your memory. Verified against the source in `sibyl-memory-client/src/sibyl_memory_client/_capcheck.py`. Free, unactivated use makes no network calls at all.

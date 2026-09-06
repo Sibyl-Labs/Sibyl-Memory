@@ -152,6 +152,7 @@ def test_the_empty_store_probe_runs_once_per_zero_not_twice(wired):
     switch off.
 
     Counted at the storage layer, because the cost is invisible above it."""
+    from sibyl_memory_client.multi_record import _CORPUS_TIERS
     from sibyl_memory_client.storage import Storage
     mcp, c = wired
     _seed(c)
@@ -168,9 +169,15 @@ def test_the_empty_store_probe_runs_once_per_zero_not_twice(wired):
     finally:
         Storage.count_rows = real
     assert out["count"] == 0
-    # The linker takes exactly one `entities` COUNT for IDF weighting, and a
-    # non-zero one already proves the store is not empty, so the probe is free.
-    assert calls["n"] == 1, f"{calls['n']} COUNT(*) on one zero-result search"
+    # The linker takes one COUNT per recalled tier for IDF weighting, and a
+    # non-zero total already proves the store is not empty, so the probe is
+    # free. Counted against `_CORPUS_TIERS` rather than a literal: the corpus
+    # became cross-tier in client 0.8.1 (Sibyl-Labs/Sibyl-Memory#27), which
+    # moved this number from 1 to 4. The regression this test exists for is the
+    # DOUBLE walk, which would be twice that.
+    assert calls["n"] == len(_CORPUS_TIERS), (
+        f"{calls['n']} COUNT(*) on one zero-result search"
+    )
 
 
 def test_the_probe_still_identifies_a_journal_only_store_as_non_empty(wired):

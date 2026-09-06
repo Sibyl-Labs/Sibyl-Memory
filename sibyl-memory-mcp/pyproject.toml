@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sibyl-memory-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "MCP server for Sibyl Memory Plugin: wraps the local SQLite + FTS5 memory engine and exposes it to MCP-compatible agents (Claude Code, Codex, Cursor, Continue, anything that speaks MCP)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,12 +18,13 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
     "mcp>=1.0.0,<2",
-    "sibyl-memory-client>=0.8.0",
+    "sibyl-memory-client>=0.8.1",
     "sibyl-memory-hermes>=0.4.0",
 ]
 
