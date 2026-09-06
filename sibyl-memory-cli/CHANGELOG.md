@@ -13,6 +13,21 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
   the server verifies the caller controls the destination account, not
   just the receipt. On success the local tier hint and tier cache sync
   immediately.
+- **Platform line, and a native-Windows gate.** Sibyl Memory runs on Linux,
+  macOS (Apple Silicon and Intel), and Windows through WSL2. Native Windows is
+  not supported. `sibyl init` and `sibyl setup` now print the detected platform
+  and, on native Windows, refuse with a pointer to
+  https://docs.sibyllabs.org/memory/install#windows and the exit hatch
+  `SIBYL_ALLOW_NATIVE_WINDOWS=1`. Every other command is untouched, so a machine
+  that already activated on native Windows keeps `status`, `upgrade`, `claim`,
+  `devices`, `logout`, `health`, `memory` and `update` working. WSL2 reports as
+  Linux to Python and to us, so it passes with the label "Linux, WSL2". A
+  platform nobody has tested warns and continues; it is never blocked.
+  `sibyl status` gained a `Platform` row and `sibyl whoami` now names the
+  platform in the device line instead of the bare OS family.
+- `sibyl init` reports `os_version`, `arch` and `wsl` alongside `os_family` in
+  the session-init payload, so the account record can tell WSL2 from native
+  Windows. Kernel release string and machine type only, no PII.
 
 ### Changed
 - The account id now prints IN FULL on every display surface (`whoami`,
