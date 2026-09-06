@@ -230,7 +230,7 @@ class HttpError(Exception):
 def _https_context() -> ssl.SSLContext:
     """TLS context for every CLI network call (api.sibyllabs.org, pypi.org).
 
-    Prefers the shared certifi-backed trust context from sibyl-memory-client —
+    Prefers the shared certifi-backed trust context from sibyl-memory-client,
     the fix for macOS framework-build Pythons that ship an empty OpenSSL trust
     store (the `session-init failed (0)` / `Bind failed` / `server error: 0`
     class of report). Degrades to the stdlib default context when the client
