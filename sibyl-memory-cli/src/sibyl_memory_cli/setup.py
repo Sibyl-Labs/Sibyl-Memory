@@ -817,6 +817,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
     print(bold("Sibyl Memory Plugin setup"))
     print()
 
+    # Platform gate. `setup` wires a new machine, so it is one of the two
+    # commands the native-Windows block applies to (see cli.NATIVE_WINDOWS_POLICY).
+    from .cli import print_platform_line
+    if print_platform_line(gate=True) != 0:
+        return 1
+    print()
+
     # Detection
     if skip_present_check:
         detected = wirers
