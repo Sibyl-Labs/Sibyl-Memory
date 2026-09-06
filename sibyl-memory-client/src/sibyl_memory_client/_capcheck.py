@@ -348,8 +348,8 @@ def _default_check_write_fn(
     """Default network transport for the check-write call.
 
     Stdlib urllib transport; TLS trust comes from the shared certifi-backed
-    context (``_trust.https_context()``) so macOS framework-build Pythons —
-    which ship an empty OpenSSL trust store — verify api.sibyllabs.org
+    context (``_trust.https_context()``) so macOS framework-build Pythons,
+    which ship an empty OpenSSL trust store, verify api.sibyllabs.org
     correctly. certifi is the SDK's single runtime dependency (0.7.1). If the
     call fails (timeout, network error, non-2xx), raises TierVerificationError.
     Callers can pass in a custom fn for testing or for using their own
