@@ -394,13 +394,30 @@ def _significant_tokens(query: str):
 _MAX_FANOUT_TOKENS = 24
 
 
+# The tiers `_search_strict` actually recalls over. `df[t]` below is
+# `len(client.search(t, ...))`, which spans all four, so the corpus count has to
+# span the same four or `df` can exceed `corpus_n` and the IDF weight goes
+# negative (Sibyl-Labs/Sibyl-Memory#27). `storage.count_rows` allowlists all four.
+_CORPUS_TIERS = ("entities", "state_documents", "reference_documents", "journal_events")
+
+
 def _corpus_count(client) -> int:
-    """Cheap corpus size for IDF weighting (CORE-6/MH-3).
+    """Cheap corpus size for IDF weighting (CORE-6/MH-3, cross-tier since #27).
 
     Prefer the client's storage COUNT(*) over the old
     ``len(list_entities(limit=100000))``, which materialized + JSON-decoded every
     entity row just to count them. Falls back to the old path only if the cheap
     method is unavailable (older client without count_rows / storage access).
+
+    The count sums the four tiers ``_search_strict`` covers. Counting entities
+    alone under-reported the corpus by every state, reference and journal row,
+    so a store with one entity and forty journal events produced
+    ``df(term)=41 > corpus_n=1`` and a negative IDF weight, which inverted the
+    ranking and pushed full-match entities out of the results entirely.
+
+    The fallback path (no storage, or no tenant) still counts entities only and
+    therefore still under-counts. The non-negative clamp at the IDF line is what
+    keeps that path safe.
     """
     storage = getattr(client, "storage", None)
     tenant = None
@@ -412,7 +429,7 @@ def _corpus_count(client) -> int:
             tenant = None
     if storage is not None and tenant is not None and hasattr(storage, "count_rows"):
         try:
-            return storage.count_rows("entities", tenant)
+            return sum(storage.count_rows(tier, tenant) for tier in _CORPUS_TIERS)
         except Exception:
             pass
     # Fallback: bounded list (still cheaper than the old 100000 with the clamp).
@@ -684,7 +701,15 @@ def multi_record_search(client, query: str, *, limit: int = 10,
     if negation_dropped and NEGATION_POLICY == "abstain":
         return _finish([], negation_abstain_verdict(negation_dropped))
 
-    idf = {t: math.log((corpus_n + 1) / (df[t] + 1)) + 1.0 for t in toks}
+    # Clamped at zero (#27). A term seen in more records than the corpus count
+    # knows about is a counting bug, never evidence AGAINST a candidate: a
+    # negative weight flips the sign of `total` and inverts the whole ranking.
+    # Defense in depth for the entities-only fallback in `_corpus_count` and for
+    # callers that pass their own `corpus_n`.
+    idf = {
+        t: max(0.0, math.log((corpus_n + 1) / (df[t] + 1)) + 1.0)
+        for t in toks
+    }
     total = sum(idf.values()) or 1.0
 
     # Anchor-first: anchor terms are the rarest (most discriminating) tokens,

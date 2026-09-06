@@ -29,6 +29,20 @@ follows [SemVer](https://semver.org/).
 ### Fixed
 - Free-tier cap copy now says 5 MB everywhere (the cap itself has been
   5 MiB since 0.5.0; 0.8.0 shipped with two stale 2 MB strings).
+- **`multi_record_search` ranked a full-match entity out of the results in any
+  store with a journal.** The IDF corpus count read entities only, while the
+  document frequency behind it came from `client.search`, which recalls over
+  entities, state documents, reference documents and journal events. One entity
+  plus forty journal events gave `df=41` against `corpus_n=1`, the IDF weight
+  went negative, the score total flipped sign, and the record that matched the
+  query in full dropped out of the top ten. `_corpus_count` now sums the same
+  four tiers the search covers, and the IDF weight is clamped at zero so the
+  entities-only fallback path (and any caller passing its own `corpus_n`) can
+  never produce a negative weight either. Stores with large journals will see
+  journal-only partial matches stop outranking full entity matches; that is the
+  fix. Regression pinned in `tests/test_mrs_cross_tier_idf_2026_09_04.py`.
+  Reported with a reproducing test by @web3xDev
+  (Sibyl-Labs/Sibyl-Memory#27).
 - **macOS framework-build Pythons could not verify api.sibyllabs.org, so tier
   verification degraded and heartbeats vanished.** The python.org "Framework"
   build of Python on macOS ships without a CA bundle wired into
