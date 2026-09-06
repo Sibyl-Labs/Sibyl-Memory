@@ -1,0 +1,119 @@
+# macOS framework-Python smoke (Sibyl-Labs/Sibyl-Memory#29 / PR #30).
+#
+# Reproduces the reporter's environment exactly: the official python.org
+# "Framework" build, WITHOUT running its bundled Install Certificates.command.
+# That build ships no CA bundle wired into ssl.create_default_context(), so the
+# stdlib default context cannot verify api.sibyllabs.org. The fix is the
+# _trust.https_context() helper, which adds certifi's bundle to the platform
+# store. This proves the broken baseline first, then proves the fix. Manual
+# only: no macOS box on the lab side, so this is the publish gate.
+name: macOS framework-Python smoke
+
+on:
+  workflow_dispatch:
+
+env:
+  # Latest python.org macOS universal2 installer for 3.12 (3.12.10 is the last
+  # 3.12 with a binary installer; 3.12 is security-only after it).
+  # To refresh: pick the newest 3.12.x that returns 200 for
+  #   https://www.python.org/ftp/python/<ver>/python-<ver>-macos11.pkg
+  # then `curl -fsSLO <url> && shasum -a 256 <file>` and paste both below.
+  PY_URL: https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg
+  PY_SHA256: 8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4
+  PY_FRAMEWORK: /Library/Frameworks/Python.framework/Versions/3.12/bin/python3
+  PROBE_URL: https://api.sibyllabs.org/api/plugin/health
+
+jobs:
+  wheels:
+    name: build wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip build
+      - name: build
+        run: |
+          set -eux
+          for pkg in sibyl-memory-client sibyl-memory-hermes sibyl-memory-mcp sibyl-memory-cli; do
+            python -m build --wheel --outdir dist "$pkg"
+          done
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels
+          path: dist/*.whl
+          if-no-files-found: error
+
+  smoke:
+    name: macOS framework Python
+    needs: wheels
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels
+          path: dist
+
+      - name: install the python.org framework build (no Install Certificates.command)
+        run: |
+          set -eux
+          curl -fsSL -o python.pkg "$PY_URL"
+          echo "$PY_SHA256  python.pkg" | shasum -a 256 -c -
+          sudo installer -pkg python.pkg -target /
+          "$PY_FRAMEWORK" -VV
+          # Install Certificates.command is DELIBERATELY not run: it would
+          # repair the trust store and hide the bug this job exists for.
+
+      - name: install the built wheels into a venv
+        run: |
+          set -eux
+          "$PY_FRAMEWORK" -m venv "$RUNNER_TEMP/smoke"
+          "$RUNNER_TEMP/smoke/bin/python" -m pip install --upgrade pip
+          # our four packages come from the artifact only, never the index
+          "$RUNNER_TEMP/smoke/bin/python" -m pip install --find-links dist dist/*.whl
+      - name: baseline, expected to FAIL with CERTIFICATE_VERIFY_FAILED
+        continue-on-error: true
+        run: |
+          "$RUNNER_TEMP/smoke/bin/python" - <<'PY'
+          import os, ssl, urllib.error, urllib.request
+          url = os.environ["PROBE_URL"]
+          try:
+              urllib.request.urlopen(url, context=ssl.create_default_context(), timeout=15)
+          except urllib.error.URLError as e:
+              print("BASELINE: failed as expected:", e.reason)
+              raise SystemExit(0)
+          print("BASELINE: stdlib default context VERIFIED.")
+          print("This runner's framework build already has a wired CA store, so this")
+          print("job is no longer reproducing the reported environment. Investigate")
+          print("before trusting the pass below.")
+          raise SystemExit(1)
+          PY
+
+      - name: the fix, must SUCCEED
+        run: |
+          "$RUNNER_TEMP/smoke/bin/python" - <<'PY'
+          import os, urllib.request
+          from sibyl_memory_client._trust import https_context
+          url = os.environ["PROBE_URL"]
+          with urllib.request.urlopen(url, context=https_context(), timeout=15) as r:
+              print("FIX: status", r.status, r.read(200).decode("utf-8", "replace"))
+          PY
+
+      - name: "the CLI must not report a server error 0"
+        run: |
+          set -eu
+          export PATH="$RUNNER_TEMP/smoke/bin:$PATH"
+          # `sibyl update` reads PyPI over HTTPS through the same trust context,
+          # so it is the command that actually exercises the fixed path.
+          sibyl update 2>&1 | tee cli.txt
+          sibyl status 2>&1 | tee -a cli.txt
+          if grep -q "server error: 0" cli.txt; then
+            echo "FAIL: the CLI still reports 'server error: 0'"
+            exit 1
+          fi
+          if grep -qi "CERTIFICATE_VERIFY_FAILED" cli.txt; then
+            echo "FAIL: the CLI still hits a certificate verification failure"
+            exit 1
+          fi
