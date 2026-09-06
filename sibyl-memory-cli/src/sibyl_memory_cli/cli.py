@@ -22,6 +22,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform as _platform
 import secrets
 import ssl
 import sys
@@ -99,6 +100,94 @@ def _detect_os_family() -> str | None:
     if p.startswith("linux"): return "linux"
     if p.startswith("win"): return "windows"
     return None
+
+
+# ---- platform support policy (2026-09-04) ------------------------------
+#
+# Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows
+# through WSL2. Native Windows is not supported. WSL2 is Linux to Python and
+# to us, so it needs no special case beyond the label.
+#
+# "block" refuses `sibyl init` and `sibyl setup` on native Windows. Every
+# other command keeps working on machines that already activated there, so an
+# existing install never loses `status`, `upgrade`, `claim`, `devices`,
+# `logout`, `health`, `memory` or `update`.
+NATIVE_WINDOWS_POLICY = "block"
+NATIVE_WINDOWS_ESCAPE_ENV = "SIBYL_ALLOW_NATIVE_WINDOWS"
+WSL_DOCS_URL = "https://docs.sibyllabs.org/memory/install#windows"
+
+
+def _platform_info() -> tuple[str, str, bool]:
+    """(os_family, human label, supported). WSL2 is Linux to Python and to us.
+
+    The os_family element is deliberately the same vocabulary
+    `_detect_os_family()` returns (`linux|macos|windows`), because telemetry
+    consumers key on it. `unknown` is the one value that function reports as
+    None instead.
+    """
+    p = sys.platform
+    arch = _platform.machine() or "unknown"
+    if p == "darwin":
+        ver = _platform.mac_ver()[0] or ""
+        return "macos", f"macOS {ver} ({arch})".replace("  ", " "), True
+    if p.startswith("linux"):
+        rel = _platform.release().lower()
+        wsl = "microsoft" in rel or bool(os.environ.get("WSL_DISTRO_NAME"))
+        return "linux", ("Linux, WSL2" if wsl else "Linux") + f" ({arch})", True
+    if p.startswith("win"):
+        return "windows", f"Windows {_platform.release()} native ({arch})", False
+    return "unknown", p, False
+
+
+def _is_wsl() -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    return "microsoft" in _platform.release().lower() or bool(os.environ.get("WSL_DISTRO_NAME"))
+
+
+def _native_windows_override() -> bool:
+    """True when the user has explicitly opted into the unsupported path."""
+    v = (os.environ.get(NATIVE_WINDOWS_ESCAPE_ENV) or "").strip().lower()
+    return v not in ("", "0", "false", "no", "off")
+
+
+def print_platform_line(*, gate: bool = False) -> int:
+    """Print the platform line. Returns 0 to continue, 1 to refuse.
+
+    `gate=True` is passed by `sibyl init` and `sibyl setup` only. Those are the
+    two commands that stand up a NEW install, and they are the only two the
+    native-Windows block applies to.
+    """
+    family, label, supported = _platform_info()
+    if supported:
+        print(dim(f"  platform  {label} \u00b7 supported"))
+        return 0
+
+    blocked = (
+        gate
+        and family == "windows"
+        and NATIVE_WINDOWS_POLICY == "block"
+        and not _native_windows_override()
+    )
+    paint = red if blocked else yellow
+    print(paint(f"  platform  {label} \u00b7 not supported"))
+
+    if family != "windows":
+        print(yellow("  Sibyl Memory is built and tested on Linux and macOS. This platform is"))
+        print(yellow("  neither, so nothing here is tested or fixed. Continuing anyway."))
+        return 0
+
+    if blocked:
+        print(red("  Sibyl Memory is not supported on native Windows. Install it inside WSL2 and"))
+        print(red(f"  run this command again there: {WSL_DOCS_URL}"))
+        print(red("  Already activated here? status, upgrade, claim, devices and logout keep working."))
+        print(red(f"  To continue unsupported anyway, set {NATIVE_WINDOWS_ESCAPE_ENV}=1."))
+        return 1
+
+    print(yellow("  Sibyl Memory is not supported on native Windows. Run it inside WSL2:"))
+    print(yellow(f"  {WSL_DOCS_URL}"))
+    print(yellow("  Continuing anyway. Nothing on this platform is tested or fixed."))
+    return 0
 
 
 def short(token: str | None) -> str:
@@ -313,6 +402,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     from ._banner import print_banner
     print_banner()
 
+    # Platform line first, so it shows on --force re-activation too.
+    if print_platform_line(gate=True) != 0:
+        return 1
+
     cred_path = Path(args.credentials).expanduser()
     if cred_path.exists() and not args.force:
         existing = read_credentials(cred_path) or {}
@@ -366,6 +459,9 @@ def cmd_init(args: argparse.Namespace) -> int:
                 "pairing_code_hash": code_hash,
                 "env": {
                     "os_family": _detect_os_family(),
+                    "os_version": _platform.release(),
+                    "arch": _platform.machine(),
+                    "wsl": _is_wsl(),
                     "install_method": "cli",
                     "client_version": _client_version(),
                 },
@@ -698,6 +794,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(a.kv("Wallet", creds.get("wallet") or "—"))
     print(a.kv("Email", creds.get("email") or "—"))
     print(a.kv("Issued", creds.get("issued_at") or "—"))
+    _family, plat_label, plat_ok = _platform_info()
+    print(a.kv("Platform", plat_label if plat_ok else f"{plat_label} \u00b7 unsupported",
+               value_color="ink" if plat_ok else "warn"))
 
     db_path = Path(args.db).expanduser()
     if db_path.exists():
@@ -885,8 +984,10 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     print(f"  {a.color('account', a.INK_FAINT)}  {a.bold(acct or "—")}  {a.dim(a.GLYPH_DOT)}  {a.gradient_gold(tier)}")
     print(f"  {a.color('wallet ', a.INK_FAINT)}  {a.color(wallet or '—', a.INK)}")
     print(f"  {a.color('email  ', a.INK_FAINT)}  {a.color(email or '—', a.INK)}")
-    os_label = _detect_os_family() or "unknown"
-    device_line = f"sibyl-memory-cli/{_client_version()} {os_label}"
+    _family, plat_label, plat_ok = _platform_info()
+    device_line = f"sibyl-memory-cli/{_client_version()} {plat_label}"
+    if not plat_ok:
+        device_line += " \u00b7 unsupported"
     print(f"  {a.color('device ', a.INK_FAINT)}  {a.dim(device_line)}")
     print()
     return 0
