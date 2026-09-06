@@ -42,6 +42,11 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
   import fallback would quietly return the same broken default context, and
   the fix would not actually ship. The floor is what makes certifi land in
   every install path, pipx included.
+- Package metadata now names the supported platforms: `Operating System ::
+  POSIX :: Linux` and `Operating System :: MacOS`. Sibyl Memory runs on Linux,
+  macOS (Apple Silicon and Intel), and Windows through WSL2. Native Windows is
+  not supported. Classifiers are informational; pip does not enforce them, and
+  WSL2 installs look like Linux to pip, which is correct.
 
 ### Fixed
 - **`sibyl init` failed on macOS python.org "Framework" builds: `Warning:

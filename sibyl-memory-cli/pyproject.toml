@@ -21,6 +21,8 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Environment :: Console",
   "Topic :: Software Development :: Libraries :: Python Modules",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
 ]
 dependencies = [
   "sibyl-memory-client>=0.8.1",

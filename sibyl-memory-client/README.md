@@ -8,6 +8,8 @@ A small Python library that gives any AI agent durable memory across sessions, s
 pip install sibyl-memory-client
 ```
 
+Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through WSL2. Native Windows is not supported.
+
 ## Quickstart
 
 ```python
