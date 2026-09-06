@@ -1,8 +1,8 @@
 """Darwin trust-store fix (2026-08-25), CLI leg: `sibyl init` on the macOS
 python.org framework build failed every server call with
 `Warning: session-init failed (0)` (CERTIFICATE_VERIFY_FAILED surfacing as
-HttpError status 0). Both CLI network paths — http_request (all
-api.sibyllabs.org calls) and _pypi_latest (update check) — now pass the shared
+HttpError status 0). Both CLI network paths, http_request (all
+api.sibyllabs.org calls) and _pypi_latest (update check), now pass the shared
 certifi-backed context from sibyl_memory_client._trust, with a stdlib-default
 fallback when the client package is absent. These tests pin the wiring at both
 call sites and the graceful fallback."""

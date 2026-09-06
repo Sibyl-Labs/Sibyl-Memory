@@ -82,13 +82,13 @@ jobs:
           try:
               urllib.request.urlopen(url, context=ssl.create_default_context(), timeout=15)
           except urllib.error.URLError as e:
-              print("BASELINE: failed as expected:", e.reason)
-              raise SystemExit(0)
-          print("BASELINE: stdlib default context VERIFIED.")
-          print("This runner's framework build already has a wired CA store, so this")
-          print("job is no longer reproducing the reported environment. Investigate")
-          print("before trusting the pass below.")
-          raise SystemExit(1)
+              # DNS / refused / timeout / 4xx / 5xx never reach the TLS check.
+              ok = "CERTIFICATE_VERIFY_FAILED" in repr(e)
+              print("BASELINE:", "failed as expected:" if ok else "WRONG failure:", e)
+              raise SystemExit(0 if ok else 1)
+          raise SystemExit("BASELINE: stdlib default context VERIFIED. This runner's "
+                           "framework build already has a wired CA store, so the job is "
+                           "not reproducing the report. Investigate before trusting it.")
           PY
 
       - name: the fix, must SUCCEED

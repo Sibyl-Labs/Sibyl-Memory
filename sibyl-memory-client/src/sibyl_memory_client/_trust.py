@@ -2,7 +2,7 @@
 
 Why this exists (Darwin trust-store scar, 2026-08-25): the python.org
 "Framework" build of Python on macOS ships its own OpenSSL and does NOT wire
-a CA bundle into ``ssl.create_default_context()`` — users are expected to run
+a CA bundle into ``ssl.create_default_context()``: users are expected to run
 the bundled ``Install Certificates.command``, and many never do. On those
 installs every stdlib-default HTTPS request fails with ``[SSL:
 CERTIFICATE_VERIFY_FAILED] ... unable to get local issuer certificate``
@@ -13,7 +13,7 @@ is why the bug looks machine-specific.
 
 The fix is ADDITIVE trust, never replacement and never weakening:
 
-  1. Start from ``ssl.create_default_context()`` — full verification
+  1. Start from ``ssl.create_default_context()``: full verification
      (``CERT_REQUIRED`` + hostname check), the platform trust store, and the
      ``SSL_CERT_FILE``/``SSL_CERT_DIR`` env overrides all stay exactly as the
      stdlib provides them. A store that already works (Linux distro CAs,
@@ -22,7 +22,7 @@ The fix is ADDITIVE trust, never replacement and never weakening:
      On the broken macOS builds this turns an empty store into a real one;
      everywhere else it is a harmless superset (OpenSSL de-duplicates).
   3. If certifi is missing or its bundle fails to load, the context from
-     step 1 is returned unchanged — byte-for-byte the pre-fix behavior,
+     step 1 is returned unchanged, byte-for-byte the pre-fix behavior,
      never a crash. certifi IS a declared runtime dependency (the SDK's
      only one, as of 0.7.1), so in any real install step 2 succeeds; the
      guard exists for bare source-tree use.
@@ -42,7 +42,7 @@ def https_context() -> ssl.SSLContext:
     """Return the shared verified TLS context (built once, then cached).
 
     Cached because the CLI's pairing flow polls every 3 seconds for up to
-    30 minutes — re-reading a ~200KB PEM bundle per poll is pointless work.
+    30 minutes. Re-reading a ~200KB PEM bundle per poll is pointless work.
     Safe to share: an ``SSLContext`` may open connections from multiple
     threads (the heartbeat's daemon threads reuse this one instance).
     """
