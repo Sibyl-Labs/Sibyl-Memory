@@ -25,6 +25,11 @@ follows [SemVer](https://semver.org/).
   (running from a bare source tree), `_trust.https_context()` returns the
   stdlib default context unchanged, exactly the pre-0.8.1 behavior, never a
   crash.
+- Package metadata now names the supported platforms: `Operating System ::
+  POSIX :: Linux` and `Operating System :: MacOS`. Sibyl Memory runs on Linux,
+  macOS (Apple Silicon and Intel), and Windows through WSL2. Native Windows is
+  not supported. Classifiers are informational; pip does not enforce them, and
+  WSL2 installs look like Linux to pip, which is correct.
 
 ### Fixed
 - Free-tier cap copy now says 5 MB everywhere (the cap itself has been
@@ -43,6 +48,8 @@ follows [SemVer](https://semver.org/).
   fix. Regression pinned in `tests/test_mrs_cross_tier_idf_2026_09_04.py`.
   Reported with a reproducing test by @web3xDev
   (Sibyl-Labs/Sibyl-Memory#27).
+  Cost: the corpus probe is now four `COUNT(*)` per search instead of one. It
+  touches no bodies, and it is the same shape of query it always was.
 - **macOS framework-build Pythons could not verify api.sibyllabs.org, so tier
   verification degraded and heartbeats vanished.** The python.org "Framework"
   build of Python on macOS ships without a CA bundle wired into

@@ -6,6 +6,8 @@ Command-line interface for the **Sibyl Memory Plugin**.
 pip install sibyl-memory-cli
 ```
 
+Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through WSL2. Native Windows is not supported.
+
 This pulls in `sibyl-memory-client` (the local SDK) and `sibyl-memory-hermes` (the Hermes provider) automatically.
 
 ## Commands

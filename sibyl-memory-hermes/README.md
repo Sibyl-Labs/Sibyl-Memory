@@ -17,6 +17,8 @@ pip install sibyl-memory-hermes
 sibyl-memory-hermes install-plugin
 ```
 
+Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through WSL2. Native Windows is not supported.
+
 Then edit `~/.hermes/config.yaml`:
 
 ```yaml

@@ -8,6 +8,8 @@ MCP server for [Sibyl Memory Plugin](https://sibyllabs.org/memory). Exposes the 
 pip install sibyl-memory-mcp
 ```
 
+Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through WSL2. Native Windows is not supported.
+
 You also need an activated Sibyl Memory account. If you haven't already:
 
 ```bash
