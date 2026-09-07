@@ -1,23 +1,14 @@
-# macOS framework-Python smoke (Sibyl-Labs/Sibyl-Memory#29 / PR #30).
-#
-# Reproduces the reporter's environment exactly: the official python.org
-# "Framework" build, WITHOUT running its bundled Install Certificates.command.
-# That build ships no CA bundle wired into ssl.create_default_context(), so the
-# stdlib default context cannot verify api.sibyllabs.org. The fix is the
-# _trust.https_context() helper, which adds certifi's bundle to the platform
-# store. This proves the broken baseline first, then proves the fix. Manual
-# only: no macOS box on the lab side, so this is the publish gate.
+# macOS framework-Python smoke (Sibyl-Labs/Sibyl-Memory#29 / PR #30). Installs
+# the python.org "Framework" build, strips its CA store, proves the stdlib
+# default context then cannot verify api.sibyllabs.org and https_context() can.
+# Manual only: no macOS box on the lab side, so this is the publish gate.
 name: macOS framework-Python smoke
 
 on:
   workflow_dispatch:
 
 env:
-  # Latest python.org macOS universal2 installer for 3.12 (3.12.10 is the last
-  # 3.12 with a binary installer; 3.12 is security-only after it).
-  # To refresh: pick the newest 3.12.x that returns 200 for
-  #   https://www.python.org/ftp/python/<ver>/python-<ver>-macos11.pkg
-  # then `curl -fsSLO <url> && shasum -a 256 <file>` and paste both below.
+  # python.org universal2 installer. Refresh: newest 3.12.x pkg + shasum -a 256.
   PY_URL: https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg
   PY_SHA256: 8373e58da4ea146b3eb1c1f9834f19a319440b6b679b06050b1f9ee3237aa8e4
   PY_FRAMEWORK: /Library/Frameworks/Python.framework/Versions/3.12/bin/python3
@@ -63,43 +54,72 @@ jobs:
           echo "$PY_SHA256  python.pkg" | shasum -a 256 -c -
           sudo installer -pkg python.pkg -target /
           "$PY_FRAMEWORK" -VV
-          # Install Certificates.command is DELIBERATELY not run: it would
-          # repair the trust store and hide the bug this job exists for.
 
       - name: install the built wheels into a venv
         run: |
           set -eux
           "$PY_FRAMEWORK" -m venv "$RUNNER_TEMP/smoke"
           "$RUNNER_TEMP/smoke/bin/python" -m pip install --upgrade pip
-          # our four packages come from the artifact only, never the index
           "$RUNNER_TEMP/smoke/bin/python" -m pip install --find-links dist dist/*.whl
+
+      - name: strip the pre-wired CA store (reproduce the report)
+        # The image already ran Install Certificates.command (etc/openssl holds a
+        # certifi symlink), so the stock context verifies and the report is NOT
+        # reproduced until it is removed. A fake pem would test a different bug.
+        run: |
+          set -eux
+          unset SSL_CERT_FILE SSL_CERT_DIR || true
+          env | grep -i '^SSL_' || true
+          PREFIX="$(dirname "$(dirname "$PY_FRAMEWORK")")"
+          ls -la "$PREFIX/etc/openssl" || true
+          mkdir -p "$RUNNER_TEMP/ca-backup"
+          sudo mv "$PREFIX/etc/openssl/cert.pem" "$RUNNER_TEMP/ca-backup/" || true
+          sudo mv "$PREFIX/etc/openssl/certs" "$RUNNER_TEMP/ca-backup/" || true
+          "$PY_FRAMEWORK" -c "import ssl; print(ssl.get_default_verify_paths()); print(ssl.OPENSSL_VERSION)"
+
+      - name: write the shared TLS classifier
+        run: |
+          cat > "$RUNNER_TEMP/probe.py" <<'PY'
+          import os, ssl, sys, urllib.error, urllib.request
+          UA = {"User-Agent": "sibyl-memory-smoke/1"}
+          def classify(e):
+              # An HTTPError is a real HTTP status, so the handshake SUCCEEDED
+              # (Cloudflare 403s our datacenter IP). Only a cert error is a TLS fail.
+              if isinstance(e, urllib.error.HTTPError):
+                  return "TLS_OK"
+              if isinstance(e, urllib.error.URLError) and "CERTIFICATE_VERIFY_FAILED" in repr(e):
+                  return "TLS_FAIL"
+              return "OTHER"  # DNS, refused, timeout: never reached the TLS check
+          def probe(ctx):
+              req = urllib.request.Request(os.environ["PROBE_URL"], headers=UA)
+              try:
+                  with urllib.request.urlopen(req, context=ctx, timeout=15) as r:
+                      return "TLS_OK", r.status, r.read(120)
+              except urllib.error.HTTPError as e:
+                  return "TLS_OK", e.code, e.read(120)
+              except Exception as e:
+                  return classify(e), None, repr(e)
+          stock = ssl.create_default_context()
+          if sys.argv[1] == "baseline":
+              cls, status, body = probe(stock)
+              print("BASELINE:", cls, "status:", status, body)
+              if cls == "TLS_OK":
+                  raise SystemExit("BASELINE: the stock context VERIFIED, so this runner still has a wired CA store and is NOT reproducing the report")
+              raise SystemExit(0 if cls == "TLS_FAIL" else "BASELINE: WRONG failure: %s" % (body,))
+          import certifi
+          from sibyl_memory_client._trust import https_context
+          ctx = https_context()
+          print("certifi:", certifi.where(), "| fixed store:", ctx.cert_store_stats(), "| stock store:", stock.cert_store_stats())
+          cls, status, body = probe(ctx)
+          print("FIX:", cls, "status:", status, body)
+          if cls != "TLS_OK":
+              raise SystemExit("FIX: %s: %s" % (cls, body))
+          PY
       - name: baseline, expected to FAIL with CERTIFICATE_VERIFY_FAILED
         continue-on-error: true
-        run: |
-          "$RUNNER_TEMP/smoke/bin/python" - <<'PY'
-          import os, ssl, urllib.error, urllib.request
-          url = os.environ["PROBE_URL"]
-          try:
-              urllib.request.urlopen(url, context=ssl.create_default_context(), timeout=15)
-          except urllib.error.URLError as e:
-              # DNS / refused / timeout / 4xx / 5xx never reach the TLS check.
-              ok = "CERTIFICATE_VERIFY_FAILED" in repr(e)
-              print("BASELINE:", "failed as expected:" if ok else "WRONG failure:", e)
-              raise SystemExit(0 if ok else 1)
-          raise SystemExit("BASELINE: stdlib default context VERIFIED. This runner's "
-                           "framework build already has a wired CA store, so the job is "
-                           "not reproducing the report. Investigate before trusting it.")
-          PY
-
+        run: '"$RUNNER_TEMP/smoke/bin/python" "$RUNNER_TEMP/probe.py" baseline'
       - name: the fix, must SUCCEED
-        run: |
-          "$RUNNER_TEMP/smoke/bin/python" - <<'PY'
-          import os, urllib.request
-          from sibyl_memory_client._trust import https_context
-          url = os.environ["PROBE_URL"]
-          with urllib.request.urlopen(url, context=https_context(), timeout=15) as r:
-              print("FIX: status", r.status, r.read(200).decode("utf-8", "replace"))
-          PY
+        run: '"$RUNNER_TEMP/smoke/bin/python" "$RUNNER_TEMP/probe.py" fix'
 
       - name: "the CLI must not report a server error 0"
         run: |
