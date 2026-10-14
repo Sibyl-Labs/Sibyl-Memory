@@ -4,6 +4,62 @@ All notable changes to `sibyl-memory-langgraph` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.3.0] - Unreleased
+
+Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.3).
+
+### 2026-10-14 - Pre-release cleanup
+- `sibyl_memory_langgraph.__version__` reports the installed version (it said 0.2.0 on 0.3.0).
+  It is read from package metadata, like the other packages.
+
+### Added (agent handoff messages, 2026-10-06)
+Spec agent-handoff-messages-spec-2026-10-03 (rows L1, L2; needs sibyl-memory-client 0.9.0).
+- No code change in the store: `EntitlementError` still propagates unchanged and now carries the
+  handoff (`e.next`, `e.human_action`; `str(e)` ends with the block). README and the
+  `SibylStore` docstring document both attributes.
+- Tests: `tests/test_handoff_2026_10_03.py` (+7). Suite: 470 passed, 5 xfailed.
+
+### Unchanged (paid tier R1, 2026-09-29)
+- No automatic save or skill proposals in a framework store; README says where they run.
+
+### Unchanged (save and debloat, 2026-09-27)
+- No lifecycle for a framework store: the save and debloat procedures belong to agent
+  sessions (MCP, Hermes, Claude Code hooks). README paragraph only.
+
+### Changed (independent check of save and debloat, 2026-09-27, SD-7)
+- A `SibylStore` client no longer counts writes into `~/.sibyl-memory/lifecycle.json` (the
+  client's counting is now opt-in, and LangGraph has no lifecycle). README: run `sibyl skills
+  uninstall` before uninstalling the CLI.
+
+### Changed (independent check fix batch, 2026-09-27, GATE-15)
+- README privacy section: the size check and the usage heartbeat also carry
+  this computer's signed access token (account id, tier, cap, device hash,
+  account flags; no personal data). No code change.
+
+### Tests (gate fix before the independent check, 2026-09-27)
+- conftest: the network guard is installed at import and every test fails if
+  it attempted a non-loopback connection or lookup, even one it caught;
+  `test_network_guard_2026_09_27.py` proves the guard. No langgraph code
+  change; data written before accounts under `DEFAULT_TENANT` moves into the
+  account tenant through client 0.9.0 (README updated).
+
+### Changed
+- **An account is required.** `SibylStore()` still constructs without one,
+  but `batch` / `abatch` (so `get`, `put`, `search`, `delete`,
+  `list_namespaces`) raise `sibyl_memory_client.EntitlementError` until
+  `sibyl init` runs. A framework store propagates it; LangGraph surfaces it to
+  the graph. `tenant_id=` (DEFAULT_TENANT included) chooses the tenant, never
+  the access. The gate reads the `credentials.json` next to the DB file when
+  there is one, else `~/.sibyl-memory/credentials.json`; an explicit
+  `client=` keeps whatever gate that client carries (the embedding path).
+- README: `DEFAULT_TENANT` is a constant for tests and pre-account data; the
+  network disclosure lists the daily account check-in.
+- Dependency floor: `sibyl-memory-client>=0.9.0`.
+
+### Compatibility
+- Verified in a fresh venv with the five built wheels against hermes-agent
+  0.19.0 (current on PyPI at build time).
+
 ## [0.2.0] "Lucid" - 2026-08-31
 
 Minor version: `SibylStore` gained `last_search_verdict`, and the underlying

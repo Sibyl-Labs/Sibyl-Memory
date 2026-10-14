@@ -1,4 +1,9 @@
-"""Quick smoke test for SibylStore before the full sub-agent suite."""
+"""Quick smoke test for SibylStore before the full sub-agent suite.
+
+0.3.0: needs an activated account (`sibyl init`) on this machine; without one
+every store call raises sibyl_memory_client.EntitlementError. The pytest suite
+uses a test-signed entitlement instead (tests/conftest.py).
+"""
 import tempfile, os, sys
 from sibyl_memory_langgraph import SibylStore
 

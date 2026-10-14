@@ -316,6 +316,20 @@ class SibylStore(BaseStore):
     DEFAULT_TENANT is used only when no credentials are present (un-activated).
     Passing ``tenant_id=`` overrides this; passing ``client=`` uses that client's
     tenant as-is.
+
+    Account required (0.3.0, spec account-gated 3.3): every store operation
+    needs an activated account (``sibyl init``) holding a valid, server-signed
+    entitlement. Without one, ``batch`` / ``abatch`` (so ``get``, ``put``,
+    ``search``, ``delete``, ``list_namespaces``) raise
+    ``sibyl_memory_client.EntitlementError``: a framework store propagates it
+    and LangGraph surfaces it to the graph. The exception carries the agent
+    handoff: ``e.next`` (the command to run next) and ``e.human_action`` (the
+    sentence for the person, or None); ``str(e)`` ends with the same two lines.
+    Construction never raises for this.
+    The gate reads the ``credentials.json`` next to the DB file when there is
+    one, else ``~/.sibyl-memory/credentials.json``. ``tenant_id=`` (including
+    ``DEFAULT_TENANT``) chooses the tenant, never the access. Embedding use
+    with an explicit ``client=`` keeps whatever gate that client carries.
     """
 
     supports_ttl = False
@@ -334,6 +348,13 @@ class SibylStore(BaseStore):
             self._owns_client = False
         else:
             kw: dict[str, Any] = {"tier": tier, **client_kwargs}
+            # ACCOUNT GATE (0.3.0): gate on the credentials file beside the DB
+            # (the one _resolve_tenant_from_creds reads) when it exists, else
+            # the client's default ~/.sibyl-memory/credentials.json.
+            if "credentials_path" not in kw:
+                sibling = Path(path).expanduser().parent / _CRED_FILENAME
+                if sibling.exists() and not sibling.is_symlink():
+                    kw["credentials_path"] = sibling
             if tenant_id is not None:
                 kw["tenant_id"] = tenant_id
             else:
