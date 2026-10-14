@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Iterable
 
 # ─── Palette (RGB · derived from rule 46 creme-paper tokens) ─────────
 # Names map 1:1 to CSS custom properties on lab artifacts.
@@ -95,12 +94,6 @@ def rgb(r: int, g: int, b: int) -> str:
     if not _TC:
         return ""
     return f"\033[38;2;{r};{g};{b}m"
-
-
-def rgb_bg(r: int, g: int, b: int) -> str:
-    if not _TC:
-        return ""
-    return f"\033[48;2;{r};{g};{b}m"
 
 
 def color(text: str, c: tuple[int, int, int]) -> str:
@@ -250,11 +243,6 @@ def kv(label: str, value: str, *, label_width: int = 16, value_color: str = "ink
     return f"  {color(label.ljust(label_width), INK_FAINT)} {color(value, val_color)}"
 
 
-def block_title(text: str) -> str:
-    """Sub-section title within a command output. Like 'LOCAL' or 'SERVER'."""
-    return "\n" + eyebrow(text)
-
-
 def success_line(text: str) -> str:
     """Single-line success marker with gradient + glyph."""
     return f"  {ok(GLYPH_OK)} {gradient_jade(text)}"
@@ -266,14 +254,3 @@ def warn_line(text: str) -> str:
 
 def err_line(text: str) -> str:
     return f"  {err(GLYPH_ERR)} {err(text)}"
-
-
-def hr_caption(caption: str, *, width: int = 60) -> str:
-    """Caption line under a divider: small, muted, centered."""
-    pad = max(0, (width - len(caption)) // 2)
-    return " " * pad + dim(caption)
-
-
-def footer_credits(*, width: int = 60) -> str:
-    """Bottom-of-output line. Used at end of long outputs."""
-    return color("─" * width, RULE) + "\n" + dim("  sibyl labs · memory you can hold in your hand")

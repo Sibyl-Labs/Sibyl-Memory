@@ -4,6 +4,144 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.5.0] - Unreleased
+
+Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.3).
+
+### 2026-10-14 - Pre-release cleanup
+- Setup copy points at `sibyl setup hermes` everywhere (README, package docstring, the adapter,
+  and step 1 of `install-plugin`'s next steps), instead of a hand edit of `config.yaml`. With
+  `--hermes-home`, step 1 names the same home.
+- README and docstring say sign-in is required (it has been since 0.5.0), name the tiers Pro /
+  Elite, and note that `SIBYL_TENANT_ID` is read by the Hermes adapter only.
+- `SibylMemoryProvider.hermes_bound` still works and still warns; the warning no longer names
+  v0.4.0 as its removal version.
+- Docstrings corrected (credential signature, `write_credentials`); unused internal render
+  helpers removed.
+- Comments, docstrings, test file names and this CHANGELOG describe each finding by what it fixed
+  instead of naming testers or internal QA rounds. Text and test file names only; no code changed.
+
+### 2026-10-10 - sign-in and display fixes
+- the installer's sign-in step no longer promises a mobile wallet path (USDC sign-in can
+  be off): "sign in with email + code or a desktop wallet; sibyl init shows every path". The
+  provider relays the client's new `signed_out_on_claim` copy (F-1) as it relays every gate
+  message; no provider change.
+
+### Fixed (shown tier, 2026-10-08)
+- `SibylMemoryProvider.health()["tier"]` (what `sibyl health` prints) is the tier of the current
+  verified pass (client `tier_for_display`), the saved credentials tier only without a valid
+  pass, so `sibyl health` and `sibyl status` never show two tiers.
+- Tests: `tests/test_health_tier_2026_10_08.py` (+3). Suite: 178 passed (was 175).
+
+### Fixed (agent handoff check, 2026-10-07)
+- `install-plugin` (row H7): when `config.yaml` does not yet set `memory.provider: sibyl`, the
+  block ends `next: sibyl setup hermes` (with `--hermes-home <path>` when the home is not the
+  default one), which writes the line and asks for the restart, instead of asking the person to
+  edit the YAML by hand. The provider check reads the line without PyYAML too, so an already
+  set line no longer prints the ask.
+- Tests: `tests/test_handoff_2026_10_03.py` (+2). Suite: 175 passed.
+
+### Added (agent handoff messages, 2026-10-06)
+Spec agent-handoff-messages-spec-2026-10-03 (rows H1 to H9; needs sibyl-memory-client 0.9.0).
+- Tool errors keep calling Hermes' `tool_error(msg)`, then parse the JSON it returns, add `next`
+  and `human_action`, and re-dump (any keys `tool_error` adds are kept; a non-JSON return falls
+  back to `{"error", "next", "human_action"}`). The `error` text is unchanged: the signed-out
+  sentence for `no_account`, the exception's `summary` for the other codes.
+- `Sibyl provider not initialized` carries `next` `done` and "restart Hermes so the sibyl memory
+  provider loads". `CapExceededError` keeps the class-name-only `error` (SEC-10) and gains
+  `next` `sibyl upgrade` plus the cap sentence; other exception classes are unchanged.
+- The once-per-process signed-out WARNING ends with ` next: sibyl init`; the capsule log line
+  ends with the entitlement code's `next:` when the reason is one.
+- `sibyl-memory-hermes install-plugin` ends with the handoff block: the sudo copy into the
+  provider path, or where that path is, when Hermes 0.7+ cannot be written or found; otherwise
+  the config line (only when `memory.provider` is not already `sibyl`); then `next: sibyl init`
+  (or `sibyl status` when signed in). A refused folder hands back `--force` with a question
+  (non-empty), or a question with the plain command (symlink, unrecognized contents).
+- Tests: the two exact-dict asserts in `test_account_gate_2026_09_27.py` now check `error`,
+  `next` and `human_action`; `tests/test_handoff_2026_10_03.py` (+17). Suite: 173 passed.
+
+### Unchanged (tier convention, 2026-10-05)
+- No code change: tier names are read through the client's shared `tiers` module (free / pro /
+  elite, legacy labels as aliases). The `credentials.py` docstring now lists the canonical tiers.
+
+### Added (paid tier R1, 2026-09-29, R1B-3)
+- Every turn and tool call counts active time; on Pro the next prefetch note carries the
+  automatic-save request when due (once per interval). The Pro prompt block says to run the save
+  procedure headless when a Sibyl Memory note asks.
+- Shutdown runs one local learner pass on Pro (skill proposals), inside the shutdown budget.
+
+### Added (save and debloat, 2026-09-27, SD-3)
+Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unchanged).
+- `system_prompt_block` coaches the save and debloat procedures (the canonical paths, the SDK
+  tools); the Pro variant differs by one line.
+- On Pro: `initialize` runs the debloat plan for the home and cwd in a daemon thread;
+  `on_pre_compress` writes a session capsule after the flush; `shutdown` writes one,
+  synchronously, bounded by the shutdown budget. A locked gate writes none and logs once.
+- `prefetch` may add one plugin line after the untrusted-memory fence (logged once at INFO).
+- The per-turn journal and the pre-compress flush do not count toward the save reminder.
+- `install-plugin` also installs the procedures and `$HERMES_HOME/skills/sibyl-save` and
+  `sibyl-debloat` (`SKILL.md`), the skills directory hermes-agent 0.19.0 documents
+  (`hermes_constants.get_skills_dir()`). `plugin.yaml` version 0.5.0.
+
+### Tests (save and debloat)
+- `test_lifecycle_hermes_2026_09_27.py` 8. Verified hermes-agent for this build: 0.19.0.
+
+### Fixed (independent check of save and debloat, 2026-09-27, SD-7)
+- The adapter enables write counting on its client (`enable_lifecycle_counting`); the SDK alone no
+  longer counts. Automatic trims are matched per file path (client).
+
+### Changed (independent check fix batch, 2026-09-27, GATE-15)
+- The adapter logs ONE line (WARNING, so it shows at the default log level;
+  it is information, not a fault) when the client moved rows written before
+  sign-in into the account: "Sibyl memory: N memories written before sign-in
+  were moved into your account on this computer." Checked after every tool
+  call, after a successful `sync_turn` write and after the prefetch search.
+  Counts only.
+- README privacy paragraph: the size check and the usage count also carry
+  this computer's signed access token (account id, tier, cap, device hash,
+  account flags; no personal data).
+- Tests: 3 in `test_account_gate_2026_09_27.py` (one line from tool calls, one
+  from the background `sync_turn`: both fail before; no line without
+  pre-sign-in rows: a guard, passes before and after).
+
+### Tests (gate fix before the independent check, 2026-09-27)
+- conftest: the network guard is installed at import and every test fails if
+  it attempted a non-loopback connection or lookup, even one it caught;
+  `test_network_guard_2026_09_27.py` proves the guard. No hermes code change;
+  a new client refusal reason, `setup_incomplete`, reaches the tool error text
+  through the existing section 8 copy path.
+
+### Changed
+- **An account is required for memory.** `SibylMemoryProvider` always builds
+  its client with the credentials path it resolves, so every method raises
+  `sibyl_memory_client.EntitlementError` until `sibyl init` runs.
+  `require_credentials` keeps its meaning (raise vs construct on a MISSING
+  file), but constructing without credentials no longer means a working store.
+  An explicit `tenant_id` (or the adapter's `SIBYL_TENANT_ID`) chooses the
+  tenant only; it never stands in for an account.
+- Bundled Hermes adapter: `handle_tool_call` returns `tool_error("Sibyl Memory
+  is not signed in on this computer. Run sibyl init in a terminal, then try
+  again. Your local memory is kept.")` (or the specific reason's copy: under
+  review, offline too long, ...). `sync_turn`, `prefetch`, `on_pre_compress`,
+  `on_delegation` and `on_memory_write` skip quietly after ONE warning per
+  process ("Sibyl memory is signed out: run sibyl init. Memory tools return an
+  error until then."); an `EntitlementError` is never treated as a busy error,
+  so there is no retry storm. `is_available()` stays a cheap import check, so
+  a signed-out provider still loads and the user sees why. Debug log lines
+  name the exception class only.
+- `sibyl-memory-hermes install-plugin` next steps: signing in is required.
+- The HMAC credentials claim (with email and wallet) is no longer built:
+  client 0.9.0 sends the server-signed entitlement on `/check-write` instead.
+- Dependency floor: `sibyl-memory-client>=0.9.0`.
+
+### Compatibility
+- Verified in a fresh venv with the five built wheels against hermes-agent
+  0.19.0 (current on PyPI at build time): the installed adapter instantiates
+  against the live `MemoryProvider` ABC and a signed-out
+  `handle_tool_call("sibyl_list", {})` returns the tool_error JSON.
+- Docker: mount `~/.sibyl-memory` (credentials.json AND entitlement.json,
+  writable) and run `sibyl init` on the host first.
+
 ## [0.4.1] - 2026-09-06
 
 ### Changed
@@ -53,7 +191,7 @@ payload's keys should read this entry.
   `lang-core-verdict`, 2026-08-31). The provider's own docstring already
   DOCUMENTED this failure mode — "abstains ... the moment one significant query
   token is content-shaped and has zero corpus support anywhere", citing the
-  Kravento PL eval — while offering only an opt-in `diagnostics=` dict to see it.
+  Polish-language eval — while offering only an opt-in `diagnostics=` dict to see it.
   Documented-but-unreachable is what this closes: the return is now a
   `verdicts.SearchResults` (a `list` subclass, so every existing caller is
   unaffected) carrying `.verdict` with no kwarg to pass.
@@ -88,7 +226,7 @@ payload's keys should read this entry.
 
 ### Changed
 - **Dependency floor raised to `sibyl-memory-client>=0.7.0`, closing the same
-  packaging hazard fixed in `sibyl-memory-mcp` 0.1.14** (cryptoxdylan,
+  packaging hazard fixed in `sibyl-memory-mcp` 0.1.14** (an external contributor,
   independent verification, 2026-08-18): the prior floor (`>=0.5.0`) meant a
   Hermes-only `pip install -U sibyl-memory-hermes` could leave an older,
   unpatched client in place. `provider.py`'s `search_multi_record` calls
@@ -238,7 +376,7 @@ Pre-launch security audit hardening.
 ### Fixed
 
 - **Hermes 0.7+ did not discover the plugin as a memory provider** (beta report
-  Sylvain, 2026-06-11, Hermes Agent v0.7.0). `install-plugin` wrote only the
+  2026-06-11, Hermes Agent v0.7.0). `install-plugin` wrote only the
   legacy user-plugin path `$HERMES_HOME/plugins/sibyl`, which shows in
   `hermes plugins list` but is NOT scanned for memory providers on 0.7+. The
   installer now ALSO targets the 0.7+ memory-provider scan path
@@ -398,15 +536,15 @@ sectioned numbered onboarding menu treatment.
 
 ## [0.3.2] - 2026-05-18
 
-KAPPA external-tester remediation release. Family-wide alignment with the
-v0.4.0 client (KAPPA-attributed fixes: exception export path, db file
+External-tester remediation release. Family-wide alignment with the
+v0.4.0 client (external-test fixes: exception export path, db file
 perms, identifier validation, FTS5 error surfacing). No Hermes adapter
 code changes in this release.
 
 ### Changed
 
 - `sibyl-memory-client` pin: `>=0.3.3` → `>=0.4.0`.
-- KAPPA's fixes flow through automatically. Hermes tools (`sibyl_remember`,
+- the external tester's fixes flow through automatically. Hermes tools (`sibyl_remember`,
   `sibyl_recall`, `sibyl_search`, `sibyl_list`) now reject empty / null-byte
   / oversized identifiers on write and surface malformed FTS5 queries as
   `ValidationError` instead of silently returning empty.

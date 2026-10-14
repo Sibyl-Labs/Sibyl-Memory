@@ -8,7 +8,7 @@ the provider gets it without asking and the adapter forwards it.
 
 The provider's own docstring already DOCUMENTED this failure mode ("abstains ...
 the moment one significant query token is content-shaped and has zero corpus
-support anywhere", citing the Kravento PL eval) while still offering only an
+support anywhere", citing the Polish-language eval) while still offering only an
 optional `diagnostics=` dict to see it. Documented-but-unreachable is what these
 tests close.
 """

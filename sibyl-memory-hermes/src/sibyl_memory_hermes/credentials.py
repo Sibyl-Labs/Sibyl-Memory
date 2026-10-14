@@ -11,7 +11,7 @@ Shape:
       "tenant_id":    "uuid OR email-like string",
       "email":        "alice@example.com",  // optional
       "wallet":       "0x...",              // optional
-      "tier":         "free | pro | sync | team | lifetime | stake | enterprise",
+      "tier":         "free | pro | elite (older servers may send a legacy label)",
       "issued_at":    "2026-05-21T14:32:18Z",
       "schema_version": 1
     }
@@ -50,14 +50,13 @@ class Credentials:
       - signed_at: ISO timestamp when the signature was generated.
 
     The SDK does NOT verify the signature locally (would require sharing the
-    server's HMAC key, which would defeat the purpose). Instead, the SDK
-    includes the signature alongside the claim in any cap-gate request, and
-    the server re-verifies. Mismatches surface as `credentials_tamper_suspected`
-    telemetry. The authoritative tier comes from the database regardless.
+    server's HMAC key, which would defeat the purpose), and since
+    sibyl-memory-client 0.9.0 it does not send it either: a cap check carries
+    the server-signed entitlement instead, and the authoritative tier comes
+    from the server. The fields are kept so the file round-trips unchanged.
 
-    schema_version 1 credentials (no signature) still load: old fields are
-    None: and continue to work unsigned. The SDK just sends an unsigned
-    request and the server skips the tamper check."""
+    schema_version 1 credentials (no signature) still load: the two fields
+    are None."""
 
     account_id: str
     tenant_id: str
@@ -154,7 +153,8 @@ def write_credentials(creds: Credentials, path: str | Path = DEFAULT_CRED_PATH) 
     world-readable window between syscalls. Now mode is set by the
     kernel at file-creation time: no race.
 
-    Used by `sibyl init`.
+    A public helper for SDK users; `sibyl init` writes credentials with the
+    CLI's own writer (``write_credentials_atomic``), not this function.
     """
     resolved = Path(path).expanduser().resolve()
     resolved.parent.mkdir(parents=True, exist_ok=True, mode=0o700)

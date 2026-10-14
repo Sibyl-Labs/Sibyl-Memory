@@ -8,8 +8,8 @@ for `__init__.py` files under two locations:
   - user:     $HERMES_HOME/plugins/<name>/__init__.py       (note: no /memory/)
 
 After `pip install sibyl-memory-hermes`, the user runs this script to drop
-the bundled adapter into their HERMES_HOME. They then activate by setting
-`memory.provider: sibyl` in their config.yaml.
+the bundled adapter into their HERMES_HOME. They then activate it with
+`sibyl setup hermes`, which sets `memory.provider: sibyl` in config.yaml.
 
 Usage:
   sibyl-memory-hermes install-plugin
@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import shlex
 import shutil
 import sys
 import tempfile
@@ -66,7 +67,7 @@ def _plugin_dest(hermes_home: Path) -> Path:
 def _memory_provider_dest(override: str | None = None) -> Path | None:
     """0.7+ memory-provider scan path: ``<hermes pkg>/plugins/memory/sibyl``.
 
-    Beta report (Sylvain, 2026-06-11, Hermes Agent v0.7.0): the user-plugin
+    Beta report (2026-06-11, Hermes Agent v0.7.0): the user-plugin
     path ``$HERMES_HOME/plugins/sibyl`` shows up in ``hermes plugins list`` but
     is NOT discovered as a MEMORY PROVIDER. Hermes 0.7.0 scans memory providers
     only under the installed package's ``plugins/memory/<name>/`` directory.
@@ -191,10 +192,101 @@ def _looks_like_sibyl_install(dest: Path) -> bool:
     return False
 
 
+def _install_skills(hermes_home: Path) -> None:
+    """Save/debloat (0.5.0 build, spec plugin-save-debloat 3.5, D5): the save
+    and debloat procedures in ~/.sibyl-memory/skills/ plus a thin skill for
+    each in $HERMES_HOME/skills/<name>/SKILL.md, the directory hermes-agent
+    0.19.0 documents (hermes_constants.get_skills_dir()). Checksum-managed; a
+    person's edit is never overwritten. Never fails the install."""
+    try:
+        from sibyl_memory_client import skills as sk
+        rep = sk.install(Path.home())
+        lines = [f"procedures v{rep.version}: "
+                 + ", ".join(f"{n} {s}" for n, s in rep.results.items())]
+        for name, shim in sk.SHIM_NAMES.items():
+            p = Path(hermes_home) / "skills" / shim / "SKILL.md"
+            st = sk.install_shim(Path.home(), p, sk.shim_text(name, "hermes"),
+                                 harness="hermes", skill=name)
+            lines.append(f"{p}: {st}")
+    except Exception as e:
+        lines = [f"save/debloat skills not installed ({type(e).__name__})"]
+    print()
+    print(a.eyebrow("save + debloat skills"))
+    for ln in lines:
+        print(a.dim("  " + ln))
+
+
+_INSTALL_CMD = "sibyl-memory-hermes install-plugin"
+
+
+def _handoff(next: str, *, human: str | None = None, later: tuple = ()) -> None:
+    """Agent handoff block (spec agent-handoff-messages 2026-10-03, 1.1):
+    plain lines at column 0, ``next:`` always last."""
+    for c in later:
+        print(f"later: {c}")
+    if human:
+        print(f"ask your human: {human}")
+    print(f"next: {next}", flush=True)
+
+
+def _refusal_handoff(rc: int, dest: Path) -> None:
+    """Row H8: what the person decides when the plugin folder is refused."""
+    if rc == 2:
+        _handoff(f"{_INSTALL_CMD} --force", human=f"{dest} already has files; confirm replacing them")
+    elif rc == 3:
+        _handoff(_INSTALL_CMD, human=f"{dest} is a symlink; remove it, then tell me")
+    else:
+        _handoff(_INSTALL_CMD, human=f"{dest} holds files that are not a Sibyl install; move them "
+                                     "aside, then tell me")
+
+
+def _provider_is_sibyl(hermes_home: Path) -> bool:
+    """True when ``<hermes_home>/config.yaml`` already sets memory.provider: sibyl."""
+    cfg = Path(hermes_home) / "config.yaml"
+    try:
+        text = cfg.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return _provider_is_sibyl_text(text)
+    try:
+        data = yaml.safe_load(text) or {}
+        mem = data.get("memory") if isinstance(data, dict) else None
+        return isinstance(mem, dict) and mem.get("provider") == "sibyl"
+    except Exception:
+        return False
+
+
+def _provider_is_sibyl_text(text: str) -> bool:
+    """Line scan used when PyYAML is absent: a top-level ``memory:`` key whose
+    indented block holds ``provider: sibyl`` (optionally quoted)."""
+    in_memory = False
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            in_memory = line.strip() == "memory:"
+            continue
+        if in_memory:
+            key, sep, val = line.strip().partition(":")
+            if sep and key.strip() == "provider" and val.strip().strip("'\"") == "sibyl":
+                return True
+    return False
+
+
+def _signed_in() -> bool:
+    import os
+    p = Path(os.environ.get("SIBYL_CREDENTIALS") or "~/.sibyl-memory/credentials.json").expanduser()
+    return p.is_file() and not p.is_symlink()
+
+
 def install(hermes_home: Path, force: bool, dry_run: bool,
             memory_provider_path: str | None = None) -> int:
     dest = _plugin_dest(hermes_home)
-    # 0.7+ memory-provider scan path (Sylvain beta report 2026-06-11). May be
+    # 0.7+ memory-provider scan path (beta report 2026-06-11). May be
     # None when Hermes isn't importable and no override was given.
     provider_dest = _memory_provider_dest(memory_provider_path)
 
@@ -213,6 +305,7 @@ def install(hermes_home: Path, force: bool, dry_run: bool,
     print(a.eyebrow("writing payload · user-plugin path"))
     rc = _write_payload(dest, force=force, dry_run=dry_run)
     if rc != 0:
+        _refusal_handoff(rc, dest)
         return rc
 
     # 2) Memory-provider scan path (<hermes pkg>/plugins/memory/sibyl) — the
@@ -221,6 +314,8 @@ def install(hermes_home: Path, force: bool, dry_run: bool,
     #    hard failure — the user-plugin path already succeeded; we tell them the
     #    exact manual command. (PKG-1 in the 2026-06-11 unfixed-bug ledger.)
     provider_written = False
+    provider_human: str | None = None
+    provider_later: tuple = ()
     if provider_dest is not None:
         print()
         print(a.eyebrow("writing payload · 0.7+ memory-provider path"))
@@ -235,6 +330,7 @@ def install(hermes_home: Path, force: bool, dry_run: bool,
             print(a.dim("  discover Sibyl as a memory provider, copy the adapter there with sudo:"))
             print(a.dim(f"    sudo mkdir -p {provider_dest}"))
             print(a.dim(f"    sudo cp -r {dest}/. {provider_dest}/"))
+            provider_human = f"copy the adapter into {provider_dest} with sudo (the two commands above)"
     else:
         print()
         print(a.warn_line("Hermes package not detected — only the user-plugin path was written."))
@@ -243,10 +339,14 @@ def install(hermes_home: Path, force: bool, dry_run: bool,
         print(a.dim("  shows Plugin: NOT installed, rerun with --memory-provider-path"))
         print(a.dim("  pointing at your Hermes install's plugins/memory directory, e.g.:"))
         print(a.dim("    sibyl-memory-hermes install-plugin --memory-provider-path /opt/hermes/plugins/memory"))
+        provider_human = ("where your Hermes install's plugins/memory directory is (Hermes 0.7+ reads "
+                          "memory providers only there)")
+        provider_later = (f"{_INSTALL_CMD} --memory-provider-path <dir>",)
 
     if dry_run:
         print()
         print(a.warn_line("Dry run complete. No files modified."))
+        _handoff("done")
         return 0
 
     # Surface which Hermes versions read which path so the split is never a mystery.
@@ -261,23 +361,27 @@ def install(hermes_home: Path, force: bool, dry_run: bool,
 
     print()
     print(a.success_line("Plugin installed."))
+    _install_skills(hermes_home)
     print()
     print(a.section_header("next steps", subtitle="three to go · then your agent has memory"))
     print()
 
-    # Step 1: activate in config.yaml
+    # Step 1: activate in config.yaml (`sibyl setup hermes` writes the line).
+    # `sibyl setup hermes` resolves $HERMES_HOME, then ~/.hermes; a home
+    # passed with --hermes-home is named so it wires the same one.
+    setup_cmd = "sibyl setup hermes"
+    if Path(hermes_home).expanduser().resolve() != _hermes_home(None).resolve():
+        setup_cmd += f" --hermes-home {shlex.quote(str(hermes_home))}"
     print(f"  {a.chip('1', palette='accent')}  {a.bold('Activate Sibyl in your Hermes config')}")
-    print(f"      {a.color(str(hermes_home / 'config.yaml'), a.INK)}")
-    print()
-    print(f"        {a.color('memory:', a.ACCENT)}")
-    print(f"          {a.color('provider:', a.ACCENT)} {a.color('sibyl', a.INK)}")
+    print(f"      {a.color(setup_cmd, a.INK)}")
+    print(a.dim(f"      sets memory.provider: sibyl in {hermes_home / 'config.yaml'}"))
     print()
 
-    # Step 2: bind account
-    print(f"  {a.chip('2', palette='accent')}  {a.bold('Bind your account')}  {a.dim('(optional · lifts the 5 MB free-tier cap)')}")
+    # Step 2: sign in (0.5.0: an account is required for the memory tools)
+    print(f"  {a.chip('2', palette='accent')}  {a.bold('Sign in')}  {a.dim('(required · the memory tools need an account)')}")
     print(f"      {a.color('sibyl init', a.INK)}")
-    print(a.dim("      three paths: desktop wallet · email + code · mobile wallet"))
-    print(a.dim("      defer if you want: the plugin runs on a local default tenant without it"))
+    print(a.dim("      sign in with email + code or a desktop wallet; sibyl init shows every path"))
+    print(a.dim("      until then the tools answer: run sibyl init. your local data is kept"))
     print()
 
     # Step 3: start hermes
@@ -291,6 +395,15 @@ def install(hermes_home: Path, force: bool, dry_run: bool,
     print(f"  {a.dim('uninstall later:')} {a.color('sibyl-memory-hermes uninstall-plugin', a.INK)}")
     print(f"  {a.dim('docs:')}             {a.color('docs.sibyllabs.org/memory/integrations', a.INK)}")
     print()
+    # Rows H7 / H9: the copy the person must make with sudo comes first. When
+    # config.yaml does not yet name sibyl as the memory provider, `sibyl
+    # setup hermes` writes that line itself (and asks for the restart), so
+    # the agent runs it instead of asking for a hand edit.
+    if _provider_is_sibyl(hermes_home):
+        nxt = "sibyl status" if _signed_in() else "sibyl init"
+    else:
+        nxt = setup_cmd
+    _handoff(nxt, human=provider_human, later=provider_later)
     return 0
 
 

@@ -31,15 +31,11 @@ script bridges that gap.
 HERMES INSTALL FLOW
 ===================
 
-    pip install sibyl-memory-hermes
-    sibyl-memory-hermes install-plugin
+    pip install sibyl-memory-hermes sibyl-memory-cli
+    sibyl setup hermes             # runs install-plugin and sets
+                                   # memory.provider: sibyl in config.yaml
 
-    # then edit ~/.hermes/config.yaml:
-    #   memory:
-    #     provider: sibyl
-
-    # (optional) bind your account to lift the 5 MB free-tier cap:
-    pip install sibyl-memory-cli
+    # required: sign in once (the memory tools need an account)
     sibyl init
 
     hermes                         # sibyl_remember / recall / search / list

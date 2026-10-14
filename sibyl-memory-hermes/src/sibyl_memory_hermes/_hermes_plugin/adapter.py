@@ -15,9 +15,8 @@ Install location:
     Drop this directory at one of:
       $HERMES_HOME/plugins/sibyl/     (user install)
       <site-packages>/plugins/memory/sibyl/   (bundled install)
-    Then activate via config.yaml:
-      memory:
-        provider: sibyl
+    Then activate with `sibyl setup hermes`, which sets
+    `memory.provider: sibyl` in config.yaml.
 
 Configuration:
     Credentials live in ~/.sibyl-memory/credentials.json (managed by the
@@ -32,6 +31,14 @@ Environment overrides:
     the SDK provider precedence (explicit > credentials > default). Absent or
     blank leaves tenant resolution untouched. This is an identifier, not a
     secret, and is never logged as a value.
+
+0.5.0 account gate (spec account-gated 3.3):
+    Memory needs an activated account (`sibyl init`) holding a valid,
+    server-signed entitlement. A signed-out provider still LOADS
+    (is_available() stays a cheap import check) so the user sees why:
+    handle_tool_call returns tool_error(<one action>); sync_turn, prefetch and
+    the mirror hooks skip silently after ONE warning per process, never crash
+    and never retry (EntitlementError is not a busy error).
 
 v0.3.1 hardening (audit-remediation):
     - Hermes ABC + tool_error imports are guarded: module imports cleanly
@@ -79,6 +86,121 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+# 0.5.0 account gate (spec section 8.1 copy).
+_SIGNED_OUT_TOOL_ERROR = ("Sibyl Memory is not signed in on this computer. Run sibyl init "
+                          "in a terminal, then try again. Your local memory is kept.")
+_SIGNED_OUT_LOG = ("Sibyl memory is signed out: run sibyl init. Memory tools return an "
+                   "error until then. next: sibyl init")
+_signed_out_warned = False
+_signed_out_lock = threading.Lock()
+
+
+def _is_entitlement_error(exc: BaseException) -> bool:
+    try:
+        from sibyl_memory_client.exceptions import EntitlementError
+    except Exception:  # pragma: no cover - client too old to have the gate
+        return False
+    return isinstance(exc, EntitlementError)
+
+
+def _is_cap_error(exc: BaseException) -> bool:
+    try:
+        from sibyl_memory_client.exceptions import CapExceededError
+    except Exception:  # pragma: no cover
+        return False
+    return isinstance(exc, CapExceededError)
+
+
+def _warn_signed_out_once() -> None:
+    """ONE warning per process, however many turns hit the gate."""
+    global _signed_out_warned
+    with _signed_out_lock:
+        if _signed_out_warned:
+            return
+        _signed_out_warned = True
+    logger.warning(_SIGNED_OUT_LOG)
+
+
+def _capsule_next(why: Any) -> str:
+    """Row H6: the log line's trailing handoff when ``why`` is an entitlement
+    code (client table 2.1); empty otherwise."""
+    try:
+        from sibyl_memory_client.exceptions import ENTITLEMENT_NEXT
+    except Exception:  # pragma: no cover - client older than the tables
+        return ""
+    nxt = ENTITLEMENT_NEXT.get(str(why))
+    return f" next: {nxt}" if nxt else ""
+
+
+def _log_adoption_once(sibyl: Any) -> None:
+    """ONE log line when the first gated operation moved the rows written
+    before sign-in into the account (client ``adoption_notice``: given out once,
+    counts only, never a key or a body). WARNING so it shows at Python's default
+    log level; it is information, not a fault. Never raises."""
+    try:
+        client = getattr(sibyl, "client", None)
+        fn = getattr(client, "adoption_notice", None)
+        notice = fn() if callable(fn) else None
+    except Exception:
+        return
+    if notice:
+        logger.warning("Sibyl memory: %s", notice)
+
+
+def _suppressed():
+    """The client's lifecycle ``suppressed()`` (automatic writes are not the
+    person's work and do not count toward the save reminder), or a no-op on an
+    older client."""
+    try:
+        from sibyl_memory_client.lifecycle.state import suppressed
+        return suppressed()
+    except Exception:
+        import contextlib
+        return contextlib.nullcontext()
+
+
+def _with_handoff(err_json: str, msg: str, nxt: str, human: str | None) -> str:
+    """Agent handoff (spec 2026-10-03 section 1.5): keep Hermes' own
+    ``tool_error`` envelope (whatever keys it carries), add ``next`` and
+    ``human_action``. A ``tool_error`` that ever returns non-JSON falls back to
+    the stub shape built directly. The ``error`` text is unchanged."""
+    try:
+        payload = json.loads(err_json)
+    except (TypeError, ValueError):
+        payload = None
+    if not isinstance(payload, dict):
+        payload = {"error": msg}
+    payload["next"] = nxt
+    payload["human_action"] = human
+    return json.dumps(payload)
+
+
+def _handoff_tool_error(msg: str, nxt: str, human: str | None = None) -> str:
+    return _with_handoff(tool_error(msg), msg, nxt, human)
+
+
+def _exc_handoff(exc: BaseException, default_next: str, default_human: str | None) -> tuple:
+    nxt = getattr(exc, "next", None)
+    if not isinstance(nxt, str) or not nxt:
+        return default_next, default_human
+    human = getattr(exc, "human_action", None)
+    return nxt, human if isinstance(human, str) and human else None
+
+
+def _entitlement_tool_error(exc: BaseException) -> str:
+    """The agent-facing refusal: one action, never a token or a stack.
+    Rows H1 / H2: ``error`` text as before (the exception's ``summary``, the
+    section 8 copy), plus ``next`` / ``human_action`` from the exception."""
+    if getattr(exc, "code", None) == "no_account":
+        return _handoff_tool_error(_SIGNED_OUT_TOOL_ERROR, "sibyl init", None)
+    nxt, human = _exc_handoff(exc, "sibyl init", None)
+    return _handoff_tool_error(getattr(exc, "summary", None) or str(exc), nxt, human)
+
+
+_CAP_HUMAN = ("the free 5 MB memory cap is full; Pro is a purchase, so it is your call; "
+              "nothing was deleted")
+_NOT_INITIALIZED_HUMAN = "restart Hermes so the sibyl memory provider loads"
 
 # Timeouts + sizes: all named constants, no magic numbers in dispatch logic.
 _SYNC_JOIN_TIMEOUT = 5.0          # wait this long for previous sync_turn write
@@ -327,6 +449,123 @@ class SibylAdapter(MemoryProvider):
         self._sync_thread: threading.Thread | None = None
         self._sync_lock = threading.Lock()
         self._shutting_down = False  # P-C2 fix: skip slow paths during shutdown
+        # Save/debloat (0.5.0 build, spec plugin-save-debloat 5.3).
+        self._started_at: float | None = None
+        self._writes_at_start: int = 0
+        self._turns = 0
+        self._capsule_written = False
+        self._notices: Any = None
+        self._locked_logged = False
+        self._flush_thread: threading.Thread | None = None
+
+    # -- save / debloat (spec plugin-save-debloat 3.5, 5.3) -----------------
+
+    def _lifecycle_client(self) -> Any:
+        return getattr(self._sibyl, "client", None) if self._sibyl is not None else None
+
+    def _pro(self) -> bool:
+        client = self._lifecycle_client()
+        if client is None:
+            return False
+        try:
+            from sibyl_memory_client.lifecycle.entitled import automation_allowed
+            return bool(automation_allowed(client)[0])
+        except Exception:
+            return False
+
+    def _lifecycle_start(self) -> None:
+        """Process start: remember the session baseline; on Pro run the
+        debloat plan for the home and cwd under the person's policy in a
+        daemon thread (the report goes to the log and the next prefetch)."""
+        self._started_at = time.time()
+        self._turns = 0
+        self._capsule_written = False
+        try:
+            from sibyl_memory_client.lifecycle import state as _st
+            from sibyl_memory_client.lifecycle.notices import ProcessNotices
+            client = self._lifecycle_client()
+            if client is not None:
+                # The adapter's own writes count toward the save reminder
+                # (opt-in; a bare SDK client does not count).
+                client.enable_lifecycle_counting(Path.home())
+            tid = client.get_tenant() if client is not None else ""
+            self._writes_at_start = int(_st.LifecycleState().load().get("tenants", {})
+                                        .get(tid, {}).get("writes_total") or 0)
+            self._notices = ProcessNotices("hermes", session_id=self._session_id or None)
+            if client is not None:
+                self._notices.start(client, home=Path.home(), cwd=Path(os.getcwd()))
+        except Exception as e:
+            logger.debug("Sibyl lifecycle start skipped: %s", type(e).__name__)
+
+    def _note_activity(self) -> None:
+        """R1 (plan 2.1): a Hermes turn or tool call is an event of this
+        session's active time (in memory; the automatic-save request rides
+        the next prefetch line when due)."""
+        n = self._notices
+        if n is not None:
+            try:
+                n.note_activity()
+            except Exception:
+                pass
+
+    def _run_learner(self) -> None:
+        """Pro only: one local-deterministic learner pass (skill proposals);
+        nothing on the free tier, no network."""
+        client = self._lifecycle_client()
+        if client is None:
+            return
+        try:
+            from sibyl_memory_client.lifecycle.proposals import run_learner
+            run_learner(client, home=Path.home())
+        except Exception as e:
+            logger.debug("Sibyl learner skipped: %s", type(e).__name__)
+
+    def _lifecycle_line(self) -> str | None:
+        """One lifecycle line for this turn (Pro report, unsaved-last-session,
+        free save-due / debloat-due), logged once at INFO. Never raises."""
+        n = self._notices
+        client = self._lifecycle_client()
+        if n is None or client is None:
+            return None
+        try:
+            line = n.next_notice(client, home=Path.home(), cwd=Path(os.getcwd()))
+        except Exception:
+            return None
+        if line:
+            logger.info("Sibyl memory: %s", line)
+        return line
+
+    def _write_capsule(self, *, reason: str) -> bool:
+        """Pro only: one session capsule (counts, no content). A locked gate
+        writes nothing and logs once."""
+        client = self._lifecycle_client()
+        if client is None:
+            return False
+        try:
+            from sibyl_memory_client.lifecycle import capsule as _cap
+            from sibyl_memory_client.lifecycle import state as _st
+            from sibyl_memory_client.lifecycle.entitled import automation_allowed
+            ok, why = automation_allowed(client)
+            if not ok:
+                if why not in ("free", "no_entitlement") and not self._locked_logged:
+                    self._locked_logged = True
+                    logger.info("Sibyl memory: no session capsule (%s).%s", why, _capsule_next(why))
+                return False
+            tid = client.get_tenant()
+            st = _st.LifecycleState().load()
+            t = st.get("tenants", {}).get(tid, {})
+            writes = max(0, int(t.get("writes_total") or 0) - self._writes_at_start)
+            saved = bool(t.get("last_save_at") and self._started_at
+                         and t["last_save_at"] >= self._started_at)
+            cap = _cap.build_capsule(harness="hermes", session_id=self._session_id,
+                                     started_at=self._started_at,
+                                     ended_at=time.time() if reason == "shutdown" else None,
+                                     turns=self._turns, memory_writes=writes,
+                                     saved_by_skill=saved, cwd=os.getcwd())
+            return _cap.write_capsule(client, cap) is not None
+        except Exception as e:
+            logger.debug("Sibyl capsule (%s) failed: %s", reason, type(e).__name__)
+            return False
 
     # -- mandatory ----------------------------------------------------------
 
@@ -378,8 +617,9 @@ class SibylAdapter(MemoryProvider):
         self._db_path = db_path
 
         # autoload_credentials=True picks up ~/.sibyl-memory/credentials.json
-        # (created by `sibyl init`). require_credentials=False so we degrade
-        # to DEFAULT_TENANT pre-activation rather than crash on first run.
+        # (created by `sibyl init`). require_credentials=False so a signed-out
+        # install still initializes (never crashes the agent); 0.5.0: its
+        # memory tools answer "run sibyl init" until an account is present.
         self._sibyl = SibylMemoryProvider(
             db_path=db_path,
             tenant_id=tenant_override,
@@ -389,6 +629,7 @@ class SibylAdapter(MemoryProvider):
         logger.info("Sibyl memory initialized: db=%s session=%s profile=%s tenant_override=%s",
                     db_path, session_id, self._profile,
                     "set" if tenant_override else "unset")
+        self._lifecycle_start()
 
     @staticmethod
     def _safe_profile(name: str) -> str:
@@ -456,12 +697,32 @@ class SibylAdapter(MemoryProvider):
             "most TWICE (past two retries the loop answers a shorter question, not "
             "yours). 'gated' = found but too weakly matched; 'empty_store' = "
             "nothing written yet; 'no_match' = a genuine miss.\n"
-            "- sibyl_list(category?, status?): browse what's remembered"
+            "- sibyl_list(category?, status?): browse what's remembered\n"
+            "# Saving and trimming\n"
+            "- Save after important work, before ending a session, or when Sibyl asks: follow "
+            "~/.sibyl-memory/skills/SAVE.md using the tools above (sibyl_remember, sibyl_search, "
+            "sibyl_recall, sibyl_list).\n"
+            + ("- On this plan, run the save procedure yourself at natural end points without "
+               "asking, and in headless mode whenever a Sibyl Memory note asks for it (by default "
+               "about every hour of active work); Sibyl records a session capsule anyway.\n"
+               if self._pro() else
+               "- Offer to save when a block of work ends; automatic save is on Pro.\n")
+            + "- To measure or trim the instruction files loaded every start, follow "
+            "~/.sibyl-memory/skills/DEBLOAT.md."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not self._sibyl or not query or len(query.strip()) < _MIN_QUERY_LEN:
             return ""
+        block = self._prefetch_block(query, session_id=session_id)
+        # Save/debloat (spec 4.2): at most one plugin line, OUTSIDE the
+        # untrusted-memory fence (it is the plugin speaking, not stored data).
+        line = self._lifecycle_line()
+        if line:
+            return (block + "\n\n" if block else "") + "## Sibyl Memory: note\n" + line
+        return block
+
+    def _prefetch_block(self, query: str, *, session_id: str = "") -> str:
         # Multi-strategy prefetch: try the full query first (the SDK default
         # is AND-of-tokens as of sibyl-memory-client v0.4.2, so multi-word
         # natural queries DO hit), then top up with per-significant-token
@@ -483,8 +744,12 @@ class SibylAdapter(MemoryProvider):
 
         try:
             _absorb(self._sibyl.search(clean, limit=_PREFETCH_LIMIT))
+            _log_adoption_once(self._sibyl)
         except Exception as e:
-            logger.debug("Sibyl prefetch primary search failed: %s", e)
+            if _is_entitlement_error(e):
+                _warn_signed_out_once()
+                return ""
+            logger.debug("Sibyl prefetch primary search failed: %s", type(e).__name__)
 
         # Per-token top-up. Skip stopwords + short tokens to avoid noise.
         if len(merged) < _PREFETCH_LIMIT:
@@ -569,6 +834,8 @@ class SibylAdapter(MemoryProvider):
 
         sid = session_id or self._session_id
         sibyl = self._sibyl
+        self._turns += 1
+        self._note_activity()
 
         def _write() -> None:
             attempts = _BUSY_RETRY_ATTEMPTS
@@ -578,12 +845,20 @@ class SibylAdapter(MemoryProvider):
                         "Sibyl sync_turn skipping write during shutdown (session=%s)", sid)
                     return
                 try:
-                    sibyl.save_context(
-                        inputs={"user": user_content, "session_id": sid},
-                        outputs={"assistant": assistant_content},
-                    )
+                    # The per-turn journal is automatic, not the person's
+                    # work: it does not count toward the save reminder.
+                    with _suppressed():
+                        sibyl.save_context(
+                            inputs={"user": user_content, "session_id": sid},
+                            outputs={"assistant": assistant_content},
+                        )
+                    _log_adoption_once(sibyl)
                     return  # success
                 except Exception as e:
+                    if _is_entitlement_error(e):
+                        # Not a busy error: never retried (no retry storm).
+                        _warn_signed_out_once()
+                        return
                     if attempt < attempts:
                         # Exponential backoff for SQLITE_BUSY / transient errors
                         time.sleep(_BUSY_RETRY_BACKOFF * (2 ** (attempt - 1)))
@@ -604,8 +879,14 @@ class SibylAdapter(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
         if not self._sibyl:
-            return tool_error("Sibyl provider not initialized")
+            return _handoff_tool_error("Sibyl provider not initialized", "done", _NOT_INITIALIZED_HUMAN)
+        self._note_activity()
+        try:
+            return self._handle_tool_call(tool_name, args)
+        finally:
+            _log_adoption_once(self._sibyl)
 
+    def _handle_tool_call(self, tool_name: str, args: dict[str, Any]) -> str:
         try:
             if tool_name == "sibyl_remember":
                 category = args.get("category")
@@ -672,10 +953,17 @@ class SibylAdapter(MemoryProvider):
             return tool_error(f"Unknown tool: {tool_name}")
 
         except Exception as e:
+            if _is_entitlement_error(e):
+                _warn_signed_out_once()
+                return _entitlement_tool_error(e)
             logger.exception("Sibyl tool %s failed", tool_name)
             # SEC-10 hardening: send only the exception class name back to the
             # agent. str(e) could echo entity bodies / args that contained
             # sensitive content. The full exception is in the local log.
+            if _is_cap_error(e):
+                # Row H5: still the class name only, plus the handoff.
+                nxt, human = _exc_handoff(e, "sibyl upgrade", _CAP_HUMAN)
+                return _handoff_tool_error(f"{type(e).__name__}", nxt, human)
             return tool_error(f"{type(e).__name__}")
 
     def shutdown(self) -> None:
@@ -683,8 +971,27 @@ class SibylAdapter(MemoryProvider):
         # see it on their next iteration and exit without issuing a slow
         # cap-gate refresh.
         self._shutting_down = True
+        t0 = time.monotonic()
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=_SHUTDOWN_JOIN_TIMEOUT)
+        # Save/debloat (spec 5.3): on Pro, one session capsule, synchronously,
+        # bounded by what is left of the shutdown budget. Free: nothing.
+        if self._sibyl is not None and not self._capsule_written:
+            left = max(0.5, _SHUTDOWN_JOIN_TIMEOUT - (time.monotonic() - t0))
+            done: dict[str, bool] = {}
+            t = threading.Thread(target=lambda: done.setdefault("ok", self._write_capsule(reason="shutdown")),
+                                 daemon=True, name="sibyl-capsule")
+            t.start()
+            t.join(timeout=left)
+            self._capsule_written = bool(done.get("ok"))
+        # R1 (plan 3.4): on Pro, one learner pass at session end (skill
+        # proposals for the next start), bounded by what is left of the
+        # shutdown budget; a daemon thread, so a slow pass never holds Hermes.
+        if self._sibyl is not None and self._pro():
+            left = max(0.5, _SHUTDOWN_JOIN_TIMEOUT - (time.monotonic() - t0))
+            lt = threading.Thread(target=self._run_learner, daemon=True, name="sibyl-learner")
+            lt.start()
+            lt.join(timeout=left)
 
     # -- optional hooks ----------------------------------------------------
 
@@ -725,15 +1032,25 @@ class SibylAdapter(MemoryProvider):
                 if self._shutting_down:
                     return
                 try:
-                    sibyl.save_context(
-                        inputs={"user": user_c, "session_id": sid,
-                                "reason": "pre_compress"},
-                        outputs={"assistant": asst_c},
-                    )
+                    with _suppressed():
+                        sibyl.save_context(
+                            inputs={"user": user_c, "session_id": sid,
+                                    "reason": "pre_compress"},
+                            outputs={"assistant": asst_c},
+                        )
                 except Exception as e:
-                    logger.debug("Sibyl pre_compress flush failed: %s", e)
+                    if _is_entitlement_error(e):
+                        _warn_signed_out_once()
+                        return
+                    logger.debug("Sibyl pre_compress flush failed: %s", type(e).__name__)
+            # Save/debloat (spec 5.3): on Pro, a capsule too (the context is
+            # about to be lost). Free: the flush only.
+            if not self._shutting_down:
+                self._write_capsule(reason="pre_compress")
 
-        threading.Thread(target=_flush, daemon=True, name="sibyl-flush").start()
+        t = threading.Thread(target=_flush, daemon=True, name="sibyl-flush")
+        self._flush_thread = t
+        t.start()
         return ""
 
     def on_delegation(self, task: str, result: str, *,
@@ -747,7 +1064,10 @@ class SibylAdapter(MemoryProvider):
                 outputs={"child_result": result},
             )
         except Exception as e:
-            logger.debug("Sibyl on_delegation failed: %s", e)
+            if _is_entitlement_error(e):
+                _warn_signed_out_once()
+                return
+            logger.debug("Sibyl on_delegation failed: %s", type(e).__name__)
 
     def on_memory_write(self, action: str, target: str, content: str,
                         metadata: dict[str, Any] | None = None) -> None:
@@ -769,7 +1089,10 @@ class SibylAdapter(MemoryProvider):
             elif action == "remove":
                 self._sibyl.forget(category=target, name=name)
         except Exception as e:
-            logger.debug("Sibyl on_memory_write (%s/%s) failed: %s", action, target, e)
+            if _is_entitlement_error(e):
+                _warn_signed_out_once()
+                return
+            logger.debug("Sibyl on_memory_write (%s/%s) failed: %s", action, target, type(e).__name__)
 
     # -- config ------------------------------------------------------------
 

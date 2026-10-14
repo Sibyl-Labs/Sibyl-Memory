@@ -1,4 +1,4 @@
-"""N1' diagnostics passthrough (2026-08-18 Kravento PL eval, part 4).
+"""N1' diagnostics passthrough (2026-08-18 Polish-language eval, part 4).
 
 SibylMemoryProvider.search_multi_record accepts an optional `diagnostics`
 dict, forwarded straight to sibyl_memory_client.multi_record.multi_record_search.

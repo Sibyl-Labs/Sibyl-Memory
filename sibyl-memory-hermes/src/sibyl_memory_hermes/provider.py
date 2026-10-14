@@ -8,7 +8,8 @@ contract is satisfied by a thin adapter at `_hermes_plugin/adapter.py`
 that delegates to this class. The split is intentional:
 
   - This class can be used by any orchestration (LangChain, LlamaIndex,
-    custom Python, the sibyl-memory-mcp server, direct callers).
+    custom Python, direct callers). The sibyl-memory-mcp server does not use
+    it; it talks to sibyl-memory-client directly.
   - The Hermes adapter handles Hermes-specific lifecycle (initialize,
     sync_turn, get_tool_schemas, etc.) and is installed via the
     `sibyl-memory-hermes install-plugin` console script.
@@ -17,8 +18,8 @@ Prior versions (v0.2.x) attempted conditional inheritance from Hermes'
 ABC at import time, but the import path was wrong (`hermes_agent.memory`
 vs the actual `agent.memory_provider`), so the soft-bind silently failed
 on every install. v0.3.0 removes the conditional inheritance entirely -
-the adapter handles all Hermes glue. See packages/sibyl-memory-hermes/
-CHANGELOG.md for the full ratification of this architectural shift.
+the adapter handles all Hermes glue. See sibyl-memory-hermes/CHANGELOG.md
+for the full ratification of this architectural shift.
 
 The provider routes operations onto the correct memory tier:
 
@@ -87,8 +88,12 @@ class SibylMemoryProvider:
                         is used only when credentials are genuinely absent.
         credentials_path: override for credentials.json discovery.
         require_credentials: if True, raise CredentialsNotFoundError when
-                        the file is missing. Default False: degrade to
-                        DEFAULT_TENANT so callers can run pre-activation.
+                        the file is missing. Default False: construct anyway
+                        (import-time compatibility). 0.5.0: "construct anyway"
+                        no longer means a working store. Every memory method
+                        raises EntitlementError (code no_account) until
+                        `sibyl init` runs, because the client gates on the
+                        account (spec account-gated 3.3).
         autoload_credentials: if True (default), read credentials.json on
                         construction and apply tenant_id from it.
     """
@@ -135,45 +140,25 @@ class SibylMemoryProvider:
             resolved_tenant = DEFAULT_TENANT
 
         self._credentials = creds
-        # Plumb account_id, session_token, tier, and the HMAC-signed
-        # credentials claim through to the client so the cap gate can:
-        #   1. verify free-tier writes against the authoritative server when
-        #      the local DB approaches 2 MB (v0.3.0 behavior), and
-        #   2. include the credentials_signature + claim in cap-check
-        #      requests so the server can detect local credentials.json
-        #      tampering and log it as telemetry (v0.3.1+).
+        # Plumb account_id, session_token and tier through to the client so the
+        # cap gate can verify free-tier writes against the authoritative server
+        # at the cap boundary. 0.5.0: the HMAC claim (with email + wallet) is
+        # no longer built: client 0.9.0 sends the server-signed entitlement on
+        # /check-write instead (spec D11).
         client_tier = creds.tier if creds else "free"
         client_account_id = creds.account_id if creds else None
         client_session_token = creds.session_token if creds else None
-        # Build the canonical signed-claim object that matches the server's
-        # SIGNING_FIELDS shape. Order doesn't matter on the JSON wire -
-        # the server canonicalizes by field name.
-        client_claim = None
-        client_signature = None
-        if creds and creds.signature:
-            client_signature = creds.signature
-            client_claim = {
-                "account_id": creds.account_id,
-                "tenant_id": creds.tenant_id,
-                "tier": creds.tier,
-                # Contract PII (super-patch 2026-07-05): email/wallet stay on the
-                # wire. Dropping them is POLICY-GATED on a backend re-sign over
-                # server-stored PII (plan §3/§6) -- removing them here first would
-                # break server-side signature verification. Do NOT strip until
-                # the backend signing set is PII-free.
-                "email": creds.email,
-                "wallet": creds.wallet,
-                "issued_at": creds.issued_at,
-                "schema_version": creds.schema_version,
-            }
+        # ACCOUNT GATE (0.5.0): the client gates every memory operation on the
+        # credentials file THIS provider resolves, always, including when an
+        # explicit tenant_id (or SIBYL_TENANT_ID in the adapter) skipped
+        # autoloading: a tenant override picks the tenant, never the access.
         self._client = MemoryClient.local(
             db_path,
             tenant_id=resolved_tenant,
             tier=client_tier,
             account_id=client_account_id,
             session_token=client_session_token,
-            credentials_claim=client_claim,
-            credentials_signature=client_signature,
+            credentials_path=Path(credentials_path).expanduser(),
         )
 
         # v0.3.0: no conditional super().__init__(): class is no longer
@@ -203,16 +188,16 @@ class SibylMemoryProvider:
         not by this class's inheritance. Always returns False.
 
         v0.3.1: emits ``DeprecationWarning`` on read so users see the
-        signal before v0.4 removal.
+        signal before removal.
 
-        Removed in v0.4.0.
+        Still present in 0.5.0; to be removed in a future release.
         """
         import warnings
         warnings.warn(
             "SibylMemoryProvider.hermes_bound is deprecated and always "
             "returns False since v0.3.0. The Hermes plugin contract is "
             "now satisfied by the bundled adapter at _hermes_plugin/"
-            "adapter.py. Property will be removed in v0.4.0.",
+            "adapter.py. Property will be removed in a future release.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -536,9 +521,20 @@ class SibylMemoryProvider:
             "db_size_bytes": db_size_bytes(db_path) if db_path.exists() else 0,
             "tenant_id": self.tenant_id,
             "hermes_bound": False,  # v0.3.0: adapter owns Hermes binding
-            "tier": self._credentials.tier if self._credentials else "free",
+            # Shown-tier fix (2026-10-08): the tier of the current verified pass,
+            # falling back to the saved credentials only without one.
+            "tier": self._display_tier(),
             "email": self._credentials.email if self._credentials else None,
         }
+
+    def _display_tier(self) -> str:
+        saved = self._credentials.tier if self._credentials else "free"
+        try:
+            fn = getattr(self._client, "tier_for_display", None)
+            t = fn() if callable(fn) else None
+        except Exception:
+            t = None
+        return t if isinstance(t, str) and t else saved
 
     # ------------------------------------------------------------------
     # repr
