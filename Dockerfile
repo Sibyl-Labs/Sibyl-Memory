@@ -2,7 +2,10 @@
 # First-party Docker image for the Sibyl Memory MCP server (stdio transport).
 # Non-root, pinned slim base, no secrets baked in. Storage lives on a mounted
 # volume at /home/app/.sibyl-memory. See sibyl-memory-mcp/README.md "Docker".
-FROM python:3.12-slim-bookworm  # TODO: pin by digest before publish (no docker daemon in build env)
+# TODO: pin by digest before publish (no docker daemon in build env).
+# Keep comments on their own line: a trailing "# ..." after FROM is parsed as
+# extra FROM arguments and fails the build.
+FROM python:3.12-slim-bookworm
 
 # No build tools needed: sibyl-memory-mcp is pure Python and sqlite3 + FTS5
 # ship in the stdlib. Keep the layer count and surface minimal.
@@ -16,9 +19,9 @@ RUN groupadd --gid 10001 app \
  && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/app app
 
 # Install the MCP server from the local monorepo source (first-party build,
-# not pulled from PyPI at image-build time). Copy only the two packages the
-# server needs, then pip install the mcp package which pulls its declared
-# deps (mcp, sibyl-memory-client, sibyl-memory-hermes) from PyPI.
+# not pulled from PyPI at image-build time). Copy only the mcp package, then
+# pip install it, which pulls its declared deps (mcp, sibyl-memory-client,
+# sibyl-memory-hermes) from PyPI.
 WORKDIR /app
 COPY sibyl-memory-mcp/ /app/sibyl-memory-mcp/
 RUN pip install /app/sibyl-memory-mcp

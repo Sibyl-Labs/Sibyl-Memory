@@ -19,7 +19,6 @@ services:
     environment:
       - SIBYL_MEMORY_DB
       - SIBYL_CREDENTIALS
-      - SIBYL_TENANT_ID
     volumes:
       - sibyl-memory-data:/home/app/.sibyl-memory
 volumes:
