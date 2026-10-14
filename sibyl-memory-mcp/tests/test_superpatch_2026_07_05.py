@@ -154,12 +154,16 @@ def test_r26_old_storage_closed_on_rebuild(monkeypatch, tmp_path):
 # Contract T (mcp half) — tenant resolution ladder
 # ----------------------------------------------------------------------
 
-def test_contract_t_falls_back_to_account_id(tmp_path, monkeypatch):
+def test_contract_t_falls_back_to_account_id(tmp_path, monkeypatch, test_signer):
     """No tenant_id in creds but an account_id present -> tenant = account_id
-    (not DEFAULT_TENANT)."""
+    (not DEFAULT_TENANT). 0.3.0: the credentials carry a session token and the
+    device holds an entitlement, as any activated install does."""
+    from sibyl_memory_client.testing import TEST_SESSION_TOKEN, write_entitlement
     acct = "22222222-2222-2222-2222-222222222222"
     cred = tmp_path / "credentials.json"
-    cred.write_text(json.dumps({"account_id": acct, "tier": "free"}))
+    cred.write_text(json.dumps({"account_id": acct, "tier": "free",
+                                "session_token": TEST_SESSION_TOKEN}))
+    write_entitlement(tmp_path, test_signer.mint(account_id=acct))
     monkeypatch.setattr(server, "DEFAULT_DB_PATH", tmp_path / "memory.db")
     monkeypatch.setattr(server, "DEFAULT_CRED_PATH", cred)
 

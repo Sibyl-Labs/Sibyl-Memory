@@ -5,21 +5,19 @@ exposes it to any MCP-compatible agent: Claude Code, Codex CLI, Cursor,
 Continue, etc.
 
 Usage (Claude Code):
-    Add to ~/.claude/settings.json or project .mcp.json:
-        {
-          "mcpServers": {
-            "sibyl-memory": { "command": "sibyl-memory-mcp" }
-          }
-        }
+    sibyl setup claude-code
+    or by hand:
+        claude mcp add --scope user sibyl-memory -- sibyl-memory-mcp
 
 Usage (Codex CLI):
-    Add to ~/.codex/config.toml:
-        [[mcp_servers]]
-        name = "sibyl-memory"
-        command = "sibyl-memory-mcp"
+    sibyl setup codex
+    or by hand, in ~/.codex/config.toml:
+        [mcp_servers.sibyl_memory]
+        command = "/absolute/path/to/sibyl-memory-mcp"
 
-Both expect `sibyl init` to have been run first so credentials.json and
-memory.db exist at ~/.sibyl-memory/.
+Both require `sibyl init` first (0.3.0): the memory tools need an activated
+account holding a valid, server-signed entitlement in ~/.sibyl-memory/. Until
+then every tool answers an error whose JSON carries code "ACCOUNT_REQUIRED".
 """
 
 from .server import build_server, run_stdio

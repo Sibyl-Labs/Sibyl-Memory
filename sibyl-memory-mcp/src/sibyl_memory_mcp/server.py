@@ -15,6 +15,41 @@ The cap gate (free-tier 5 MB hard cap, paid-tier uncapped) is enforced
 automatically by the underlying sibyl-memory-client SDK: the MCP server
 just surfaces the typed errors back to the caller.
 
+Account required (0.3.0, spec account-gated 3.2). Every memory tool needs an
+activated account (`sibyl init`) holding a valid, server-signed entitlement.
+The gate lives in sibyl-memory-client (MemoryClient._track_op); this server
+passes it the credentials path it reads and maps a refusal to a ToolError
+(isError true) whose JSON carries code "ACCOUNT_REQUIRED", the fine `reason`
+(no_account, signed_out, expired_offline, setup_incomplete, under_review,
+account_deleted, invalid_entitlement, wrong_device, policy_read_only,
+policy_none, client_too_old), a message a person can act on, `recovery` and `account_url`.
+Tool discovery is never gated, so the agent can see the tools and learn why
+they refuse. There is no pre-activation free local mode any more; the person's
+own data stays readable from a terminal with `sibyl memory list|search|recall`.
+Successful results may carry a one-line `notice` (offline grace, email nag),
+at most once per process per 24 h per text; it never contains a token.
+
+Save and debloat (0.3.0): two prompts and four resources, never gated (like
+tool discovery; the tool calls the procedures make are gated as always):
+  - prompt `save` (mode: run | preview | setup | headless | curate): the save
+    procedure, ~/.sibyl-memory/skills/SAVE.md (a person's edit honoured) or
+    the shipped text; in Claude Code it is /mcp__sibyl-memory__save;
+  - prompt `debloat` (mode: measure | trim): DEBLOAT.md;
+  - resources sibyl://skills/SAVE.md, sibyl://skills/DEBLOAT.md (text/markdown),
+    sibyl://skills/manifest and sibyl://context/weight (application/json; the
+    weight is computed on read for the server's cwd, stat only).
+When the account has nothing to say, a successful result may carry ONE
+lifecycle line instead: the tier-change line; on Pro the automatic-save
+request (R1: every tool call counts active time; once early after 5 writes or
+a compaction, then every 60 active minutes by default, `sibyl autosave`; left
+to the Stop hook when the host is Claude Code with our hook wired), the
+process-start context-trim report, the unsaved-last-session line, or the
+skill-proposals line; on the free tier the unsaved-last-session line or a
+save-due / debloat-due reminder (`sibyl reminders off` silences them all). On
+Pro the server's first client runs the debloat plan under
+~/.sibyl-memory/debloat.json and then the local learner (skill proposals) in
+a daemon thread.
+
 v0.1.1 hardening (audit-remediation):
   - MemoryClient cached at module scope, NOT reopened per call (audit P-H1).
     Invalidation: file-mtime watch of credentials.json so `sibyl upgrade`
@@ -36,13 +71,15 @@ import re
 import secrets
 import threading
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from sibyl_memory_client import DEFAULT_TENANT, MemoryClient
 from sibyl_memory_client.exceptions import (
+    ACCOUNT_URL,
     CapExceededError,
+    EntitlementError,
     NotFoundError,
     TierGateError,
     TierVerificationError,
@@ -74,7 +111,9 @@ DEFAULT_CRED_PATH = Path(os.environ.get(
 # ----------------------------------------------------------------------
 
 def _load_credentials() -> dict[str, Any]:
-    """Read credentials.json if present. Missing file = pre-activation, free tier.
+    """Read credentials.json if present. Missing file = no account: the client
+    is still built (the server must start and list its tools) and every memory
+    tool answers ACCOUNT_REQUIRED until `sibyl init` runs (0.3.0).
 
     v0.1.1 hardening:
       - Refuses to follow symlinks (SEC-11). If the file is a symlink,
@@ -100,7 +139,36 @@ _client_cache: dict[str, Any] = {
     "client": None,           # MemoryClient instance, lazily built
     "creds_mtime": None,      # mtime of credentials.json at last open
     "creds_path_exists": False,
+    "ent_mtime": None,        # token fingerprint of entitlement.json at last open (0.3.0)
 }
+
+
+_ent_seen: dict[str, Any] = {"key": None, "fp": None}
+
+
+def _entitlement_mtime() -> str | None:
+    """Fingerprint of the token in entitlement.json (beside credentials.json),
+    or None. `sibyl init` on a running server writes a new token; a change
+    rebuilds the cached client. Keyed on the TOKEN, not the raw mtime, because
+    the gate's own bookkeeping (clock high-water mark) also rewrites the file.
+    The file is re-read only when its mtime changes (bounded read)."""
+    import hashlib
+    p = DEFAULT_CRED_PATH.parent / "entitlement.json"
+    try:
+        if not p.exists() or p.is_symlink():
+            return None
+        st = p.stat()
+        key = (str(p), st.st_mtime_ns, st.st_size)
+        if key == _ent_seen["key"]:
+            return _ent_seen["fp"]
+        with p.open("rb") as fh:
+            raw = fh.read(8193)
+        tok = json.loads(raw.decode("utf-8")).get("token") if len(raw) <= 8192 else None
+        fp = hashlib.sha256(tok.encode("utf-8")).hexdigest() if isinstance(tok, str) else None
+        _ent_seen["key"], _ent_seen["fp"] = key, fp
+        return fp
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 def _credentials_mtime() -> float | None:
@@ -121,18 +189,30 @@ def _open_client() -> MemoryClient:
 
     v0.1.1 (audit P-H1): cached at module scope. Previously rebuilt every
     tool call (reading schema.sql from disk + bootstrapping FTS5 vtables -
-    10-50ms per call). Now invalidated only when credentials.json mtime
-    changes, which is the only thing that should change tier behavior.
+    10-50ms per call). Rebuilt when credentials.json changes (mtime, or it
+    appears / disappears) or when entitlement.json's fingerprint changes.
     """
+    # R1 (plan 2.1): every tool call is an event of this session's active
+    # time (in memory; nothing leaves the machine).
+    try:
+        _LIFECYCLE.note_activity()
+    except Exception:
+        pass
     with _client_lock:
         cur_mtime = _credentials_mtime()
         cur_exists = DEFAULT_CRED_PATH.exists()
+        cur_ent = _entitlement_mtime()
         client = _client_cache["client"]
         cached_mtime = _client_cache["creds_mtime"]
         cached_exists = _client_cache["creds_path_exists"]
         # Rebuild if no cached client, or credentials.json mtime changed,
-        # or credentials.json appeared / disappeared (post-init / post-logout).
-        if client is None or cur_mtime != cached_mtime or cur_exists != cached_exists:
+        # or credentials.json appeared / disappeared (post-init / post-logout),
+        # or entitlement.json changed (0.3.0: `sibyl init` on a running server
+        # takes effect on the next call, no restart). The gate itself re-reads
+        # both files on every call, so a stale cached client can never widen
+        # access; the rebuild just keeps tier/account plumbing current.
+        if (client is None or cur_mtime != cached_mtime or cur_exists != cached_exists
+                or cur_ent != _client_cache["ent_mtime"]):
             old = client
             client = _build_client()
             # R26 (audit): the previous code discarded the OLD MemoryClient
@@ -150,20 +230,21 @@ def _open_client() -> MemoryClient:
             _client_cache["client"] = client
             _client_cache["creds_mtime"] = cur_mtime
             _client_cache["creds_path_exists"] = cur_exists
+            _client_cache["ent_mtime"] = cur_ent
+            _lifecycle_start(client)
         return client
 
 
 def _build_client() -> MemoryClient:
     """Construct a fresh MemoryClient. Called only on cache miss.
 
-    v0.1.3 (sylvain1550 / KAPPA first-use bug): when credentials.json is
+    v0.1.3 (first-use beta bug): when credentials.json is
     absent, ``creds`` is ``{}`` and ``creds.get("tenant_id")`` is ``None``.
     Passing ``tenant_id=None`` *explicitly* overrode the SDK's DEFAULT_TENANT
     default, so every write hit the ``entities.tenant_id NOT NULL`` constraint
-    and failed with an opaque ``SQLite error: IntegrityError`` -- while reads
-    and tool discovery still worked, making a broken install look healthy.
-    Fall back to DEFAULT_TENANT so pre-activation free local mode writes
-    succeed, matching sibyl-memory-hermes' provider behavior.
+    and failed with an opaque ``SQLite error: IntegrityError``. The tenant still
+    falls back to DEFAULT_TENANT (the ladder's last rung), but 0.3.0 gates on
+    the ACCOUNT: with no credentials every tool answers ACCOUNT_REQUIRED.
     """
     creds = _load_credentials()
     # R30 (audit): create ~/.sibyl-memory at 0o700 so a first-touch by the MCP
@@ -187,26 +268,26 @@ def _build_client() -> MemoryClient:
         account_id=creds.get("account_id"),
         session_token=creds.get("session_token"),
         tier=creds.get("tier", "free"),
-        # Contract PII (POLICY-GATED): email/wallet stay in the claim because the
-        # backend signature is computed over them; the server must re-sign over
-        # its own stored PII before these can drop. Do NOT remove until then —
-        # dropping them here breaks signature verification. (audit Hardening #6)
-        credentials_claim={
-            "account_id": creds.get("account_id"),
-            "tenant_id": creds.get("tenant_id"),
-            "tier": creds.get("tier"),
-            "email": creds.get("email"),
-            "wallet": creds.get("wallet"),
-            "issued_at": creds.get("issued_at"),
-            "schema_version": creds.get("schema_version", 1),
-        } if creds.get("signature") else None,
-        credentials_signature=creds.get("signature"),
+        # 0.3.0: gate on the credentials file this server reads. The HMAC claim
+        # (with email + wallet) no longer goes on the wire: client 0.9.0 sends
+        # the server-signed entitlement on /check-write instead (spec D11).
+        credentials_path=DEFAULT_CRED_PATH,
     )
 
 
 # ----------------------------------------------------------------------
 # Error mapping
 # ----------------------------------------------------------------------
+
+def _handoff_of(e: Exception, default_next: str, default_human: str | None) -> tuple:
+    """(next, human_action) carried by a client exception (sibyl-memory-client
+    0.9.0 tables C1 to C17); the defaults stand in for an older client."""
+    nxt = getattr(e, "next", None)
+    if not isinstance(nxt, str) or not nxt:
+        return default_next, default_human
+    human = getattr(e, "human_action", None)
+    return nxt, human if isinstance(human, str) and human else None
+
 
 def _err(e: Exception) -> NoReturn:
     """Map an SDK exception to a ToolError so the MCP envelope sets isError=true.
@@ -219,17 +300,43 @@ def _err(e: Exception) -> NoReturn:
     and (b) can still parse error/code/recovery/upgrade_url from the message.
     """
     cls = type(e).__name__
+    if isinstance(e, EntitlementError):
+        # 0.3.0 (spec 3.2): the account gate. `code` is the stable value an
+        # agent keys on; `reason` keeps the fine state. Agent handoff (spec
+        # 2026-10-03, row M1): `message` is the section 8 copy (the exception's
+        # `summary`), `next` / `human_action` carry the handoff.
+        nxt, human = _handoff_of(e, "sibyl init", None)
+        raise ToolError(json.dumps({
+            "ok": False,
+            "error": "EntitlementError",
+            "code": "ACCOUNT_REQUIRED",
+            "reason": getattr(e, "code", "no_account"),
+            "message": getattr(e, "summary", None) or str(e),
+            "recovery": getattr(e, "recovery", "Run sibyl init in a terminal, then retry."),
+            "account_url": getattr(e, "account_url", ACCOUNT_URL),
+            "next": nxt,
+            "human_action": human,
+        }, ensure_ascii=False))
     payload = {"error": cls, "message": str(e)}
+    # Rows M2 to M4: the handoff points gain `next` and `human_action` (after
+    # every existing key); NOT_FOUND / VALIDATION_ERROR / ERROR do not (M5).
     if isinstance(e, CapExceededError):
         payload["code"] = "CAP_EXCEEDED"
         payload["recovery"] = "Run `sibyl upgrade` to lift the 5 MB free-tier cap."
         payload["upgrade_url"] = getattr(e, "upgrade_url", "https://sibyllabs.org/plugin/upgrade")
+        payload["next"], payload["human_action"] = _handoff_of(
+            e, "sibyl upgrade", "the free 5 MB memory cap is full; Pro is a purchase, so it is your "
+                                "call; nothing was deleted")
     elif isinstance(e, TierGateError):
         payload["code"] = "TIER_GATED"
         payload["recovery"] = "This feature requires a paid tier. Run `sibyl upgrade`."
+        payload["next"], payload["human_action"] = _handoff_of(
+            e, "sibyl upgrade", "this feature is on Pro; a purchase, so it is your call")
     elif isinstance(e, TierVerificationError):
         payload["code"] = "TIER_VERIFICATION_FAILED"
         payload["recovery"] = "The server couldn't verify your tier. Check connectivity and try again."
+        payload["next"], payload["human_action"] = _handoff_of(
+            e, "retry", "connect this computer to the internet once")
     elif isinstance(e, NotFoundError):
         payload["code"] = "NOT_FOUND"
     elif isinstance(e, ValidationError):
@@ -239,6 +346,186 @@ def _err(e: Exception) -> NoReturn:
         # chain still gets a `code` so the error envelope is never code-less.
         payload.setdefault("code", "ERROR")
     raise ToolError(json.dumps(payload, ensure_ascii=False))
+
+
+def _with_notice(client: Any, result: dict[str, Any]) -> dict[str, Any]:
+    """Attach the account notice (offline grace, email nag) to a SUCCESSFUL
+    result, at most once per process per 24 h per text (the client throttles).
+    Never on errors; never a token.
+
+    0.3.0 save/debloat build (spec 4.2): when the account has nothing to say,
+    the lifecycle may add ONE line instead (the Pro process-start report, the
+    unsaved-last-session line, a free save-due or debloat-due reminder). Account
+    notices always take precedence; never two notices in one result."""
+    try:
+        notice = client.entitlement_notice()
+    except Exception:
+        notice = None
+    if not notice:
+        try:
+            notice = _LIFECYCLE.next_notice(client, home=Path.home(), cwd=os.getcwd(),
+                                            allow_save=not _save_is_hooked())
+        except Exception:
+            notice = None
+    if notice:
+        result["notice"] = notice
+    return result
+
+
+# ----------------------------------------------------------------------
+# Save and debloat (0.3.0 save/debloat build, spec plugin-save-debloat 3.5,
+# 4.2, 5.6): prompts and resources (never gated, like tool discovery; the
+# tool calls the procedure makes are gated as always), the per-process
+# lifecycle notices, and the Pro process-start run.
+# ----------------------------------------------------------------------
+
+try:
+    from sibyl_memory_client.lifecycle.notices import ProcessNotices as _ProcessNotices
+    _LIFECYCLE = _ProcessNotices("mcp")
+except Exception:  # pragma: no cover - client without the lifecycle package
+    class _NoNotices:
+        def start(self, *a: Any, **k: Any) -> None:
+            return None
+
+        def next_notice(self, *a: Any, **k: Any) -> None:
+            return None
+
+        def note_activity(self, *a: Any, **k: Any) -> None:
+            return None
+    _LIFECYCLE = _NoNotices()  # type: ignore[assignment]
+
+# R1 (plan 2.3): inside Claude Code with our Stop hook wired, the hook carries
+# the automatic-save request; the server's notice would ask twice. The host is
+# the MCP client's own name (initialize clientInfo), read once per process.
+# Both spellings are Claude Code: 2.1.285 sends "claude code", earlier builds
+# and the docs "claude-code". Keep both.
+_CLAUDE_CODE_HOSTS = ("claude-code", "claude code")
+_SERVER: Any = None
+_HOST_CACHE: dict[str, Any] = {}
+_STOP_HOOK_RE = re.compile(r"sibyl['\"]?\s+hook\s+stop\b")
+
+
+def _host_name() -> str | None:
+    if "host" in _HOST_CACHE:
+        return _HOST_CACHE["host"]
+    name = None
+    try:
+        params = _SERVER.get_context().session.client_params
+        name = getattr(getattr(params, "clientInfo", None), "name", None)
+    except Exception:
+        name = None
+    if isinstance(name, str) and name:
+        _HOST_CACHE["host"] = name.strip().lower()[:64]
+        return _HOST_CACHE["host"]
+    return None
+
+
+def _claude_stop_hook_wired() -> bool:
+    if "stop_hook" in _HOST_CACHE:
+        return _HOST_CACHE["stop_hook"]
+    wired = False
+    try:
+        p = Path.home() / ".claude" / "settings.json"
+        if p.is_file() and not p.is_symlink() and p.stat().st_size <= 1024 * 1024:
+            cfg = json.loads(p.read_text(encoding="utf-8"))
+            groups = (cfg.get("hooks") or {}).get("Stop") if isinstance(cfg, dict) else None
+            for g in groups if isinstance(groups, list) else []:
+                for h in (g.get("hooks") or []) if isinstance(g, dict) else []:
+                    if isinstance(h, dict) and isinstance(h.get("command"), str) \
+                            and _STOP_HOOK_RE.search(h["command"]):
+                        wired = True
+    except (OSError, ValueError, AttributeError):
+        wired = False
+    _HOST_CACHE["stop_hook"] = wired
+    return wired
+
+
+def _save_is_hooked() -> bool:
+    host = _host_name()
+    return bool(host and host in _CLAUDE_CODE_HOSTS and _claude_stop_hook_wired())
+
+
+SAVE_MODES = ("run", "preview", "setup", "headless", "curate")
+DEBLOAT_MODES = ("measure", "trim")
+
+
+def _lifecycle_start(client: Any) -> None:
+    """Process start (Codex, Cursor and any MCP host start a new server per
+    session): on Pro, run the debloat plan under the person's policy in a
+    daemon thread; its one-line report rides on a later successful result.
+    Every client this server builds counts its writes toward the save
+    reminder (the SDK does not, unless a surface like this one asks)."""
+    try:
+        client.enable_lifecycle_counting(Path.home())
+    except Exception:
+        pass
+    try:
+        _LIFECYCLE.start(client, home=Path.home(), cwd=os.getcwd())
+    except Exception:
+        pass
+
+
+def _procedure_text(name: str) -> str:
+    """The procedure body a prompt carries: the installed file when present
+    (a person's edit is honoured), else the shipped text; frontmatter removed
+    so the text starts with the attribution watermark."""
+    from sibyl_memory_client import skills
+    return skills.body(skills.canonical_text(name, Path.home())).lstrip("\n")
+
+
+def _context_weight() -> dict[str, Any]:
+    from sibyl_memory_client.lifecycle import measure as M
+    from sibyl_memory_client.lifecycle import policy as P
+    pol = P.load(Path.home())
+    rec = M.measure(Path(os.getcwd()), home=Path.home(), surface=pol.get("surface"),
+                    thresholds=pol.get("thresholds"), per_file_soft=pol.get("perFileSoft"))
+    return M.public_record(rec)
+
+
+def _install_lifecycle_surface(mcp: FastMCP) -> None:
+
+
+    @mcp.prompt(name="save", title="Save this session to Sibyl Memory",
+                description="The save procedure (SAVE.md): writes what happened this session into "
+                            "Sibyl Memory through the memory tools. mode: run | preview | setup | "
+                            "headless | curate.")
+    def save(mode: Literal["run", "preview", "setup", "headless", "curate"] = "run") -> str:
+        if mode not in SAVE_MODES:
+            raise ValueError(f"mode must be one of {', '.join(SAVE_MODES)}")
+        return _procedure_text("SAVE.md") + f"\n\nMode: {mode}\n"
+
+    @mcp.prompt(name="debloat", title="Measure or trim always-loaded context files",
+                description="The debloat procedure (DEBLOAT.md): measure the instruction files the "
+                            "agent loads every start, and trim accreted history out of them without "
+                            "losing a byte. mode: measure | trim.")
+    def debloat(mode: Literal["measure", "trim"] = "measure") -> str:
+        if mode not in DEBLOAT_MODES:
+            raise ValueError(f"mode must be one of {', '.join(DEBLOAT_MODES)}")
+        return _procedure_text("DEBLOAT.md") + f"\n\nMode: {mode}\n"
+
+    @mcp.resource("sibyl://skills/SAVE.md", name="SAVE.md", title="Sibyl Memory save procedure",
+                  mime_type="text/markdown")
+    def save_md() -> str:
+        from sibyl_memory_client import skills
+        return skills.canonical_text("SAVE.md", Path.home())
+
+    @mcp.resource("sibyl://skills/DEBLOAT.md", name="DEBLOAT.md", title="Sibyl Memory debloat procedure",
+                  mime_type="text/markdown")
+    def debloat_md() -> str:
+        from sibyl_memory_client import skills
+        return skills.canonical_text("DEBLOAT.md", Path.home())
+
+    @mcp.resource("sibyl://skills/manifest", name="manifest", title="Installed procedures",
+                  mime_type="application/json")
+    def manifest() -> str:
+        from sibyl_memory_client import skills
+        return json.dumps(skills.status(Path.home()), sort_keys=True)
+
+    @mcp.resource("sibyl://context/weight", name="context-weight",
+                  title="Always-load context weight (MEASURED~ chars/4, stat only)",
+                  mime_type="application/json")
+    def context_weight() -> str:
+        return json.dumps(_context_weight(), sort_keys=True)
 
 
 def _coerce_body(body: Any) -> Any:
@@ -414,7 +701,7 @@ def _fence(payload: dict[str, Any]) -> dict[str, Any]:
 _VALIDATION_LEAK = re.compile(r"validation error.*Arguments", re.IGNORECASE | re.DOTALL)
 # Emit the SDK-layer (pydantic) argument-validation failure as the SAME JSON
 # envelope the handler-layer errors use, so callers get one parseable error
-# contract across both layers (beta finding, deadguy 2026-06-14: 11/36 malformed
+# contract across both layers (beta finding 2026-06-14: 11/36 malformed
 # inputs returned plain text instead of {ok:false,...}). The offending value is
 # still never echoed back (SEC-14).
 _GENERIC_ARG_ERROR = json.dumps({
@@ -428,11 +715,30 @@ _GENERIC_ARG_ERROR = json.dumps({
 }, ensure_ascii=False)
 
 
-def _scrub_call_tool_result(server_result: Any) -> Any:
-    """Redact pydantic argument-validation detail from an error tool result.
+_TOOL_ERROR_PREFIX = re.compile(r"^Error executing tool [A-Za-z0-9_\-]+: (\{.*\})$", re.DOTALL)
 
-    No-op for normal (non-error) results and for errors that are not the
-    argument-validation kind.
+
+def _unwrap_account_required(text: str) -> str | None:
+    """FastMCP prefixes every ToolError with "Error executing tool <name>: ".
+    For the account gate envelope (0.3.0) the wire text is the bare JSON, so an
+    agent can json.loads the error text as-is. Other errors keep today's text."""
+    m = _TOOL_ERROR_PREFIX.match(text)
+    if not m:
+        return None
+    try:
+        payload = json.loads(m.group(1))
+    except ValueError:
+        return None
+    if isinstance(payload, dict) and payload.get("code") == "ACCOUNT_REQUIRED":
+        return m.group(1)
+    return None
+
+
+def _scrub_call_tool_result(server_result: Any) -> Any:
+    """Redact pydantic argument-validation detail from an error tool result,
+    and unwrap the ACCOUNT_REQUIRED envelope to bare JSON (0.3.0).
+
+    No-op for normal (non-error) results and for other errors.
     """
     try:
         ctr = getattr(server_result, "root", None)
@@ -442,6 +748,10 @@ def _scrub_call_tool_result(server_result: Any) -> Any:
             text = getattr(block, "text", None)
             if text and _VALIDATION_LEAK.search(text):
                 block.text = _GENERIC_ARG_ERROR
+                continue
+            bare = _unwrap_account_required(text) if text else None
+            if bare is not None:
+                block.text = bare
     except Exception:
         # Never let the guard itself break tool dispatch.
         pass
@@ -481,7 +791,9 @@ def _install_validation_leak_guard(mcp: FastMCP) -> None:
 
 def build_server() -> FastMCP:
     """Build and return the MCP server. Tool names are prefixed with `memory_`."""
+    global _SERVER
     mcp = FastMCP("sibyl-memory")
+    _SERVER = mcp
 
     @mcp.tool()
     def memory_remember(category: str, name: str, body: Any) -> dict[str, Any]:
@@ -501,7 +813,7 @@ def build_server() -> FastMCP:
         try:
             client = _open_client()
             client.set_entity(category, name, _coerce_body(body))
-            return {"ok": True, "category": category, "name": name}
+            return _with_notice(client, {"ok": True, "category": category, "name": name})
         except Exception as e:
             return _err(e)
 
@@ -514,16 +826,17 @@ def build_server() -> FastMCP:
         payload. Or a NOT_FOUND error.
 
         Stored content is attacker-controlled: the entity is fence-scrubbed
-        (MH-1) and the body is bounded to a hard backstop with an explicit
-        `truncated` flag (MH-2) so a single oversized entity can't flood the
+        and the body is bounded to a hard backstop with an explicit
+        `truncated` flag so a single oversized entity can't flood the
         model window. The result is wrapped in a per-call untrusted-context
         fence.
         """
+        # MH-1 (fence-scrub) and MH-2 (bounded body + `truncated`).
         try:
             client = _open_client()
             entity = _scrub_value(client.get_entity(category, name))
             entity = _cap_hit_body(entity, max_chars=_RECALL_BODY_MAX)
-            return _fence({"ok": True, "entity": entity})
+            return _with_notice(client, _fence({"ok": True, "entity": entity}))
         except Exception as e:
             return _err(e)
 
@@ -532,10 +845,8 @@ def build_server() -> FastMCP:
         """Full-text search across ALL Sibyl tiers (entities + state +
         reference + journal).
 
-        v0.1.1: spans all four searchable tiers. Each hit carries a `tier`
-        tag so the agent knows where the match came from. Previously was
-        entities-only: the v0.3.0 plugin family marketing claim of
-        "search across all tiers" is now actually true.
+        Each hit carries a `tier` tag so the agent knows where the match
+        came from.
 
         Query is sanitized as a single FTS5 phrase: column-filter syntax
         (`name:foo`, `rowid:*`) is treated as literal text and cannot
@@ -609,19 +920,24 @@ def build_server() -> FastMCP:
             terms return nothing. Prefer the cause-scoped retry above; reach for
             `tiers` deliberately, knowing the tradeoff.
         """
+        # v0.1.1: search spans all four searchable tiers (it was entities-only
+        # before, which made the v0.3.0 "search across all tiers" claim untrue).
         try:
             # MH-4: mirror the adapter's _MIN_QUERY_LEN guard. A 1-2 char query
             # is noise (and degenerates to a full-corpus scan); return empty
             # rather than search.
+            # 0.3.0: the account gate answers first, even for the short-query
+            # guard below that never reaches a gated client method.
+            client = _open_client()
+            client.require_entitlement("search")
             if query is None or len(query.strip()) < _MIN_QUERY_LEN:
                 # Even the guard's own zero names a cause. A `count: 0` with no
                 # verdict is the exact defect this contract closes, and a short
                 # query is the easiest place to reintroduce it.
                 short = no_match_verdict(tokens_total=0)
                 short.code = VerdictCode.NO_MATCH
-                return _fence({"ok": True, "query": query, "count": 0,
-                               "results": [], "verdict": _verdict_block(short)})
-            client = _open_client()
+                return _with_notice(client, _fence({"ok": True, "query": query, "count": 0,
+                                                    "results": [], "verdict": _verdict_block(short)}))
             safe_limit = min(max(limit, 1), 50)
             if tiers:
                 # Tier-filtered path: bypass multi_record_search (which has no
@@ -676,9 +992,9 @@ def build_server() -> FastMCP:
                 verdict.returned = len(bounded)
                 if not bounded and verdict.code is VerdictCode.OK:
                     verdict.code = VerdictCode.NO_MATCH
-            return _fence({"ok": True, "query": query, "count": len(bounded),
-                           "results": bounded,
-                           "verdict": _verdict_block(verdict)})
+            return _with_notice(client, _fence({"ok": True, "query": query, "count": len(bounded),
+                                                "results": bounded,
+                                                "verdict": _verdict_block(verdict)}))
         except Exception as e:
             return _err(e)
 
@@ -689,21 +1005,22 @@ def build_server() -> FastMCP:
     ) -> dict[str, Any]:
         """List entities, optionally filtered by category. Most-recently-updated first.
 
-        v0.1.1: `category` is now optional (audit N3: matches the SDK and
-        Hermes adapter behavior). Pass it to filter; omit to list across
-        all categories.
+        Pass `category` to filter; omit it to list across all categories.
 
         Args:
             category: Optional category filter. Pass None or omit to list all.
             limit: Max entities to return (default 50, max 200).
         """
+        # v0.1.1 (audit N3): `category` became optional, matching the SDK and
+        # the Hermes adapter.
         try:
             client = _open_client()
             results = client.list_entities(category=category, limit=min(max(limit, 1), 200))
             # MH-1/MH-2: same fence-scrub + per-hit cap + total-output budget as
             # memory_search — listed entity bodies are attacker-controlled too.
             bounded = _bound_hits(results)
-            return _fence({"ok": True, "category": category, "count": len(bounded), "results": bounded})
+            return _with_notice(client, _fence({"ok": True, "category": category,
+                                                "count": len(bounded), "results": bounded}))
         except Exception as e:
             return _err(e)
 
@@ -718,7 +1035,7 @@ def build_server() -> FastMCP:
         try:
             client = _open_client()
             client.archive_entity(category, name, reason=reason)
-            return {"ok": True, "archived": {"category": category, "name": name}}
+            return _with_notice(client, {"ok": True, "archived": {"category": category, "name": name}})
         except Exception as e:
             return _err(e)
 
@@ -736,7 +1053,7 @@ def build_server() -> FastMCP:
         try:
             client = _open_client()
             client.set_state(key, _coerce_body(body))
-            return {"ok": True, "key": key}
+            return _with_notice(client, {"ok": True, "key": key})
         except Exception as e:
             return _err(e)
 
@@ -744,12 +1061,11 @@ def build_server() -> FastMCP:
     def memory_get_state(key: str) -> dict[str, Any]:
         """Read a HOT-tier state document by key.
 
-        v0.1.1 (audit H2): response shape is now flat -
-            {ok, key, body: <user payload>, updated_at: <iso ts>}
-        Previously returned ``body`` = the full ``{body, updated_at}`` dict
-        from the SDK, so "body" meant two different things at different
-        nesting levels.
+        Returns: {ok, key, body: <user payload>, updated_at: <iso ts>}.
         """
+        # v0.1.1 (audit H2): the shape is flat. It used to return ``body`` =
+        # the SDK's full ``{body, updated_at}`` dict, so "body" meant two
+        # different things at different nesting levels.
         try:
             client = _open_client()
             doc = client.get_state(key)
@@ -762,13 +1078,13 @@ def build_server() -> FastMCP:
             body = _cap_hit_body(
                 {"body": _scrub_value(doc.get("body"))}, max_chars=_RECALL_BODY_MAX
             )
-            return _fence({
+            return _with_notice(client, _fence({
                 "ok": True,
                 "key": key,
                 "body": body.get("body"),
                 "updated_at": doc.get("updated_at"),
                 **({"truncated": True} if body.get("truncated") else {}),
-            })
+            }))
         except Exception as e:
             return _err(e)
 
@@ -785,13 +1101,8 @@ def build_server() -> FastMCP:
         observations recorded. Append-only; never overwrites. Best paired
         with entities (the entity is the noun, the journal is the verb).
 
-        v0.1.1 (audit C1): wired against the actual SDK signature
-        ``write_event(*, evaluated, acted, forward, extra, ts)``. Previously
-        called a positional form that doesn't exist and raised TypeError on
-        every invocation. The high-level (kind, body, category, name)
-        contract is preserved by translating into the SDK shape:
-          - kind / body → `acted = {kind, body}`
-          - category / name → `extra = {category, name}` (when supplied)
+        Stored as: kind / body -> `acted = {kind, body}`;
+        category / name -> `extra = {category, name}` (when supplied).
 
         Args:
             kind: Event class (e.g. "decision", "observation", "action").
@@ -799,6 +1110,10 @@ def build_server() -> FastMCP:
             category: Optional entity category this event is about.
             name: Optional entity name this event is about.
         """
+        # v0.1.1 (audit C1): wired against the actual SDK signature
+        # ``write_event(*, evaluated, acted, forward, extra, ts)``. It used to
+        # call a positional form that does not exist and raised TypeError on
+        # every invocation.
         try:
             client = _open_client()
             acted = {"kind": kind, "body": body}
@@ -810,10 +1125,11 @@ def build_server() -> FastMCP:
                 if name is not None:
                     extra["name"] = name
             event_id = client.write_event(acted=acted, extra=extra)
-            return {"ok": True, "event_id": event_id, "kind": kind}
+            return _with_notice(client, {"ok": True, "event_id": event_id, "kind": kind})
         except Exception as e:
             return _err(e)
 
+    _install_lifecycle_surface(mcp)
     _install_validation_leak_guard(mcp)
     return mcp
 

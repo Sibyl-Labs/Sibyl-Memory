@@ -4,6 +4,125 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.3.0] - Unreleased
+
+Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.2).
+
+### 2026-10-14 - Pre-release cleanup
+- README and package docstring: wiring now leads with `sibyl setup claude-code` and
+  `sibyl setup codex`. The manual Codex snippet is the `[mcp_servers.sibyl_memory]` table that
+  Codex actually reads (the old `[[mcp_servers]]` snippet is not a form Codex accepts), and the manual
+  Claude Code form is `claude mcp add --scope user`.
+- README: `memory_search` covers entities, state, reference docs and the journal; all tiers get
+  the same 8 tools; `SIBYL_TENANT_ID` is no longer listed as a server override (the server
+  never read it).
+- Docker: the trailing comment on the repo `Dockerfile`'s `FROM` line (a syntax error) moved to
+  its own line; the image has not been rebuilt yet. `docker-compose.yml` no longer passes
+  `SIBYL_TENANT_ID`.
+- Tool descriptions are shorter: version history moved out of them, so each session loads about
+  215 fewer tokens. Tool names, arguments and results are unchanged.
+- Comments, docstrings and this CHANGELOG describe each finding by what it fixed instead of
+  naming testers or internal QA rounds. Text only; no code changed.
+
+### Added (agent handoff messages, 2026-10-06)
+Spec agent-handoff-messages-spec-2026-10-03 (rows M1 to M7; needs sibyl-memory-client 0.9.0).
+- The handoff envelopes (`ACCOUNT_REQUIRED`, `CAP_EXCEEDED`, `TIER_GATED`,
+  `TIER_VERIFICATION_FAILED`) gain `next` (a command, `done`, `retry` or `retry in N minutes`)
+  and `human_action` (a sentence or `null`; the key is always present), read from the client
+  exception. Every existing key and value is unchanged; the new keys come after them.
+  `ACCOUNT_REQUIRED`'s `message` is the exception's `summary`, the same text as before.
+- `NOT_FOUND`, `VALIDATION_ERROR` and `ERROR` are not handoffs and carry neither key. Successful
+  results and the `notice` line are unchanged. The bare-JSON unwrap still matches.
+- Tests: `tests/test_handoff_2026_10_03.py` (+24, including an exact nine-key assertion on the
+  account envelope). Suite: 151 passed.
+
+### Added (paid tier R1, 2026-09-29, R1B-3)
+- Every tool call counts active time; on Pro a successful result may carry the automatic-save
+  request (`Sibyl Memory Pro: about 60 minutes of work since the last save. Run the save
+  procedure now in headless mode ...`), once per interval, never on an error. Order: account
+  notice, save request, skill-proposals line. Inside Claude Code (initialize `clientInfo.name`)
+  with our Stop hook wired, the hook carries the request instead (both host spellings are
+  Claude Code: `claude code`, sent by Claude Code 2.1.285, and `claude-code`; R1B-6 names them in
+  one constant and tests both). A one-time tier-change line.
+- The process-start thread runs the local learner after the debloat plan (Pro).
+
+### Added (save and debloat, 2026-09-27, SD-3)
+Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unchanged).
+- Prompts `save` (mode run, preview, setup, headless, curate) and `debloat` (mode measure,
+  trim): the procedure text, the installed `~/.sibyl-memory/skills/` file when present (a
+  person's edit is honoured), else the shipped text. In Claude Code: `/mcp__sibyl-memory__save`.
+- Resources `sibyl://skills/SAVE.md`, `sibyl://skills/DEBLOAT.md` (text/markdown),
+  `sibyl://skills/manifest` and `sibyl://context/weight` (application/json, stat only).
+- Prompts and resources are never gated; the tools the procedures call are gated as before.
+- A successful result may carry ONE lifecycle line when the account has nothing to say: the
+  Pro context-trim report (once per process), the unsaved-last-session line, or a free save-due
+  / debloat-due reminder. Never on errors. `sibyl reminders off` silences them.
+- On Pro the first client of the process runs the debloat plan under the person's policy in a
+  daemon thread (Codex, Cursor and other MCP hosts start a server per session).
+
+### Tests (save and debloat)
+- `test_lifecycle_prompts_2026_09_27.py` 8 (prompts, validation, resources with a read spy,
+  no-credentials access, notice precedence and throttle, Pro start report, free never applies).
+
+### Fixed (independent check of save and debloat, 2026-09-27, SD-7)
+- The server enables write counting on every client it builds (`enable_lifecycle_counting`); the
+  SDK alone no longer counts. Automatic trims are matched per file path (client).
+
+### Changed (independent check fix batch, 2026-09-27, GATE-15)
+- The first tool result after the client moves pre-sign-in rows into the
+  account carries `notice`: "N memories written before sign-in were moved
+  into your account on this computer." (once; no code change here, the client
+  gives it out through `entitlement_notice()`).
+- README: the paid tier is `pro` (the tier list named retired plan names); the
+  privacy paragraph says the size check and the usage count also carry this
+  computer's signed access token (account id, tier, cap, device hash, account
+  flags; no personal data).
+- Tests: 2 in `test_account_gate_2026_09_27.py` (the notice once, not repeated
+  by a rebuilt server; fails before) and no notice without pre-sign-in rows
+  (a guard, passes before and after).
+
+### Tests (gate fix before the independent check, 2026-09-27)
+- A signed-in server lists rows a pre-account install wrote under the default
+  tenant (client 0.9.0 adopts them on the first gated call); credentials with
+  no entitlement and the api unreachable answer `ACCOUNT_REQUIRED` with reason
+  `setup_incomplete` (client 0.9.0 no longer grants a 7-day bootstrap grace),
+  also after `entitlement.json` is deleted. No mcp code change: the envelope
+  passes the new reason through (the server docstring's reason list names it).
+- conftest: the network guard is installed at import and every test fails if
+  it attempted a non-loopback connection or lookup, even one it caught;
+  `test_network_guard_2026_09_27.py` proves the guard.
+
+### Changed
+- **An account is required.** There is no pre-activation free local mode any
+  more. The server still starts and `list_tools` still lists the 8 tools (so
+  an agent can see them and learn why they refuse), but with no activated
+  account holding a valid entitlement every tool returns a ToolError
+  (`isError: true`) whose text is bare JSON: `{"ok": false, "error":
+  "EntitlementError", "code": "ACCOUNT_REQUIRED", "reason": <no_account |
+  signed_out | expired_offline | under_review | account_deleted |
+  invalid_entitlement | wrong_device | policy_read_only | policy_none |
+  client_too_old>, "message": <plain-language copy>, "recovery", "account_url"}`.
+  Other errors keep FastMCP's `Error executing tool <name>: {json}` text.
+- The gate lives in sibyl-memory-client; the server passes it the credentials
+  path it reads (`SIBYL_CREDENTIALS` or `~/.sibyl-memory/credentials.json`).
+  `sibyl init` on a running server takes effect on the next call: the cached
+  client is rebuilt when credentials.json changes or the token in
+  entitlement.json changes (fingerprinted, so the gate's own bookkeeping
+  writes do not rebuild it).
+- The `memory_search` short-query guard (under 3 characters) asks the gate
+  first, so it cannot answer without an account either.
+- Successful results can carry `notice` (offline grace running out, email
+  nag), at most once per process per 24 h per text; never on errors, never a
+  token.
+- The HMAC credentials claim (with email and wallet) is no longer built:
+  client 0.9.0 sends the server-signed entitlement on `/check-write` instead.
+- Dependency floors: `sibyl-memory-client>=0.9.0`, `sibyl-memory-hermes>=0.5.0`.
+
+### Compatibility
+- Verified in a fresh venv with the five built wheels against hermes-agent
+  0.19.0 (current on PyPI at build time): `memory_list` with no account returns
+  the ACCOUNT_REQUIRED envelope, not a Python exception.
+
 ## [0.2.1] - 2026-09-06
 
 ### Changed
@@ -100,7 +219,7 @@ meaning.
 
 ### Changed
 - **Dependency floor raised to `sibyl-memory-client>=0.7.0`, closing a
-  packaging hazard** (cryptoxdylan, independent verification, 2026-08-18): the
+  packaging hazard** (an external contributor, independent verification, 2026-08-18): the
   prior floor (`>=0.5.0`) meant `pip install -U sibyl-memory-mcp` alone was a
   silent no-op once a newer client existed on PyPI — pip's default
   only-if-needed upgrade strategy leaves an already-satisfying older client in
@@ -218,7 +337,7 @@ Pre-launch security audit hardening.
 
 ### Fixed
 
-- **SDK-layer argument-validation errors were plain text, not JSON (beta deadguy
+- **SDK-layer argument-validation errors were plain text, not JSON (beta report
   2026-06-14).** A pydantic validation failure on tool arguments returned an
   `Error executing tool: ...` string instead of the `{ok:false,code,...}` envelope
   the handler-layer errors use, so a fraction of malformed inputs broke a caller's
@@ -269,7 +388,7 @@ Pre-launch security audit hardening.
   `journal`). When set, it bypasses the multi-record linker and calls `client.search()`
   directly with the tier filter, so callers can restrict retrieval to a tier subset.
   This resolves journal-entry domination of generic-keyword queries at scale
-  (cryptoxdylan, 2026-06-02): journal entries previously accounted for 50-80%+ of hits
+  (an external contributor, 2026-06-02): journal entries previously accounted for 50-80%+ of hits
   on shared terms like "Project"/"Research"/"Budget", outranking relevant entities.
   Omit `tiers` (or pass null) for the existing all-tier multi-record behaviour. Bumped
   `sibyl-memory-client>=0.4.8` to pull the prefix-mode FTS5 crash fix. Found + verified
@@ -315,7 +434,7 @@ Regression coverage: `tests/test_coa_coercion_2026_05_30.py` (12 tests, real `ca
 
 ## [0.1.3] - 2026-05-28
 
-Beta-tester bug-report remediation (sylvain1550 Discord + QA note).
+Beta-tester bug-report remediation (Discord beta report + a test note).
 
 ### Fixed
 
@@ -338,18 +457,18 @@ Beta-tester bug-report remediation (sylvain1550 Discord + QA note).
 
 ## [0.1.2] - 2026-05-18
 
-KAPPA external-tester remediation release. v0.1.1 was functionally broken
+External-tester remediation release. v0.1.1 was functionally broken
 on PyPI: `pip install sibyl-memory-mcp` followed by the entry-point invocation
 raised `ImportError: cannot import name 'CapExceededError' from
-'sibyl_memory_client.exceptions'`. Reported by KAPPA (independent
-third-party install test, peer Tulip-referred) after the v0.3.3 family ship.
+'sibyl_memory_client.exceptions'`. Reported by an external tester (independent
+third-party install test) after the v0.3.3 family ship.
 The 93/93 audit tests passed only because they ran in-tree; there was no
 clean-venv install smoke test in CI. Gap closed by the companion
 `tmp-test/clean-venv-install-smoke.sh` guardrail.
 
 ### Fixed
 
-- **KAPPA-BLOCKER**. `sibyl-memory-mcp` now imports cleanly in a fresh
+- **external-test BLOCKER**. `sibyl-memory-mcp` now imports cleanly in a fresh
   venv. The fix lives in the companion `sibyl-memory-client` v0.4.0 which
   exports `CapExceededError` and `TierVerificationError` from the
   `.exceptions` submodule path. This release bumps the client pin to
