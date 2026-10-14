@@ -1,4 +1,4 @@
-"""Regression tests promoted from Acer's adversarial stress-test suite (2026-05-30).
+"""Regression tests promoted from a beta tester's adversarial stress-test suite (2026-05-30).
 
 Three findings on sibyl-memory-client 0.4.4:
   - BUG-RAW-ENTITY-PRIMITIVE-BODY (medium): set_entity accepted a primitive body

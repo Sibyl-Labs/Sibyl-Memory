@@ -18,7 +18,10 @@ from sibyl_memory_client import (
 # Fixtures
 # ----------------------------------------------------------------------
 @pytest.fixture
-def client(tmp_path: Path) -> MemoryClient:
+def client(tmp_path: Path, entitle_as) -> MemoryClient:
+    # 0.9.0: paid features key to the ENTITLEMENT tier (spec 3.1); the
+    # server issues a lifetime entitlement to a lifetime account.
+    entitle_as("lifetime")
     # Memory linter is paid-tier only. Tests run as a lifetime-tier user.
     return MemoryClient.local(str(tmp_path / "memory.db"), tier="lifetime")
 
@@ -136,8 +139,9 @@ def test_lint_to_dict_serializes(client: MemoryClient) -> None:
 # ----------------------------------------------------------------------
 # Multi-tenant isolation
 # ----------------------------------------------------------------------
-def test_lint_is_tenant_scoped(tmp_path: Path) -> None:
+def test_lint_is_tenant_scoped(tmp_path: Path, entitle_as) -> None:
     db = tmp_path / "m.db"
+    entitle_as("lifetime")
     alice = MemoryClient.local(str(db), tenant_id="alice", tier="lifetime")
     bob = MemoryClient.local(str(db), tenant_id="bob", tier="lifetime")
 
@@ -165,8 +169,9 @@ def test_free_tier_cannot_lint(tmp_path: Path) -> None:
     assert "sibyllabs.org" in exc.value.upgrade_url
 
 
-def test_paid_tiers_can_lint(tmp_path: Path) -> None:
+def test_paid_tiers_can_lint(tmp_path: Path, entitle_as) -> None:
     for tier in ("sync", "team", "lifetime", "stake", "enterprise"):
+        entitle_as(tier)
         c = MemoryClient.local(str(tmp_path / f"{tier}.db"), tier=tier)
         report = c.lint()
         assert report.ok or report.warnings  # runs without raising
@@ -186,7 +191,11 @@ def test_free_tier_status_visible_without_gate(tmp_path: Path) -> None:
 
 
 def test_paid_tier_status_shows_uncapped(tmp_path: Path) -> None:
-    paid = MemoryClient.local(str(tmp_path / "p.db"), tier="lifetime")
+    # Shown-tier fix (2026-10-08): a valid pass's tier wins over the hint, so the hint
+    # path is exercised with no pass (the null gate has no tier).
+    from sibyl_memory_client.testing import NullEntitlementGate
+    paid = MemoryClient.local(str(tmp_path / "p.db"), tier="lifetime",
+                              entitlement_gate=NullEntitlementGate())
     status = paid.free_tier_status()
     assert status["tier"] == "lifetime"
     assert status["uncapped"] is True

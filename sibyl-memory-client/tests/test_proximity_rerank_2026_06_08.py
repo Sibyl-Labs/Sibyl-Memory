@@ -1,6 +1,6 @@
 """Regression: proximity re-ranking for multi-word search (v0.4.10).
 
-Bug (chainriffs + KAPPA Discord reports, v0.4.2 / v0.4.4): the AND-of-tokens
+Bug (Discord beta reports, v0.4.2 / v0.4.4): the AND-of-tokens
 default gives recall 100% but precision ~73%. Short "near-negative decoy" rows
 that contain the query tokens in an unrelated context out-rank the real answer
 under BM25, which rewards term density over proximity.

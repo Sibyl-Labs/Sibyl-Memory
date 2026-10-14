@@ -56,7 +56,7 @@ def test_question_query_surfaces_target(tmp_path):
 
 
 def test_function_word_dropped_even_with_df_support(tmp_path):
-    """N4 (Kravento PL eval, 2026-08-18) overturned this test's original name
+    """N4 (Polish-language eval, 2026-08-18) overturned this test's original name
     and contract (test_drop_only_at_df_zero: 'the drop happens only at df=0').
     A function word that happens to have corpus support elsewhere ('kiedy'
     matching an unrelated daily-planning note) must NOT ride that support into

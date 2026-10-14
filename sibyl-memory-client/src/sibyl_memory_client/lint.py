@@ -34,13 +34,13 @@ The check list is intentionally conservative for v0.2.0: easy to extend.
 from __future__ import annotations
 
 import datetime as _dt
-import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .client import DEFAULT_TENANT
 from .storage import Storage, db_size_bytes
+from . import tiers as _tiers
 
 # ----------------------------------------------------------------------
 # Public types
@@ -51,21 +51,16 @@ SEVERITIES = ("critical", "warning", "info")
 # in roughly 1-2 weeks of real use. Paid tiers remove the cap entirely.
 # Raised 2026-08-06 (operator directive) from 2 MiB → 5 MiB to compensate for the
 # v0.5.0 folded-trigram search shadow's added on-disk footprint.
-DEFAULT_SOFT_CAP_BYTES = 5 * 1024 * 1024  # 5 MB free-tier cap
+DEFAULT_SOFT_CAP_BYTES = _tiers.SOFT_CAPS[_tiers.FREE]  # 5 MB free-tier cap
 DEFAULT_STALE_DAYS = 90
 DEFAULT_FLAG_RECENCY_DAYS = 30
 EXPECTED_SCHEMA_VERSION = 2
 
-# Tier → soft cap mapping. None means uncapped.
-TIER_SOFT_CAPS: dict[str, int | None] = {
-    "free": 5 * 1024 * 1024,        # 5 MB (raised 2026-08-06, see DEFAULT_SOFT_CAP_BYTES)
-    "pro": None,                     # uncapped: THE upgraded tier (card / usdc / staker)
-    "sync": None,                    # uncapped: paid subscription
-    "team": None,                    # uncapped: paid subscription
-    "lifetime": None,                # uncapped: one-time payment
-    "stake": None,                   # uncapped: $SIBYL stake
-    "enterprise": None,              # uncapped: annual contract
-}
+# Tier → soft cap mapping. None means uncapped. Public name kept (third
+# parties and tests import it); it IS the shared tiers.SOFT_CAPS (free, pro,
+# elite). Look a tier up with tiers.soft_cap(), which also accepts the legacy
+# aliases and treats an unknown label as free.
+TIER_SOFT_CAPS: dict[str, int | None] = _tiers.SOFT_CAPS
 
 
 @dataclass
@@ -323,7 +318,7 @@ class Linter:
                     ),
                     recovery=(
                         "Archive stale entities, prune old journal events, "
-                        "or upgrade to Stake / Cloud / Lifetime to remove the cap."
+                        "or upgrade to Pro to remove the cap."
                     ),
                     detail={"db_size_bytes": db_size, "soft_cap_bytes": self._soft_cap},
                 ))

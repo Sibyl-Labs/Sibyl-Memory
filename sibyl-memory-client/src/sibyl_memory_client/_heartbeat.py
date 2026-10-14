@@ -14,6 +14,8 @@ Privacy + safety contract (deliberate, matches the server endpoint's design):
     code, short timeout, runs on a daemon thread during the session.
   - Offline-safe: any network error is swallowed. Local memory keeps working.
   - No-op without an account_id (un-activated installs report nothing).
+  - 0.9.0: the device's verified entitlement rides as X-Sibyl-Entitlement,
+    only alongside the bearer and only to the allowlisted host.
   - Opt out entirely with the env var SIBYL_MEMORY_TELEMETRY=0.
 
 Cadence: debounced. A beat fires after FLUSH_EVERY ops, or after
@@ -47,6 +49,17 @@ _TIMEOUT_S = 4.0
 # heartbeat to be accepted (a missing session token is a hard 401), so we
 # cannot simply drop the header — we gate it to the trusted host instead.
 _HEARTBEAT_AUTH_HOST = "sibyllabs.org"
+
+
+def _client_version() -> str:
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        try:
+            return version("sibyl-memory-client")
+        except PackageNotFoundError:
+            return "0.0.0+source"
+    except Exception:
+        return "0.0.0+source"
 
 
 def _telemetry_enabled() -> bool:
@@ -85,8 +98,12 @@ class HeartbeatReporter:
         flush_every: int = _FLUSH_EVERY_OPS,
         flush_interval_s: float = _FLUSH_INTERVAL_S,
         enabled: bool = True,
+        entitlement_fn=None,
     ) -> None:
         self._account_id = account_id
+        # 0.9.0 (spec 5.6): the verified entitlement token, presented as
+        # X-Sibyl-Entitlement with the bearer (same trusted-host gate).
+        self._entitlement_fn = entitlement_fn
         self._session_token = session_token
         self._url = url or os.environ.get("SIBYL_MEMORY_HEARTBEAT_URL", _DEFAULT_URL)
         # Gate the bearer to the trusted host (see _auth_allowed_for_url). An
@@ -147,11 +164,23 @@ class HeartbeatReporter:
             body = json.dumps(
                 {"account_id": self._account_id, "event_type": "heartbeat", "heartbeat_count": int(ops)}
             ).encode("utf-8")
-            headers = {"Content-Type": "application/json", "User-Agent": "sibyl-memory-client-heartbeat"}
+            # 0.9.0: a versioned User-Agent (the api's min_client_version floor
+            # reads `sibyl-memory-client/<v>`; the old versionless UA could not
+            # be compared, spec 4.3 / 5.6).
+            headers = {"Content-Type": "application/json",
+                       "User-Agent": f"sibyl-memory-client/{_client_version()}"}
             # Attach the account bearer ONLY to the allowlisted https sibyllabs
             # host — never to a non-https or env-overridden host (Hardening #12).
             if self._session_token and self._attach_auth:
                 headers["Authorization"] = f"Bearer {self._session_token}"
+                token = None
+                if self._entitlement_fn is not None:
+                    try:
+                        token = self._entitlement_fn()
+                    except Exception:
+                        token = None
+                if isinstance(token, str) and token:
+                    headers["X-Sibyl-Entitlement"] = token
             req = urllib.request.Request(self._url, data=body, headers=headers, method="POST")
             # Context-managed so the underlying HTTP socket closes deterministically
             # rather than waiting on GC (hygiene #15, 2026-06-30).

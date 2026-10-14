@@ -23,9 +23,9 @@ The fix is ADDITIVE trust, never replacement and never weakening:
      everywhere else it is a harmless superset (OpenSSL de-duplicates).
   3. If certifi is missing or its bundle fails to load, the context from
      step 1 is returned unchanged, byte-for-byte the pre-fix behavior,
-     never a crash. certifi IS a declared runtime dependency (the SDK's
-     only one, as of 0.7.1), so in any real install step 2 succeeds; the
-     guard exists for bare source-tree use.
+     never a crash. certifi IS a declared runtime dependency (beside
+     cryptography since 0.9.0), so in any real install step 2 succeeds;
+     the guard exists for bare source-tree use.
 
 ``verify_mode`` / ``check_hostname`` are never touched, here or anywhere
 else. Never pass ``cafile=`` to ``create_default_context`` in this module:

@@ -1,4 +1,4 @@
-"""F2 (Kravento PL eval 2026-08-12): the folded-trigram shadow runs UNCONDITIONALLY
+"""F2 (Polish-language eval 2026-08-12): the folded-trigram shadow runs UNCONDITIONALLY
 and its hits are APPENDED after the primary (strict/relaxed) hits, deduped on the
 (tier, category, key) identity triple and capped at limit.
 

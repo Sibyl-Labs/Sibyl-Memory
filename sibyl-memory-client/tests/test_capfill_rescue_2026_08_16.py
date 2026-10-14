@@ -1,4 +1,4 @@
-"""N2 (Kravento PL eval 2026-08-16): relaxed single-token holdback with backfill.
+"""N2 (Polish-language eval 2026-08-16): relaxed single-token holdback with backfill.
 
 The relaxed single-token last resort (client._relaxed_query_strings step 2) can
 fill the cap with rows that all share ONE common token; when it does, both the F2

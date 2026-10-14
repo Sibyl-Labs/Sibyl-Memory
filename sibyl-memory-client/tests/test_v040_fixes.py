@@ -1,4 +1,4 @@
-"""Regression tests for the v0.4.0 KAPPA-attributed fixes.
+"""Regression tests for the v0.4.0 external-test fixes.
 
 Covers:
 - BLOCKER: CapExceededError + TierVerificationError importable from
@@ -10,8 +10,8 @@ Covers:
            three buckets (schema-missing → None; FTS5-syntax → ValidationError;
            backend → StorageError).
 
-Source bug report: /tmp/kappa-sibyl-memory-mcp-report.md
-(KAPPA, 2026-05-18, via Acer/Tulip referral).
+Source: an external bug report
+(external tester, 2026-05-18).
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 # ----------------------------------------------------------------------
 
 def test_cap_exceeded_error_importable_from_exceptions_submodule():
-    """KAPPA's exact import path. server.py:41 does this; before v0.4.0
+    """The external tester's exact import path. server.py:41 does this; before v0.4.0
     it raised ImportError."""
     from sibyl_memory_client.exceptions import CapExceededError
     assert CapExceededError.__name__ == "CapExceededError"
@@ -45,7 +45,7 @@ def test_cap_exceeded_error_importable_from_exceptions_submodule():
 
 
 def test_tier_verification_error_importable_from_exceptions_submodule():
-    """Same submodule path. KAPPA's blocker covered both classes."""
+    """Same submodule path. The external tester's blocker covered both classes."""
     from sibyl_memory_client.exceptions import TierVerificationError
     assert TierVerificationError.__name__ == "TierVerificationError"
     assert TierVerificationError.code == "TIER_VERIFY_FAILED"
@@ -79,7 +79,7 @@ def test_top_level_package_still_exports_both():
 
 @pytest.mark.skipif(not hasattr(os, "chmod"), reason="POSIX-only test")
 def test_memory_db_file_perms_are_0600(tmp_path):
-    """KAPPA RED finding. Docs claim 0600, actual was 0644 (umask default).
+    """external-test RED finding. Docs claim 0600, actual was 0644 (umask default).
     After v0.4.0, Storage init tightens to 0600 unconditionally."""
     from sibyl_memory_client import MemoryClient
     db_path = tmp_path / "memory.db"
@@ -265,7 +265,7 @@ def test_search_with_valid_query_does_not_raise(tmp_path):
 
 
 def test_search_entities_phrase_match_semantics(tmp_path):
-    """Document the actual phrase-match behavior so KAPPA's confusion
+    """Document the actual phrase-match behavior so the external tester's confusion
     (queries containing AND/OR/* return zero hits) is verified expected.
     These queries get wrapped as phrases: they only match literal occurrences
     of the phrase text in entity bodies."""
@@ -285,7 +285,7 @@ def test_search_entities_phrase_match_semantics(tmp_path):
 
 # ----------------------------------------------------------------------
 # v0.4.4: entity-name path-traversal + metacharacter defense-in-depth
-# (KAPPA #3 PARTIAL — path-traversal shape + SQL-keyword shape were ACCEPTED)
+# (external test #3 PARTIAL — path-traversal shape + SQL-keyword shape were ACCEPTED)
 # ----------------------------------------------------------------------
 
 def test_validate_identifier_rejects_path_traversal():
@@ -301,7 +301,7 @@ def test_validate_identifier_rejects_path_traversal():
 def test_validate_identifier_rejects_sql_and_shell_metacharacters():
     from sibyl_memory_client.client import validate_identifier
     from sibyl_memory_client.exceptions import ValidationError
-    # KAPPA's SQL-keyword shape ("'; DROP TABLE entities;--") is caught by ';'
+    # the external tester's SQL-keyword shape ("'; DROP TABLE entities;--") is caught by ';'
     for bad in ("'; DROP TABLE entities;--", "a;b", 'a"b', "a`b", "a|b", "a<b", "a>b"):
         with pytest.raises(ValidationError, match="forbidden character"):
             validate_identifier(bad, field_name="name")
@@ -317,7 +317,7 @@ def test_validate_identifier_allows_apostrophe_and_normal_names():
 
 # ----------------------------------------------------------------------
 # v0.4.4: FTS5 operator-keyword drop
-# (chainriffs Discord + KAPPA #4 — uppercase AND/OR/NOT/NEAR became required
+# (Discord beta report, external test #4 — uppercase AND/OR/NOT/NEAR became required
 # literal tokens, silently collapsing recall to ~0 hits)
 # ----------------------------------------------------------------------
 

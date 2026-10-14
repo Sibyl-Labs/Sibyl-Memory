@@ -1,0 +1,42 @@
+{
+  "_note": "Cross-language test vector for the SE1 entitlement (spec account-gated-plugin 2026-09-27, test 30). The private key is DERIVED from a public label and is NOT a signing key anywhere: never add its kid to a production key set or to the client TRUSTED_KEYS outside tests.",
+  "seed_label": "sibyl-entitlement-test-vector-1 (PUBLIC TEST VECTOR, NOT A SIGNING KEY)",
+  "seed_derivation": "sha256(utf8(seed_label)) = the 32-byte Ed25519 seed (RFC 8032 private key)",
+  "seed_hex": "24a64656a749a71a4491308597cd4be7d0aabf4ba53bbcdd5313a379af8d8e9a",
+  "private_key_pkcs8_der_b64": "MC4CAQAwBQYDK2VwBCIEICSmRlanSacaRJEwhZfNS+fQqr9LpTu83VMTo3mvjY6a",
+  "public_key_raw_b64": "N125QLdWkh2fG4ve3byyCsqB8ivMR0plKs3VfjaPLRc=",
+  "public_key_raw_hex": "375db940b756921d9f1b8bdeddbcb20aca81f22bcc474a652acdd57e368f2d17",
+  "kid": "ea5ac758286ce1d3",
+  "kid_derivation": "first 16 hex chars of sha256(raw 32-byte public key)",
+  "session_token": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "payload": {
+    "v": 1,
+    "kid": "ea5ac758286ce1d3",
+    "sub": "11111111-2222-4333-8444-555555555555",
+    "ten": "11111111-2222-4333-8444-555555555555",
+    "dh": "feaccd25ce867dc960f61b94779548561495698b66009d74b0ce5893b8383858",
+    "tier": "free",
+    "cap": 5242880,
+    "src": "free",
+    "iat": 1790000000,
+    "nbf": 1789999700,
+    "exp": 1790604800,
+    "og": 604800,
+    "ra": 86400,
+    "mem": "full",
+    "acct": {
+      "complete": true,
+      "email_verified": true,
+      "email_required": false,
+      "grace_until": null,
+      "enforced": false,
+      "purchase_blocked": false,
+      "claimed": true,
+      "frozen": false
+    },
+    "iss": "api.sibyllabs.org"
+  },
+  "payload_json": "{\"v\":1,\"kid\":\"ea5ac758286ce1d3\",\"sub\":\"11111111-2222-4333-8444-555555555555\",\"ten\":\"11111111-2222-4333-8444-555555555555\",\"dh\":\"feaccd25ce867dc960f61b94779548561495698b66009d74b0ce5893b8383858\",\"tier\":\"free\",\"cap\":5242880,\"src\":\"free\",\"iat\":1790000000,\"nbf\":1789999700,\"exp\":1790604800,\"og\":604800,\"ra\":86400,\"mem\":\"full\",\"acct\":{\"complete\":true,\"email_verified\":true,\"email_required\":false,\"grace_until\":null,\"enforced\":false,\"purchase_blocked\":false,\"claimed\":true,\"frozen\":false},\"iss\":\"api.sibyllabs.org\"}",
+  "signing_input": "SE1.eyJ2IjoxLCJraWQiOiJlYTVhYzc1ODI4NmNlMWQzIiwic3ViIjoiMTExMTExMTEtMjIyMi00MzMzLTg0NDQtNTU1NTU1NTU1NTU1IiwidGVuIjoiMTExMTExMTEtMjIyMi00MzMzLTg0NDQtNTU1NTU1NTU1NTU1IiwiZGgiOiJmZWFjY2QyNWNlODY3ZGM5NjBmNjFiOTQ3Nzk1NDg1NjE0OTU2OThiNjYwMDlkNzRiMGNlNTg5M2I4MzgzODU4IiwidGllciI6ImZyZWUiLCJjYXAiOjUyNDI4ODAsInNyYyI6ImZyZWUiLCJpYXQiOjE3OTAwMDAwMDAsIm5iZiI6MTc4OTk5OTcwMCwiZXhwIjoxNzkwNjA0ODAwLCJvZyI6NjA0ODAwLCJyYSI6ODY0MDAsIm1lbSI6ImZ1bGwiLCJhY2N0Ijp7ImNvbXBsZXRlIjp0cnVlLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwiZW1haWxfcmVxdWlyZWQiOmZhbHNlLCJncmFjZV91bnRpbCI6bnVsbCwiZW5mb3JjZWQiOmZhbHNlLCJwdXJjaGFzZV9ibG9ja2VkIjpmYWxzZSwiY2xhaW1lZCI6dHJ1ZSwiZnJvemVuIjpmYWxzZX0sImlzcyI6ImFwaS5zaWJ5bGxhYnMub3JnIn0",
+  "token": "SE1.eyJ2IjoxLCJraWQiOiJlYTVhYzc1ODI4NmNlMWQzIiwic3ViIjoiMTExMTExMTEtMjIyMi00MzMzLTg0NDQtNTU1NTU1NTU1NTU1IiwidGVuIjoiMTExMTExMTEtMjIyMi00MzMzLTg0NDQtNTU1NTU1NTU1NTU1IiwiZGgiOiJmZWFjY2QyNWNlODY3ZGM5NjBmNjFiOTQ3Nzk1NDg1NjE0OTU2OThiNjYwMDlkNzRiMGNlNTg5M2I4MzgzODU4IiwidGllciI6ImZyZWUiLCJjYXAiOjUyNDI4ODAsInNyYyI6ImZyZWUiLCJpYXQiOjE3OTAwMDAwMDAsIm5iZiI6MTc4OTk5OTcwMCwiZXhwIjoxNzkwNjA0ODAwLCJvZyI6NjA0ODAwLCJyYSI6ODY0MDAsIm1lbSI6ImZ1bGwiLCJhY2N0Ijp7ImNvbXBsZXRlIjp0cnVlLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwiZW1haWxfcmVxdWlyZWQiOmZhbHNlLCJncmFjZV91bnRpbCI6bnVsbCwiZW5mb3JjZWQiOmZhbHNlLCJwdXJjaGFzZV9ibG9ja2VkIjpmYWxzZSwiY2xhaW1lZCI6dHJ1ZSwiZnJvemVuIjpmYWxzZX0sImlzcyI6ImFwaS5zaWJ5bGxhYnMub3JnIn0.1jNvAstSeSkIKAkJHjjvOG_5UAiTFtxwFyDYDNvJKuaCIqdCbNC6AGZGosOzWj2dZPfAM169cRXziH_QgGfOCA"
+}

@@ -1,4 +1,4 @@
-"""D2L — coverage-gated stem rescue with rescue ladder (Kravento PL eval
+"""D2L — coverage-gated stem rescue with rescue ladder (Polish-language eval
 2026-08-12). Targeted tests for the four behaviors that distinguish D2L
 (covgate_l) from the earlier unconditional-stem build (config C):
 
@@ -97,7 +97,7 @@ def test_multitoken_ladder_rescue(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_ladder_longest_first_and_continues(tmp_path):
-    """N3' (Kravento PL eval, 2026-08-18) overturned this test's original name
+    """N3' (Polish-language eval, 2026-08-18) overturned this test's original name
     (test_ladder_longest_first_and_stops): the query names TWO concepts and
     both rows answer it, so requiring magazyn-glowny to be ABSENT encoded the
     N3' bug (stopping at the first appending probe) rather than an invariant.

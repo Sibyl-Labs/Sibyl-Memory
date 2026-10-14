@@ -12,9 +12,12 @@ from __future__ import annotations
 import functools
 import logging
 import sqlite3
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
+from . import tiers as _tiers  # shared tier module (search code uses a `tiers` parameter)
 from .exceptions import NotFoundError, StorageError, TenantError, ValidationError
 from .storage import Storage, db_size_bytes, dumps, loads, new_id, _utc_now_iso
 from .verdicts import SearchResults, no_match_verdict, ok_verdict, stamp
@@ -50,7 +53,7 @@ def _clamp_limit(limit: Any) -> int:
 
 
 # ----------------------------------------------------------------------
-# Identifier validation (v0.4.0, KAPPA YELLOW finding)
+# Identifier validation (v0.4.0, external-test YELLOW finding)
 # ----------------------------------------------------------------------
 # Entity names, state keys, and reference doc keys are user-supplied
 # identifiers. SQL is parameterized everywhere so injection is closed today,
@@ -66,7 +69,7 @@ _IDENT_MAX_LENGTH = 1024
 # design: identifiers are short single-line strings, not arbitrary payloads.
 _IDENT_FORBIDDEN_CODE_POINTS = frozenset(range(0, 0x20)) | {0x7F}
 
-# v0.4.4 (KAPPA #3 defense-in-depth): SQL is parameterized so injection is
+# v0.4.4 (external test #3 defense-in-depth): SQL is parameterized so injection is
 # closed at the DB, but identifiers flow into consumers that do NOT parameterize
 # -- filesystem export (a `name` becomes a path component), CLI display, log
 # lines, future per-entity backends. Reject path-traversal shapes and the
@@ -74,7 +77,7 @@ _IDENT_FORBIDDEN_CODE_POINTS = frozenset(range(0, 0x20)) | {0x7F}
 # Apostrophe is deliberately ALLOWED (legit in name-shaped keys like "o'brien");
 # double-quote is rejected because it is also the FTS5 phrase delimiter.
 #
-# NOTE: we reject the traversal MARKER ".." (catches KAPPA's "../../etc/passwd"
+# NOTE: we reject the traversal MARKER ".." (catches the external tester's "../../etc/passwd"
 # and "..\\..\\windows") but NOT bare "/" or "\\" -- the v0.4.0 contract
 # explicitly permits slash-containing keys ("with/slash"). Rejecting raw path
 # separators for export-safety would be a public-contract change; flagged for
@@ -143,10 +146,10 @@ def validate_identifier(value: Any, *, field_name: str) -> str:
 
 
 # ----------------------------------------------------------------------
-# FTS5 error surface (v0.4.0, KAPPA YELLOW finding)
+# FTS5 error surface (v0.4.0, external-test YELLOW finding)
 # ----------------------------------------------------------------------
 # Previously search() and search_entities() silently swallowed
-# sqlite3.OperationalError into `return []` / `pass`. KAPPA's complaint:
+# sqlite3.OperationalError into `return []` / `pass`. The external tester's complaint:
 # "a user has no signal whether their query was malformed or just genuinely
 # returned nothing." Now we classify: schema-missing → silent (defensive
 # against partial init), FTS5-syntax-error → ValidationError (caller bug),
@@ -235,7 +238,7 @@ def _fts_query(
     """Run one FTS5 MATCH query with classification + corruption containment.
 
     OperationalError → classified (schema-missing → []; query-syntax →
-    ValidationError; other → StorageError), preserving the v0.4.0 KAPPA
+    ValidationError; other → StorageError), preserving the v0.4.0 external test
     behavior. A broader DatabaseError (index corruption) is contained:
     self-heal the external-content index once and retry; if the retry still
     fails — or the table is contentless — return [] so a single poisoned row
@@ -274,12 +277,6 @@ def _fts_query(
 # quotes can't escape into the FTS5 parser. Caller can still get prefix
 # matching by passing prefix=True.
 
-# Column names + FTS5 reserved operators we reject if they appear unquoted.
-_FTS5_COLUMN_TOKENS = frozenset({"name", "category", "body", "tenant_id",
-                                  "entity_id", "document_key", "doc_key",
-                                  "payload", "ts", "rowid"})
-
-
 # Hardening #9 (super-patch 2026-07-05, subsumes duplicate R15): upper bound on
 # the raw search query length. _sanitize_fts5_query walks its input char-by-char
 # up to three times and expands EVERY token into an ANDed, phrase-quoted term;
@@ -294,7 +291,7 @@ _FTS5_COLUMN_TOKENS = frozenset({"name", "category", "body", "tenant_id",
 MAX_QUERY_CHARS = 4096
 
 
-# v0.4.4 (chainriffs Discord report + KAPPA #4): bare uppercase FTS5 operator
+# v0.4.4 (Discord beta report, external test #4): bare uppercase FTS5 operator
 # keywords typed inside a natural-language query ("auth AND db", "cache NEAR
 # eviction") were being phrase-quoted into REQUIRED LITERAL tokens, so a matched
 # row had to literally contain the word "AND" / "NEAR" -- recall silently
@@ -373,7 +370,7 @@ def _sanitize_fts5_query(raw: str, *, prefix: bool = False, as_phrase: bool = Fa
             return ""
         # In prefix mode, never use the keep-all fallback: appending `*` to a
         # raw FTS5 operator keyword (OR*, AND*, NOT*) produces an invalid query
-        # that crashes the FTS5 parser (acerieus stress test
+        # that crashes the FTS5 parser (a beta stress test
         # LEARNING-SEARCH-PREFIX-OPERATOR-MUTATIONS-STAY-LITERAL, 2026-06-01).
         # Hard-drop operators with no fallback; an all-operator prefix query
         # has no safe FTS5 expansion so we return empty (no match).
@@ -412,7 +409,7 @@ def _sanitize_fts5_query(raw: str, *, prefix: bool = False, as_phrase: bool = Fa
 # somewhere in a matched row, in any order. That gives full recall but lets
 # "near-negative decoy" rows (short docs that contain the same tokens in an
 # unrelated context) out-rank the real answer under BM25, which rewards term
-# density over proximity (chainriffs + KAPPA Discord reports against v0.4.2 and
+# density over proximity (Discord beta reports against v0.4.2 and
 # v0.4.4: precision ~73% at recall 100%).
 #
 # Fix: after BM25 ranking, bucket each hit by how tightly it matches the query,
@@ -507,7 +504,7 @@ def _proximity_bucket(query_tokens: list[str], text: str) -> int:
 DEFAULT_TENANT = "00000000-0000-0000-0000-000000000001"
 
 
-# Paraphrase zero-hit fallback (beta deadguy 2026-06-14): natural-language
+# Paraphrase zero-hit fallback (beta report 2026-06-14): natural-language
 # queries miss under strict token-AND. The fallback (in MemoryClient.search) only
 # fires when the strict search returns NOTHING, so it is purely additive — it can
 # never reorder or drop an existing non-empty result, and single-token / prefix
@@ -662,40 +659,108 @@ def _require_container(body: Any, field: str = "body") -> None:
 
 
 def _track_op(kind: str):
-    """Decorator: count one memory op on the client's usage heartbeat before the
-    wrapped method runs. Fire-and-forget; never raises into the operation."""
+    """Decorator on every public memory operation: the ACCOUNT GATE, then the
+    usage heartbeat, then the operation.
+
+    0.9.0 (spec account-gated 3.1): ``self._entitlement_gate.require(kind)``
+    runs FIRST and raises ``EntitlementError`` when there is no account or the
+    device is locked. This is the single enforcement point for the whole
+    plugin family (MCP, hermes, langgraph and direct SDK callers all reach
+    storage through these methods). A refused op is not counted. The heartbeat
+    part is fire-and-forget and never raises into the operation."""
     def deco(fn):
         @functools.wraps(fn)
         def wrapper(self, *args, **kwargs):
+            ent = self._entitlement_gate.require(kind)
+            if ent is not None and not getattr(self, "_adopt_checked", True):
+                self._maybe_adopt(ent)
             hb = getattr(self, "_heartbeat", None)
             if hb is not None:
                 try:
                     hb.record(kind)
                 except Exception:
                     pass
-            return fn(self, *args, **kwargs)
+            result = fn(self, *args, **kwargs)
+            if kind in _LIFECYCLE_WRITE_KINDS:
+                _note_lifecycle_write(self, kind, args, kwargs)
+            return result
         return wrapper
     return deco
+
+
+# Save/debloat bookkeeping (spec plugin-save-debloat 4.1): a successful write
+# bumps an in-memory counter (flushed to ~/.sibyl-memory/lifecycle.json at most
+# every 30 s or 10 writes); the save procedure's delta marker resets it.
+# Counters only, never content; never raises into the operation. OPT-IN per
+# client (SD-9): only a client the plugin's own surfaces enabled with
+# ``enable_lifecycle_counting`` (the MCP server, the Hermes adapter, the CLI)
+# counts; any other MemoryClient (a library user, LangGraph, a test) writes no
+# lifecycle file, starts no timer and registers no exit hook.
+_LIFECYCLE_WRITE_KINDS = frozenset({
+    "set_entity", "set_state", "write_event", "set_reference", "delete_entity",
+    "archive_entity", "learn", "accept_skill_proposal", "reject_skill_proposal",
+})
+_SAVE_MARKER_KEY = "sibyl_save:last_save"
+
+
+def _note_lifecycle_write(client: Any, kind: str, args: tuple, kwargs: dict) -> None:
+    home = getattr(client, "_lifecycle_home", None)
+    if home is None:
+        return
+    try:
+        from .lifecycle import state as _lc
+        tid = getattr(client, "_tenant_id", "") or ""
+        _lc.note_write(kind, tid, home=home)
+        if kind == "set_state":
+            key = args[0] if args else kwargs.get("key")
+            if key == _SAVE_MARKER_KEY and not _lc.is_suppressed():
+                _lc.note_save(tid, home=home)
+    except Exception:
+        pass
+
+
+# Notice throttle (spec 3.2): one notice text at most once per process per 24 h,
+# shared by every client in the process (MCP rebuilds its client on credential
+# changes; the throttle must survive that).
+_NOTICE_INTERVAL_SECONDS = 24 * 3600
+_NOTICE_LOCK = threading.Lock()
+_NOTICE_SHOWN: dict[str, float] = {}
+
+
+def _consume_notice(notice: str | None) -> str | None:
+    if not notice:
+        return None
+    now = time.monotonic()
+    with _NOTICE_LOCK:
+        last = _NOTICE_SHOWN.get(notice)
+        if last is not None and now - last < _NOTICE_INTERVAL_SECONDS:
+            return None
+        _NOTICE_SHOWN[notice] = now
+    return notice
 
 
 class MemoryClient:
     """Single canonical interface for reading and writing Sibyl Memory state."""
 
     # Paid-tier-only features. Free tier raises TierGateError; upgrading to any
-    # paid tier unlocks both self-learning and the memory linter.
-    _PAID_ONLY_TIERS = frozenset({"pro", "sync", "team", "lifetime", "stake", "enterprise"})
+    # paid tier (pro, elite) unlocks both self-learning and the memory linter.
+    # The shared tiers set (canonical paid tiers plus legacy aliases); kept as a
+    # class attribute because callers and tests read it.
+    _PAID_ONLY_TIERS = _tiers.PAID_TIERS
 
     def __init__(
         self,
         storage: Storage,
         *,
         tenant_id: str = DEFAULT_TENANT,
-        tier: str = "free",
+        tier: str = _tiers.FREE,
         account_id: str | None = None,
         session_token: str | None = None,
         cap_gate: Any = None,
         credentials_claim: dict[str, Any] | None = None,
         credentials_signature: str | None = None,
+        credentials_path: str | Path | None = None,
+        entitlement_gate: Any = None,
     ) -> None:
         self._storage = storage
         # CORE-8: validate the tenant_id at construction too (set_tenant guards
@@ -709,6 +774,37 @@ class MemoryClient:
         self._tier = tier
         self._account_id = account_id
         self._session_token = session_token
+        # Pre-sign-in adoption (0.9.0, _adopt.py): checked once per client, on
+        # the first gated operation that returns a verified entitlement.
+        self._adopt_checked = False
+        self._adopt_lock = threading.Lock()
+        self._adoption: Any = None
+        self._adoption_notice: str | None = None
+        # Save-reminder write counting: off until a plugin surface enables it.
+        self._lifecycle_home: Path | None = None
+
+        # ACCOUNT GATE (0.9.0, spec account-gated 3.1). Built from the
+        # credentials file the caller loaded (default ~/.sibyl-memory/
+        # credentials.json; the MCP server and the hermes provider pass the
+        # path they read). Identity is re-read from that file on every
+        # evaluation, so the gate is about the ACCOUNT, never the tenant: a
+        # DEFAULT_TENANT client is gated exactly like any other. Construction
+        # NEVER raises for entitlement reasons (the MCP server must start and
+        # hermes initialize must not crash the agent): prime() evaluates
+        # non-blocking and does a blocking refresh (4 s) only in bootstrap.
+        # The only bypass is injecting a gate object here (tests use
+        # sibyl_memory_client.testing.NullEntitlementGate); no environment
+        # variable or config file can select one.
+        if entitlement_gate is None:
+            from ._entitlement import EntitlementGate
+            cred_path = (Path(credentials_path).expanduser() if credentials_path is not None
+                         else Path.home() / ".sibyl-memory" / "credentials.json")
+            entitlement_gate = EntitlementGate(cred_path)
+        self._entitlement_gate = entitlement_gate
+        try:
+            entitlement_gate.prime()
+        except Exception:
+            pass
 
         # Cap gate: enforces the 5 MB free-tier cap with server-authoritative
         # tier verification at the boundary. See _capcheck.py for the design.
@@ -733,6 +829,12 @@ class MemoryClient:
                 ),
                 credentials_claim=credentials_claim,
                 credentials_signature=credentials_signature,
+                # 0.9.0: the entitlement's tier is the local hint and the token
+                # rides on /check-write INSTEAD of the HMAC claim (D11), which
+                # also takes email and wallet off that wire.
+                entitlement_tier_fn=lambda: self._entitlement_gate.tier,
+                entitlement_token_fn=lambda: self._entitlement_gate.token,
+                on_auth_denied=self._entitlement_gate.notify_server_rejected,
             )
         self._cap_gate = cap_gate
 
@@ -743,7 +845,10 @@ class MemoryClient:
         # No-op without an account_id; opt out with SIBYL_MEMORY_TELEMETRY=0.
         try:
             from ._heartbeat import HeartbeatReporter
-            self._heartbeat = HeartbeatReporter(account_id, session_token)
+            self._heartbeat = HeartbeatReporter(
+                account_id, session_token,
+                entitlement_fn=lambda: self._entitlement_gate.token,
+            )
         except Exception:
             from ._heartbeat import _NullHeartbeat
             self._heartbeat = _NullHeartbeat()
@@ -757,24 +862,33 @@ class MemoryClient:
         path: str | Path = "~/.sibyl-memory/memory.db",
         *,
         tenant_id: str = DEFAULT_TENANT,
-        tier: str = "free",
+        tier: str = _tiers.FREE,
         account_id: str | None = None,
         session_token: str | None = None,
         credentials_claim: dict[str, Any] | None = None,
         credentials_signature: str | None = None,
+        credentials_path: str | Path | None = None,
+        entitlement_gate: Any = None,
     ) -> "MemoryClient":
         """Open a local SQLite-backed MemoryClient.
 
         The directory at ``path``'s parent is created with mode 0700 if
         missing. The schema is applied on first open and is idempotent.
 
-        Set ``tier`` to the user's plugin tier so paid-only features
-        (self-learning + memory linter) gate correctly. Defaults to "free".
+        ``tier`` is a hint (default "free"). Since 0.9.0 the tier inside a
+        verified entitlement wins for paid-only features (self-learning +
+        memory linter); the hint is used only before the first entitlement.
 
         Pass ``account_id`` and ``session_token`` from credentials.json so
         the SDK can verify the user's tier against the server when they
         approach the 5 MB free-tier cap. Without these, the SDK enforces
         a strict local 5 MB cap (no server check possible).
+
+        0.9.0: every memory operation requires an activated account with a
+        valid, server-signed entitlement (``EntitlementError`` otherwise).
+        ``credentials_path`` names the credentials.json to gate on (default
+        ``~/.sibyl-memory/credentials.json``); ``entitlement_gate`` injects a
+        gate object (tests: ``sibyl_memory_client.testing.NullEntitlementGate``).
         """
         storage = Storage(path)
         return cls(
@@ -785,11 +899,121 @@ class MemoryClient:
             session_token=session_token,
             credentials_claim=credentials_claim,
             credentials_signature=credentials_signature,
+            credentials_path=credentials_path,
+            entitlement_gate=entitlement_gate,
         )
+
+    # ------------------------------------------------------------------
+    # Account gate (0.9.0)
+    # ------------------------------------------------------------------
+    @property
+    def entitlement_gate(self) -> Any:
+        return self._entitlement_gate
+
+    def _maybe_adopt(self, ent: Any) -> None:
+        """First verified sign-in for an account on this store: move the rows
+        written before sign-in (DEFAULT_TENANT) into the account tenant, in one
+        local transaction (_adopt.py). Only when this client's tenant IS the
+        entitlement's ``ten``/``sub`` (the gate just verified and bound it),
+        at most once per account per store, and never when the store has held
+        another account (that case needs ``sibyl memory adopt``). Never raises
+        into the operation; on any error nothing moved (the transaction rolled
+        back) and the next client retries."""
+        with self._adopt_lock:
+            if self._adopt_checked:
+                return
+            self._adopt_checked = True
+            if (self._tenant_id == DEFAULT_TENANT
+                    or self._tenant_id not in (getattr(ent, "ten", None), getattr(ent, "sub", None))):
+                return
+            try:
+                from ._adopt import adopt_default_tenant
+                self._adoption = adopt_default_tenant(
+                    self._storage, self._tenant_id, ent, trigger="auto")
+            except Exception:
+                self._adoption = None
+            res = self._adoption
+            n = getattr(res, "moved", 0) if getattr(res, "status", None) == "moved" else 0
+            if n > 0:
+                # Counts only: never a key, a category or an account id.
+                self._adoption_notice = (
+                    "1 memory written before sign-in was moved into your account "
+                    "on this computer." if n == 1 else
+                    f"{n} memories written before sign-in were moved into your "
+                    "account on this computer.")
+
+    @property
+    def adoption(self) -> Any:
+        """The automatic pre-sign-in adoption result for this client (None
+        until the first gated operation, or when it did not apply)."""
+        return self._adoption
+
+    @_track_op("adopt")
+    def adopt_pre_signin_memory(self, *, confirm_other_accounts: bool = False) -> Any:
+        """Explicitly move this store's DEFAULT_TENANT rows into this client's
+        (account) tenant: ``sibyl memory adopt``. Requires a verified sign-in
+        whose ``ten``/``sub`` is this client's tenant. Idempotent. Raises
+        ``_adopt.AdoptionRefused`` (``other_account``) unless
+        ``confirm_other_accounts`` when the store has held another account."""
+        from ._adopt import AdoptionRefused, adopt_default_tenant
+        ent = self._entitlement_gate.require("adopt")
+        if ent is None:
+            raise AdoptionRefused("not_verified",
+                                  "No verified sign-in on this computer. Run sibyl init first.")
+        with self._adopt_lock:
+            self._adopt_checked = True
+            return adopt_default_tenant(self._storage, self._tenant_id, ent,
+                                        trigger="command",
+                                        confirm_other_accounts=confirm_other_accounts)
+
+    def require_entitlement(self, op: str = "access") -> None:
+        """Raise ``EntitlementError`` unless this device may use memory now.
+
+        For surfaces that answer a tool call WITHOUT reaching a gated method
+        (the MCP short-query guard): the refusal must be the same one."""
+        self._entitlement_gate.require(op)
+
+    def adoption_notice(self) -> str | None:
+        """The one-time notice for the automatic pre-sign-in adoption ("N
+        memories written before sign-in were moved into your account on this
+        computer."), or None. Given out once per client (then cleared) through
+        the same process throttle as every account notice; the move itself
+        happens once per account per store, so a rebuilt client says nothing."""
+        lock = getattr(self, "_adopt_lock", None)
+        if lock is None:
+            return None
+        with lock:
+            notice = getattr(self, "_adoption_notice", None)
+            self._adoption_notice = None
+        return _consume_notice(notice)
+
+    def entitlement_notice(self) -> str | None:
+        """The notice to attach to a SUCCESSFUL result (pre-sign-in adoption,
+        stale band, clock, email nag), at most once per process per 24 h per
+        text; the adoption notice first, and only once. Never contains a token.
+        None when there is nothing to say."""
+        adopted = self.adoption_notice()
+        if adopted:
+            return adopted
+        try:
+            notice = self._entitlement_gate.current().notice
+        except Exception:
+            return None
+        return _consume_notice(notice)
 
     # ------------------------------------------------------------------
     # Tenant management
     # ------------------------------------------------------------------
+    def enable_lifecycle_counting(self, home: str | Path | None = None) -> None:
+        """Count this client's successful memory writes toward the save
+        reminder, in ``<home>/.sibyl-memory/lifecycle.json`` (default: the
+        user's home, where the Claude Code hooks and ``sibyl status`` read
+        it). Off by default: the plugin's own surfaces (the MCP server, the
+        Hermes adapter, ``sibyl save --fact``) turn it on; a library user of
+        ``MemoryClient`` gets no lifecycle file, timer or exit hook. Counters
+        only, never content."""
+        self._lifecycle_home = Path(home).expanduser() if home is not None else Path.home()
+
     def get_tenant(self) -> str:
         return self._tenant_id
 
@@ -826,8 +1050,9 @@ class MemoryClient:
         return self._tier
 
     def set_tier(self, tier: str) -> None:
-        """Update the user's tier. Called by the credentials loader when
-        the activation flow returns a tier upgrade."""
+        """Update the tier hint. Since 0.9.0 a verified entitlement's tier
+        wins over it for feature gating (see ``_effective_tier``); nothing in
+        the plugin calls this."""
         if not isinstance(tier, str) or not tier:
             raise ValidationError("tier must be a non-empty string")
         self._tier = tier
@@ -837,7 +1062,7 @@ class MemoryClient:
 
         CORE-10 (2026-06-25 pre-launch audit, SAFE-MINIMAL — see FLAG below):
         the paid-feature gates trusted the raw client-supplied ``self._tier``,
-        so editing credentials.json to ``tier:"lifetime"`` unlocked the learner
+        so editing credentials.json to a paid ``tier`` label unlocked the learner
         and linter for free. A full server round-trip on every learn()/lint()
         would be the authoritative fix but risks latency + offline regressions,
         so we use the cheapest server-authoritative signal we already hold: the
@@ -851,6 +1076,18 @@ class MemoryClient:
         we fall back to the client hint (unchanged behavior, no new failure
         mode). This narrows the abuse window without a network dependency.
         """
+        # 0.9.0 (spec 3.1): a verified entitlement's tier wins over the tier
+        # cache and the file hint. This closes the CORE-10 residual: no paid
+        # feature unlocks from an edited credentials.json while an entitlement
+        # (fresh or stale) is present. The cache/hint ladder below is reached
+        # only in bootstrap (legacy credentials, no entitlement yet).
+        ent_gate = getattr(self, "_entitlement_gate", None)
+        try:
+            ent_tier = ent_gate.tier if ent_gate is not None else None
+        except Exception:
+            ent_tier = None
+        if isinstance(ent_tier, str) and ent_tier:
+            return ent_tier
         gate = getattr(self, "_cap_gate", None)
         cache = getattr(gate, "_cache", None)
         account_id = getattr(gate, "account_id", None)
@@ -865,6 +1102,20 @@ class MemoryClient:
                 return cached.tier
         return self._tier
 
+    def tier_for_display(self) -> str:
+        """Shown-tier fix (2026-10-08): the tier a user-facing surface shows. The
+        verified pass's tier when this computer holds a valid one (fresh or
+        stale), else the saved credentials hint. Never the tier cache: one
+        source per screen, so status lines never disagree. Never raises."""
+        ent_gate = getattr(self, "_entitlement_gate", None)
+        try:
+            ent_tier = ent_gate.tier if ent_gate is not None else None
+        except Exception:
+            ent_tier = None
+        if isinstance(ent_tier, str) and ent_tier:
+            return ent_tier
+        return self._tier
+
     def _require_paid_tier(self, feature: str) -> None:
         """Raise TierGateError if the current tier is not paid-tier.
 
@@ -873,9 +1124,16 @@ class MemoryClient:
         """
         from .exceptions import TierGateError
         effective = self._effective_tier()
-        if effective not in self._PAID_ONLY_TIERS:
+        if not _tiers.is_paid(effective):
+            if _tiers.known(effective):
+                current = _tiers.display(effective)
+            else:
+                # tier_unknown: an unrecognised label is treated as Free; the
+                # message names the raw label so a support ticket can see it.
+                current = (f"{_tiers.display(effective)} (access label {str(effective)[:32]!r} "
+                           f"is not recognised by this version; {_tiers.UNKNOWN_REASON})")
             raise TierGateError(
-                f"{feature} requires a paid tier. Current tier: {effective!r}.",
+                f"{feature} requires a paid tier. Current tier: {current}.",
                 feature=feature,
                 current_tier=effective,
             )
@@ -971,6 +1229,7 @@ class MemoryClient:
             rows = conn.execute(sql, params).fetchall()
         return [self._row_to_entity(r) for r in rows]
 
+    @_track_op("delete_entity")
     def delete_entity(self, category: str, name: str) -> bool:
         with self._storage.transaction() as conn:
             cur = conn.execute(
@@ -1003,6 +1262,7 @@ class MemoryClient:
             # CAP-2: absolute-footprint recheck inside the same transaction.
             self._verify_committed_size(conn)
 
+    @_track_op("get_state")
     def get_state(self, key: str) -> dict[str, Any] | None:
         with self._storage.connection() as conn:
             row = conn.execute(
@@ -1016,6 +1276,7 @@ class MemoryClient:
     # ------------------------------------------------------------------
     # Journal (COLD tier): append-only event log
     # ------------------------------------------------------------------
+    @_track_op("write_event")
     def write_event(
         self,
         *,
@@ -1053,6 +1314,7 @@ class MemoryClient:
             self._verify_committed_size(conn)
         return ev_id
 
+    @_track_op("read_events")
     def read_events(
         self,
         *,
@@ -1102,7 +1364,7 @@ class MemoryClient:
         control characters, length <= 1024). Raises ValidationError on
         rejection.
 
-        v0.4.12 (beta report VRTX ISSUE-003): ``body`` accepts ``str`` or a
+        v0.4.12 (beta report): ``body`` accepts ``str`` or a
         JSON-serializable ``dict``/``list``. A mapping/sequence is coerced to a
         canonical JSON string (sorted keys) and stored as the reference body,
         so ``set_reference(key, {...})`` no longer raises StorageError on the
@@ -1130,6 +1392,7 @@ class MemoryClient:
             # CAP-2: absolute-footprint recheck inside the same transaction.
             self._verify_committed_size(conn)
 
+    @_track_op("get_reference")
     def get_reference(self, key: str) -> dict[str, Any] | None:
         with self._storage.connection() as conn:
             row = conn.execute(
@@ -1143,6 +1406,7 @@ class MemoryClient:
     # ------------------------------------------------------------------
     # Archive
     # ------------------------------------------------------------------
+    @_track_op("archive_entity")
     def archive_entity(self, category: str, name: str, reason: str | None = None) -> dict[str, Any]:
         """Move an entity to the archive table and delete from the active set.
 
@@ -1190,10 +1454,10 @@ class MemoryClient:
     # Self-learning + lint (v0.2.0): paid-tier only
     # ------------------------------------------------------------------
     # Both convenience entrypoints below gate on tier and raise
-    # TierGateError for free-tier callers. The underlying Learner / Linter
-    # classes remain available for power users via direct import, but
-    # the documented surface is the gated convenience API.
+    # TierGateError for free-tier callers. The documented surface is this
+    # gated API.
 
+    @_track_op("learner")
     def learner(self, **kwargs: Any):
         """Return a Learner bound to this client's storage + tenant.
 
@@ -1207,29 +1471,34 @@ class MemoryClient:
         kwargs.setdefault("cap_gate", self._cap_gate)
         return Learner(self._storage, tenant_id=self._tenant_id, **kwargs)
 
+    @_track_op("learn")
     def learn(self, **kwargs: Any):
         """Convenience: construct a default Learner and run one pass.
         Returns a LearningRunReport. Paid-tier only."""
         return self.learner(**kwargs).run()
 
+    @_track_op("list_skill_proposals")
     def list_skill_proposals(
         self, *, status: str = "pending", limit: int = 50,
     ) -> list[Any]:
         """Paid-tier only."""
         return self.learner().list_proposals(status=status, limit=limit)
 
+    @_track_op("accept_skill_proposal")
     def accept_skill_proposal(
         self, proposal_id: str, *, note: str | None = None,
     ) -> dict[str, Any]:
         """Paid-tier only."""
         return self.learner().accept_proposal(proposal_id, note=note)
 
+    @_track_op("reject_skill_proposal")
     def reject_skill_proposal(
         self, proposal_id: str, *, note: str | None = None,
     ) -> dict[str, Any]:
         """Paid-tier only."""
         return self.learner().reject_proposal(proposal_id, note=note)
 
+    @_track_op("lint")
     def lint(self, **kwargs: Any):
         """Run the local memory linter against this tenant. Returns a
         LintReport with `.findings`, `.counts`, `.ok`, and `.to_ascii()`.
@@ -1241,8 +1510,7 @@ class MemoryClient:
         from .lint import Linter
         # If the caller didn't supply soft_cap_bytes, look up by tier
         if "soft_cap_bytes" not in kwargs:
-            from .lint import TIER_SOFT_CAPS, DEFAULT_SOFT_CAP_BYTES
-            cap = TIER_SOFT_CAPS.get(self._tier, DEFAULT_SOFT_CAP_BYTES)
+            cap = _tiers.soft_cap(self._effective_tier())
             # Paid tiers map to None: pass a huge cap so the check effectively never fires
             kwargs["soft_cap_bytes"] = cap if cap is not None else (1 << 62)
         return Linter(self._storage, tenant_id=self._tenant_id, **kwargs).run()
@@ -1257,23 +1525,24 @@ class MemoryClient:
         to render the "you're at X% of your free cap" upgrade prompt
         without needing to call the (gated) linter.
         """
-        from .lint import TIER_SOFT_CAPS, DEFAULT_SOFT_CAP_BYTES
         # CAP-1: WAL-inclusive sizing so the "% of cap" prompt matches what the
         # cap gate actually enforces (the main file alone under-reports during
         # write bursts).
         db_size = db_size_bytes(self._storage.db_path)
-        cap = TIER_SOFT_CAPS.get(self._tier, DEFAULT_SOFT_CAP_BYTES)
+        # Shown-tier fix: the tier of the current pass, not the sign-in-time hint.
+        tier = self.tier_for_display()
+        cap = _tiers.soft_cap(tier)
         # Paid tier → no cap
         if cap is None:
             return {
-                "tier": self._tier,
+                "tier": tier,
                 "db_size_bytes": db_size,
                 "soft_cap_bytes": None,
                 "pct_used": None,
                 "uncapped": True,
             }
         return {
-            "tier": self._tier,
+            "tier": tier,
             "db_size_bytes": db_size,
             "soft_cap_bytes": cap,
             "pct_used": db_size / cap if cap else None,
@@ -1309,7 +1578,7 @@ class MemoryClient:
 
         Pass ``category="<name>"`` to anchor the search to a single entity
         category (exact match); this removes topical bleed across categories on
-        multi-entity workloads (tester email 19e7e75af0b7780a). Omit to search
+        multi-entity workloads (tester report). Omit to search
         all categories.
 
         Returns: list of entity rows. Each row is a dict with keys
@@ -1326,7 +1595,7 @@ class MemoryClient:
             # "the query carried no searchable terms" instead of guessing.
             return stamp([], no_match_verdict(tokens_total=0))
         # external-content FTS5: join by rowid back to base table.
-        # _fts_query handles classification (v0.4.0 KAPPA) + corruption
+        # _fts_query handles classification (v0.4.0 external test) + corruption
         # containment (poisoned-index DatabaseError self-heals or returns []).
         #
         # !!! CORE-3 TENANT-ISOLATION LOCK (2026-06-25 pre-launch audit) !!!
@@ -1407,7 +1676,7 @@ class MemoryClient:
         non-empty strict result is returned untouched, so ranking and recall of
         existing hits cannot regress, and single-token / prefix queries (the
         multi_record path) never trigger the fallback. (paraphrase recall, beta
-        deadguy 2026-06-14: NL queries miss under strict token-AND.)
+        beta report 2026-06-14: NL queries miss under strict token-AND.)
 
         LANG-CORE-STRIP (operator directive, 2026-08-30): the 0.6.0/0.6.1/0.7.0
         QUERY-TIME rescue layers that used to sit here were removed and this body
@@ -1643,7 +1912,7 @@ class MemoryClient:
                 )
         hits: list[dict[str, Any]] = []
         with self._storage.connection() as conn:
-            # v0.4.0 (KAPPA YELLOW finding): per-tier OperationalError handling
+            # v0.4.0 (external-test YELLOW finding): per-tier OperationalError handling
             # now classifies via _classify_fts5_error. Schema-missing keeps the
             # previous behavior (skip this tier silently, other tiers continue).
             # FTS5 syntax / real backend errors raise: the query is bad for
@@ -1758,7 +2027,7 @@ class MemoryClient:
         # Sort by rank (lower = better in FTS5), with a tier tiebreaker: at
         # comparable rank the content tiers (entity/state/reference) sort before
         # the contentless journal tier, whose BM25 scores are not on the same
-        # scale (cross-tier rank comparability, tester email 19e7eb3096b4dae5).
+        # scale (cross-tier rank comparability, tester report).
         _tier_rank = {"entity": 0, "state": 0, "reference": 0, "journal": 1}
         # v0.4.10: proximity re-rank. For multi-word (non-prefix) queries, bucket
         # each hit by how tightly it matches (contiguous phrase > tight window >

@@ -21,8 +21,11 @@ from sibyl_memory_client import (
 # ----------------------------------------------------------------------
 
 @pytest.fixture
-def client(tmp_path: Path) -> MemoryClient:
+def client(tmp_path: Path, entitle_as) -> MemoryClient:
     db = tmp_path / "memory.db"
+    # 0.9.0: paid features key to the ENTITLEMENT tier (spec 3.1); the
+    # server issues a lifetime entitlement to a lifetime account.
+    entitle_as("lifetime")
     # Self-learning is paid-tier only. Tests run as a lifetime-tier user.
     return MemoryClient.local(str(db), tier="lifetime")
 
@@ -195,8 +198,9 @@ def test_venice_x402_summarizer_fallback_on_error(client: MemoryClient) -> None:
 # ----------------------------------------------------------------------
 # Multi-tenant isolation
 # ----------------------------------------------------------------------
-def test_learner_is_tenant_scoped(tmp_path: Path) -> None:
+def test_learner_is_tenant_scoped(tmp_path: Path, entitle_as) -> None:
     db = tmp_path / "m.db"
+    entitle_as("lifetime")
     alice = MemoryClient.local(str(db), tenant_id="alice", tier="lifetime")
     bob = MemoryClient.local(str(db), tenant_id="bob", tier="lifetime")
 
@@ -253,8 +257,9 @@ def test_free_tier_can_still_use_core_memory(tmp_path: Path) -> None:
     assert results
 
 
-def test_paid_tier_upgrade_unlocks_learn(tmp_path: Path) -> None:
-    """Simulate upgrade flow: start free, set_tier('lifetime'), learn now works."""
+def test_paid_tier_upgrade_unlocks_learn(tmp_path: Path, entitle_as) -> None:
+    """Simulate upgrade flow: start free, the account upgrades (the next
+    entitlement says lifetime, 0.9.0), learn now works."""
     client = MemoryClient.local(str(tmp_path / "u.db"))
     _seed_repeated_action(client, n=4)
 
@@ -263,7 +268,9 @@ def test_paid_tier_upgrade_unlocks_learn(tmp_path: Path) -> None:
     with pytest.raises(TierGateError):
         client.learn()
 
-    # Upgrade → unlock
+    # Upgrade → unlock. 0.9.0: the hint alone no longer unlocks (CORE-10
+    # closed); the refreshed entitlement carries the new tier.
     client.set_tier("lifetime")
+    entitle_as("lifetime")
     report = client.learn()
     assert report.proposals_made >= 1

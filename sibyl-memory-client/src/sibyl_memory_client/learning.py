@@ -62,7 +62,6 @@ import json
 import logging
 import re
 import sqlite3
-import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Protocol
@@ -89,6 +88,11 @@ _MAX_EVENTS_PER_RUN = 10000
 # (a handful of keys / verbs) are far under both caps and behave identically.
 _MAX_TOKENS_PER_EVENT = 64
 _MAX_TRACKED_PAIRS = 100_000
+
+# R1 (plugin paid tier, operator D7): a rejected slug is not proposed again for
+# 30 days, and a slug rejected twice is muted until the person unmutes it.
+REJECT_COOL_OFF_DAYS = 30
+REJECT_MUTE_COUNT = 2
 
 
 # ----------------------------------------------------------------------
@@ -212,7 +216,7 @@ class LocalDeterministicSummarizer:
         lines.append("")
         lines.append(
             "Reference this skill when the same situation recurs. "
-            "Edit, accept, or reject via `sibyl learn review`."
+            "Accept or reject it with `sibyl skills proposals`."
         )
         return "\n".join(lines), title
 
@@ -356,8 +360,16 @@ class Learner:
     # ------------------------------------------------------------------
     # Public entry points
     # ------------------------------------------------------------------
-    def run(self, *, since: str | None = None) -> LearningRunReport:
-        """Scan journal events since the last watermark and propose skills."""
+    def run(self, *, since: str | None = None, exclude_kinds: Iterable[str] = (),
+            unmuted: dict[str, Any] | None = None) -> LearningRunReport:
+        """Scan journal events since the last watermark and propose skills.
+
+        ``exclude_kinds``: pattern kinds the person muted (no proposal of that
+        kind is created). A slug is never re-proposed while it is pending or
+        accepted, for ``REJECT_COOL_OFF_DAYS`` after a rejection, and at all
+        once rejected ``REJECT_MUTE_COUNT`` times (``unmuted`` maps a slug to
+        the epoch seconds of a ``sibyl skills proposals unmute``; only
+        rejections after it count)."""
         run_id = new_id()
         started_at = _utc_now_iso()
 
@@ -416,9 +428,12 @@ class Learner:
         # Cap, sort by confidence
         ranked = sorted(deduped.values(), key=lambda c: -c.confidence)[: self._max_per_run]
 
-        # Skip ones that already exist as pending proposals (same tenant, same slug)
-        existing_slugs = self._pending_slugs()
-        ranked = [c for c in ranked if c.slug not in existing_slugs]
+        # Skip ones that already exist as pending proposals (same tenant, same slug),
+        # accepted ones, rejected ones inside the cool-off, twice-rejected ones
+        # (until unmuted) and muted kinds.
+        existing_slugs = self._pending_slugs() | self._blocked_slugs(unmuted or {})
+        excluded = set(exclude_kinds or ())
+        ranked = [c for c in ranked if c.slug not in existing_slugs and c.kind not in excluded]
 
         # Persist
         for c in ranked:
@@ -689,6 +704,42 @@ class Learner:
             ).fetchall()
         return {r["proposed_slug"] for r in rows}
 
+    def _blocked_slugs(self, unmuted: dict[str, Any], *, now: float | None = None) -> set[str]:
+        """Slugs not to propose again: accepted (any time), rejected within the
+        cool-off, rejected ``REJECT_MUTE_COUNT`` or more times after the last
+        unmute."""
+        import time as _time
+        from datetime import datetime, timezone
+        now = _time.time() if now is None else now
+        with self._storage.connection() as conn:
+            rows = conn.execute(
+                "SELECT proposed_slug, status, reviewed_at FROM skill_proposals "
+                "WHERE tenant_id = ? AND status IN ('accepted', 'rejected')",
+                (self._tenant_id,),
+            ).fetchall()
+        out: set[str] = set()
+        rejections: dict[str, int] = defaultdict(int)
+        for r in rows:
+            slug = r["proposed_slug"]
+            if r["status"] == "accepted":
+                out.add(slug)
+                continue
+            try:
+                when = datetime.fromisoformat(str(r["reviewed_at"]).replace("Z", "+00:00"))
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=timezone.utc)
+                ts = when.timestamp()
+            except (TypeError, ValueError):
+                ts = now          # unknown review time: treat as just now (cools off)
+            un = unmuted.get(slug)
+            if isinstance(un, (int, float)) and not isinstance(un, bool) and ts <= un:
+                continue          # rejected before the person unmuted it
+            if now - ts < REJECT_COOL_OFF_DAYS * 86400:
+                out.add(slug)
+            rejections[slug] += 1
+        out.update(s for s, n in rejections.items() if n >= REJECT_MUTE_COUNT)
+        return out
+
     def _insert_proposal(
         self,
         candidate: "_Candidate",
@@ -712,7 +763,8 @@ class Learner:
                     body,
                     dumps([
                         {"event_id": ev["id"], "ts": ev["ts"], "snippet": _short_event_snippet(ev)}
-                        for ev in candidate.events[:20]
+                        # the most recent 20 (the relevance filter reads recency)
+                        for ev in candidate.events[-20:]
                     ]),
                     candidate.confidence,
                     self._summarizer.name,

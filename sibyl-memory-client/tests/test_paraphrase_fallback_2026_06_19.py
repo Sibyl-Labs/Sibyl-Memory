@@ -1,4 +1,4 @@
-"""Paraphrase zero-hit search fallback (beta deadguy 2026-06-14).
+"""Paraphrase zero-hit search fallback (beta report 2026-06-14).
 
 Natural-language queries miss under strict token-AND (+ Porter stem). The public
 MemoryClient.search adds a fallback that ONLY fires when the strict search returns

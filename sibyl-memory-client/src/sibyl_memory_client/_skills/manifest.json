@@ -1,0 +1,15 @@
+{
+  "files": {
+    "DEBLOAT.md": {
+      "sha256": "e86549b5c48762c5a4d68f95721d325f880bb6436f00b321e284211d90ca82aa"
+    },
+    "SAVE.md": {
+      "sha256": "fdae3328de7a3e17c5b1424387ce47723f417cabaf8e8f9df20a4765fa778598"
+    }
+  },
+  "upstream": {
+    "DEBLOAT.md": "github.com/Sibyl-Labs/debloat SKILL.md v1.0.0 @ f0bf26d",
+    "SAVE.md": "github.com/Sibyl-Labs/sibyl-save SKILL.md v1.0.0 @ 499a3fe"
+  },
+  "version": "1.1.0"
+}

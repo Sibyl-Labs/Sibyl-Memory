@@ -1,9 +1,9 @@
 """Anchor-first resolver + search refinements (combined patch, 2026-06-06).
 
 Validates the fix for the multi-record recall/precision regression that tester
-Sylvain surfaced (Runs 16/17 ~0.36 recall at 50-100 companies) and validated the
+a tester surfaced (Runs 16/17 ~0.36 recall at 50-100 companies) and validated the
 anchor-first remedy for (Runs 24-29: full recall, zero pollution at 100
-companies). Source memo: memory/research/sylvain-anchor-first-resolver-runs24-29-2026-05-31.md.
+companies).
 
 Three changes under test:
   1. multi_record_search anchor-first strict-filter (scale-invariant precision).

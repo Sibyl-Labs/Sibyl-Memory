@@ -1,4 +1,4 @@
-"""N3 (Kravento PL eval 2026-08-16): selectivity-ordered D2L probe ladder.
+"""N3 (Polish-language eval 2026-08-16): selectivity-ordered D2L probe ladder.
 
 The stem rescue ladder used to probe uncovered stems longest-first and STOP at
 the first that appended. Length is unrelated to selectivity, so a saturated
@@ -86,7 +86,7 @@ def test_no_truncation_beyond_probe_cap(tmp_path):
 
 def test_tie_break_reproduces_length_order_and_continues(tmp_path):
     """No-regression twin of test_covgate_stem::test_ladder_longest_first_and_continues.
-    N3' (Kravento PL eval, 2026-08-18) overturned this test's original name
+    N3' (Polish-language eval, 2026-08-18) overturned this test's original name
     (test_tie_break_reproduces_length_order_and_stop): when two disjoint probes
     TIE on hit count (1 each), the length tie-break still keeps today's winner
     (the longer stem leads), but the ladder no longer stops at the first

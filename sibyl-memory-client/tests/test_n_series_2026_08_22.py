@@ -1,7 +1,7 @@
-"""N4 / N3' / N5 / N1'-diagnostics (2026-08-18 Kravento PL eval, independent
-adversarial re-verification by cryptoxdylan against 0.6.1).
+"""N4 / N3' / N5 / N1'-diagnostics (2026-08-18 Polish-language eval, independent
+adversarial re-verification by an external contributor against 0.6.1).
 
-Provenance: cryptoxdylan reproduced these findings against the released 0.6.1
+Provenance: an external contributor reproduced these findings against the released 0.6.1
 build (client), attached a working patch by email with full rationale and a
 339/343-passing test run. That attachment did not survive the Gmail-attachment
 retrieval path (gzip CRC mismatch, confirmed corrupt against two independent
@@ -114,7 +114,7 @@ def test_n1prime_diagnostics_names_the_blocking_token(tmp_path):
     c = MemoryClient.local(tmp_path / "n1p.db", tenant_id="t1")
     # deliberately omit 'wynosi' (the connecting verb) from the stored text —
     # it is genuinely absent from the corpus, which is what makes it a
-    # CONTENT-shaped zero-df token (Dylan's actual scenario: a common verb
+    # CONTENT-shaped zero-df token (the reporter's actual scenario: a common verb
     # that varies by inflection/context and simply never appears verbatim).
     c.set_entity("ops", "stawka-ryczalt", {"text": "stawka ryczaltu dwadziescia procent"})
     d = {}

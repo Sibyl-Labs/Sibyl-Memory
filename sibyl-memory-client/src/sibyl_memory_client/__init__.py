@@ -13,7 +13,12 @@ Public exports:
     LintReport          aggregated lint output (v0.2.0)
     Finding             single lint finding (v0.2.0)
 
-Quickstart:
+Account gate (0.9.0): every memory operation needs an activated account
+(`sibyl init`) holding a valid, server-signed entitlement; otherwise it raises
+EntitlementError. Local data is never touched by the gate, and the CLI
+(`sibyl memory list|search|recall`) always reads it without an account.
+
+Quickstart (after `sibyl init`):
 
     from sibyl_memory_client import MemoryClient
     client = MemoryClient.local("~/.sibyl-memory/memory.db")
@@ -41,6 +46,7 @@ from ._capcheck import (
 from .client import DEFAULT_TENANT, MemoryClient
 from .exceptions import (
     ConflictError,
+    EntitlementError,
     NotFoundError,
     SchemaError,
     SibylMemoryError,
@@ -99,6 +105,8 @@ __all__ = [
     "ConflictError",
     "ValidationError",
     "TierGateError",
+    # account gate (0.9.0)
+    "EntitlementError",
     # cap enforcement (v0.3.0)
     "CapExceededError",
     "TierVerificationError",

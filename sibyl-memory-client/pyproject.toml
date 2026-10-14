@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sibyl-memory-client"
-version = "0.8.1"
+version = "0.9.0"
 description = "Local-first agentic memory SDK. SQLite-backed five-tier hierarchical schema, FTS5 search, multi-tenant, with self-learning skill detection and local memory linter. Foundation of the Sibyl Memory Plugin family."
 authors = [{ name = "SIBYL, Sibyl Labs LLC", email = "sibyl@sibyllabs.org" }]
 license = { text = "MIT" }
@@ -26,6 +26,9 @@ classifiers = [
 ]
 dependencies = [
   "certifi>=2024.7.4",
+  # 0.9.0 account gate: Ed25519 verification of the server-signed
+  # entitlement (spec account-gated D6). hermes-agent already pulls it.
+  "cryptography>=42",
 ]
 
 [project.optional-dependencies]
@@ -44,7 +47,7 @@ where = ["src"]
 include = ["sibyl_memory_client*"]
 
 [tool.setuptools.package-data]
-"sibyl_memory_client" = ["schema.sql"]
+"sibyl_memory_client" = ["schema.sql", "_skills/*.md", "_skills/manifest.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

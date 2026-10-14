@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from sibyl_memory_client import (
     BYOKSummarizer,
     MemoryClient,
@@ -33,6 +35,12 @@ def _seed_with_secrets(client: MemoryClient, n: int = 4) -> None:
             evaluated={"task": _SECRET_TASK, "ticket": _SECRET_TICKET},
             acted=[_SECRET_ACTION],
         )
+
+
+@pytest.fixture(autouse=True)
+def _lifetime_entitlement(entitle_as) -> None:
+    # 0.9.0: paid features key to the ENTITLEMENT tier (spec 3.1).
+    entitle_as("lifetime")
 
 
 def _client(tmp_path: Path) -> MemoryClient:

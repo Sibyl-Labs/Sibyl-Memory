@@ -615,7 +615,7 @@ def test_multiword_append_does_not_readmit_the_contr_family(tmp_path):
 
 
 def test_multiword_append_does_not_readmit_the_our_courier_pollution(tmp_path):
-    """The N4 substring-'our' case (Kravento PL eval 2026-08-18): 'our' matches
+    """The N4 substring-'our' case (Polish-language eval 2026-08-18): 'our' matches
     inside 'c-our-ier'. It cannot pollute the append because a three-character
     token is never shortened and so is never a content term at all."""
     from sibyl_memory_client.shadow import _content_terms, normalize_terms

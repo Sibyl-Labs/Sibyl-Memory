@@ -67,7 +67,7 @@ from .shadow import assert_sqlite_supported as _assert_sqlite_supported
 _BUSY_TIMEOUT_MS = 5000
 _MIGRATION_BUSY_TIMEOUT_MS = 180000
 
-# v0.4.0 (2026-05-18, KAPPA RED finding): the SQLite DB holds every entity
+# v0.4.0 (2026-05-18, external-test RED finding): the SQLite DB holds every entity
 # body, not just credentials. docs.sibyllabs.org/memory/install claims 0600
 # but sqlite3.connect inherits the process umask (typically yields 0644).
 # Tighten with explicit chmod after the schema apply guarantees the file
@@ -238,7 +238,7 @@ class Storage:
         self._registry_lock = threading.Lock()
         # Bootstrap schema on first open (idempotent)
         self._ensure_schema()
-        # v0.4.0 (KAPPA RED finding): tighten file permissions on the main DB
+        # v0.4.0 (external-test RED finding): tighten file permissions on the main DB
         # file + WAL + SHM sidecars after the schema apply has created them.
         # Default umask leaves 0644 (world-readable); we want 0600 since the
         # DB contains every entity body. Idempotent + tolerant of missing

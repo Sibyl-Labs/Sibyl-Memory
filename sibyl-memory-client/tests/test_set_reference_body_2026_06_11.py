@@ -1,4 +1,4 @@
-"""PKG-5 regression: set_reference accepts dict/list bodies (VRTX ISSUE-003).
+"""PKG-5 regression: set_reference accepts dict/list bodies (beta report).
 
 Before 0.4.12, set_reference(key, {...}) reached the SQLite INSERT with a dict
 bound as a parameter and raised StorageError. Now a dict/list body is coerced

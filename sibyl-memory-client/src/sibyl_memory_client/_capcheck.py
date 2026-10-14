@@ -22,16 +22,22 @@ Design (v0.3.0):
 
 The local-first promise is preserved: no memory *content* ever crosses the
 network. The check-write endpoint receives only account/verification
-identifiers, never entity bodies. The full request payload is:
+identifiers, never entity bodies.
+
+0.9.0 (spec account-gated 3.1, 5.5, D11): a MemoryClient-built gate sends
 ``account_id``, ``session_token``, ``current_size_bytes``,
-``proposed_delta_bytes`` and — when a signed credentials claim is present —
-``credentials_signature`` plus ``credentials_claim``. The claim currently
-carries the account email + wallet that the server signed at activation
-(Contract PII / Hardening #6): dropping those from the wire is a policy-gated
-follow-up that requires the backend to re-sign over its own stored PII, so it
-stays out of scope for the client until then. This docstring is the honest
-enumeration — the earlier "only (account_id, current_size_bytes,
-proposed_delta_bytes)" claim under-stated the payload.
+``proposed_delta_bytes`` and ``entitlement`` (the server-signed SE1 token,
+when the device holds a verified one). It no longer sends
+``credentials_claim`` / ``credentials_signature``, which took the account
+email + wallet off this wire (the Contract PII follow-up). A CapGate built
+directly WITHOUT ``entitlement_token_fn`` (legacy direct use) keeps the old
+HMAC-claim payload. This docstring is the honest enumeration.
+
+Server answers a new client can meet (spec 5.6): 403 ``entitlement_invalid``
+(the presented token failed verification: re-run ``sibyl init``) and, after
+the ``min_client_version`` cutoff, 403 ``client_too_old`` (update the plugin).
+Both are authoritative denials (TierAuthError): the free cap is enforced and
+the message names the one action.
 """
 from __future__ import annotations
 
@@ -40,7 +46,7 @@ import logging
 import os
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -51,6 +57,7 @@ logger = logging.getLogger(__name__)
 # callers that import from `sibyl_memory_client._capcheck` still resolve.
 # The MCP server (sibyl-memory-mcp >= 0.1.2) imports from the canonical
 # `.exceptions` path; this re-export keeps the historical path alive too.
+from .tiers import FREE, PAID_TIERS, SOFT_CAPS, is_paid  # noqa: F401  (PAID_TIERS re-exported)
 from .exceptions import (  # noqa: F401  (re-exported for backwards compat)
     CapExceededError,
     SibylMemoryError,
@@ -64,12 +71,12 @@ from .exceptions import (  # noqa: F401  (re-exported for backwards compat)
 
 # Raised 2026-08-06 (operator directive) from 2 MiB → 5 MiB to compensate for the
 # v0.5.0 folded-trigram search shadow's added on-disk footprint (spec §6).
-FREE_TIER_CAP_BYTES = 5 * 1024 * 1024  # 5 MB (5,242,880 bytes)
+FREE_TIER_CAP_BYTES = SOFT_CAPS[FREE]  # 5 MB (5,242,880 bytes); the one free cap lives in tiers
 GRACE_PERIOD_SECONDS = 7 * 24 * 60 * 60  # 7 days
-# 'pro' is THE single upgraded tier as of 2026-09-03: card (Stripe), USDC
-# (x402), and staker qualification all resolve to it server-side. The other
-# names are legacy labels still live on historical subscription rows.
-PAID_TIERS = frozenset({"pro", "sync", "team", "lifetime", "stake", "enterprise"})
+# PAID_TIERS (re-exported for backwards compat) is the shared tiers set:
+# canonical pro + elite plus the legacy aliases older servers may still send.
+# Every membership test below goes through tiers.is_paid (case and whitespace
+# tolerant; an unknown label is not paid).
 
 DEFAULT_CHECK_WRITE_URL = "https://api.sibyllabs.org/api/plugin/check-write"
 DEFAULT_UPGRADE_URL = "https://docs.sibyllabs.org/memory/tiers"
@@ -340,6 +347,33 @@ def aggregate_db_size(primary_db: str | Path) -> int:
 # Server check
 # ----------------------------------------------------------------------
 
+CLIENT_TOO_OLD_MESSAGE = (
+    "update the plugin: pip install -U sibyl-memory-client sibyl-memory-mcp "
+    "sibyl-memory-hermes sibyl-memory-cli"
+)
+ENTITLEMENT_INVALID_MESSAGE = (
+    "Sibyl Labs did not accept this computer's sign-in file (damaged, expired "
+    "or from another computer). Run sibyl init to sign in again. Your local "
+    "memory is kept."
+)
+
+
+def _error_code(err: Any) -> str | None:
+    """The api's ``code`` field from an HTTPError body, or None. Bounded read;
+    never echoes the server's free-text error (SEC-9)."""
+    try:
+        raw = err.read(4097)
+    except Exception:
+        return None
+    if not raw or len(raw) > 4096:
+        return None
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    code = body.get("code") if isinstance(body, dict) else None
+    return code if isinstance(code, str) and len(code) <= 64 else None
+
 def _default_check_write_fn(
     url: str,
     payload: dict[str, Any],
@@ -350,7 +384,7 @@ def _default_check_write_fn(
     Stdlib urllib transport; TLS trust comes from the shared certifi-backed
     context (``_trust.https_context()``) so macOS framework-build Pythons,
     which ship an empty OpenSSL trust store, verify api.sibyllabs.org
-    correctly. certifi is the SDK's single runtime dependency (0.7.1). If the
+    correctly (certifi is a declared runtime dependency). If the
     call fails (timeout, network error, non-2xx), raises TierVerificationError.
     Callers can pass in a custom fn for testing or for using their own
     HTTP client.
@@ -379,6 +413,11 @@ def _default_check_write_fn(
         "User-Agent": f"sibyl-memory-client/{_ua_ver}",
         "Accept": "application/json",
     }
+    # 0.9.0: the entitlement also rides as X-Sibyl-Entitlement (spec 5.6; the
+    # api reads body.entitlement first, the header is the same token).
+    ent_value = payload.get("entitlement")
+    if isinstance(ent_value, str) and ent_value:
+        headers["X-Sibyl-Entitlement"] = ent_value
     auth_value = payload.get("bearer_token") or payload.get("session_token")
     if auth_value:
         headers["Authorization"] = f"Bearer {auth_value}"
@@ -404,10 +443,18 @@ def _default_check_write_fn(
             # branch (which is fail-open eligible). Raise the distinct
             # TierAuthError so _refresh_and_check hard-denies at the free cap.
             if e.code in AUTH_DENY_HTTP_CODES:
-                raise TierAuthError(
-                    f"Sibyl Labs refused to authorize this account "
-                    f"(HTTP {e.code}). Re-activate to continue.",
-                ) from e
+                server_code = _error_code(e)
+                if server_code == "client_too_old":
+                    msg = CLIENT_TOO_OLD_MESSAGE
+                elif server_code == "entitlement_invalid":
+                    msg = ENTITLEMENT_INVALID_MESSAGE
+                else:
+                    msg = (f"Sibyl Labs refused to authorize this account "
+                           f"(HTTP {e.code}). Re-activate to continue.")
+                err = TierAuthError(msg)
+                err.server_code = server_code
+                err.http_status = e.code
+                raise err from e
             if e.code in RETRYABLE_HTTP_CODES and attempt < CHECK_WRITE_MAX_RETRIES:
                 time.sleep(CHECK_WRITE_RETRY_BACKOFF * (2 ** attempt))
                 continue
@@ -458,13 +505,16 @@ class CapGate:
         account_id: str | None,
         session_token: str | None,
         db_size_fn: Callable[[], int],
-        local_tier_hint: str = "free",
+        local_tier_hint: str = FREE,
         cache: TierCache | None = None,
         check_url: str = DEFAULT_CHECK_WRITE_URL,
         check_fn: Callable[..., dict[str, Any]] | None = None,
         cap_bytes: int = FREE_TIER_CAP_BYTES,
         credentials_claim: dict[str, Any] | None = None,
         credentials_signature: str | None = None,
+        entitlement_tier_fn: Callable[[], str | None] | None = None,
+        entitlement_token_fn: Callable[[], str | None] | None = None,
+        on_auth_denied: Callable[[str | None], None] | None = None,
     ) -> None:
         self.account_id = account_id
         self.session_token = session_token
@@ -480,6 +530,48 @@ class CapGate:
         #: these fields are advisory, defense in depth only.
         self._credentials_claim = credentials_claim
         self._credentials_signature = credentials_signature
+        # 0.9.0 (spec 3.1): the verified entitlement's tier is the local hint
+        # (the file hint is used only when there is none), and the token
+        # replaces the HMAC claim on the wire (D11). Both callables are cheap
+        # (the gate caches) and never raise into the write path.
+        self._entitlement_tier_fn = entitlement_tier_fn
+        self._entitlement_token_fn = entitlement_token_fn
+        self._on_auth_denied = on_auth_denied
+        # A paid (uncapped) verdict THIS process just received from
+        # /check-write (epoch expiry). Trusted by the SEC-13 extension below:
+        # the threat it closes is a forged tier_cache.json on disk, not the
+        # server's own answer. Covers the window between an upgrade and the
+        # next entitlement refresh (which the verdict also requests).
+        self._server_uncapped_until: float | None = None
+
+    def _entitlement_tier(self) -> str | None:
+        fn = self._entitlement_tier_fn
+        if fn is None:
+            return None
+        try:
+            tier = fn()
+        except Exception:
+            return None
+        return tier if isinstance(tier, str) and tier else None
+
+    @property
+    def _hint(self) -> str:
+        """The local tier hint: the entitlement's tier when verified, else the
+        credentials file hint (bootstrap / legacy direct use)."""
+        return self._entitlement_tier() or self._local_hint
+
+    def _cache_uncapped_trusted(self) -> bool:
+        """SEC-13 extension (0.9.0): an account-matched UNCAPPED tier cache is
+        honored only while a verified entitlement also says paid. A forged or
+        leftover ``tier_cache.json`` claiming ``cap_bytes: null`` for the real
+        account_id no longer unlocks anything on its own. Legacy direct CapGate
+        use (no entitlement wiring) keeps the pre-0.9.0 rule."""
+        if self._entitlement_tier_fn is None:
+            return True
+        if is_paid(self._entitlement_tier()):
+            return True
+        until = self._server_uncapped_until
+        return until is not None and time.time() < until
 
     # ------------------------------------------------------------------
     # Public entry point: called by every write path
@@ -498,7 +590,8 @@ class CapGate:
                 # account_id:null + cap_bytes:null matches that null state and
                 # would otherwise spoof an uncapped account (SEC-13). A
                 # legitimately uncapped tier always carries a real account_id.
-                if self.account_id is not None:
+                # 0.9.0: and only while the entitlement agrees (SEC-13 ext).
+                if self.account_id is not None and self._cache_uncapped_trusted():
                     return
                 # Forged/null-account uncapped claim: distrust the cache and
                 # fall through to the credentials-hint + server path below.
@@ -515,7 +608,7 @@ class CapGate:
         # every brand-new user's first writes.
         current = self._db_size_fn()
         new_size = current + proposed_delta_bytes
-        if self._local_hint in PAID_TIERS:
+        if is_paid(self._hint):
             # Credentials say paid; verify with server then cache the result.
             # If user genuinely paid: server confirms, we cache, done. If
             # credentials are tampered: server says free, we cache, enforce.
@@ -525,6 +618,30 @@ class CapGate:
             return
         # Free + at/past cap → must call server.
         return self._refresh_and_check(proposed_delta_bytes)
+
+    def decides_locally(self, proposed_delta_bytes: int = 0) -> bool:
+        """True only when EVERY write of this client, whatever its size, is
+        decided without a network call: a fresh, account-matched, UNCAPPED
+        tier cache that the verified entitlement agrees with (the same test
+        ``check()``, ``check_total()`` and the in-transaction recheck apply
+        first). Never raises. A short-lived caller (the Claude Code hooks,
+        killed after a few seconds) writes only when this is True.
+
+        A capped answer (a fresh free cache, or a free hint under the cap) is
+        deliberately NOT local here: ``proposed_delta_bytes`` is the caller's
+        estimate, and the real write can be larger (a debloat history move is
+        up to 2 MB per file, several files per run), and any write that ends
+        over a capped limit goes to the server. The hook only writes on Pro,
+        where the uncapped cache is what a verified device holds; without it
+        the hook plans only and the file is trimmed at a later start.
+        ``proposed_delta_bytes`` is accepted for the call signature."""
+        try:
+            cached = self._cache.load()
+            return bool(cached and cached.is_fresh and cached.account_id == self.account_id
+                        and cached.cap_bytes is None and self.account_id is not None
+                        and self._cache_uncapped_trusted())
+        except Exception:
+            return False
 
     def check_total(self, total_size_bytes: int) -> None:
         """Gate on an ABSOLUTE resulting footprint (CAP-2).
@@ -546,14 +663,14 @@ class CapGate:
         cached = self._cache.load()
         if cached and cached.is_fresh and cached.account_id == self.account_id:
             if cached.cap_bytes is None:
-                if self.account_id is not None:
+                if self.account_id is not None and self._cache_uncapped_trusted():
                     return  # account-matched paid cache: uncapped
             elif total_size_bytes <= cached.cap_bytes:
                 return
             else:
                 return self._refresh_and_check_total(total_size_bytes)
 
-        if self._local_hint in PAID_TIERS:
+        if is_paid(self._hint):
             return self._refresh_and_check_total(total_size_bytes)
         if total_size_bytes <= self._cap:
             return
@@ -577,7 +694,9 @@ class CapGate:
         if (cached and cached.account_id == self.account_id
                 and self.account_id is not None):
             if cached.cap_bytes is None:
-                return None              # account-matched paid grant -> uncapped
+                if self._cache_uncapped_trusted():
+                    return None          # account-matched paid grant -> uncapped
+                return self._cap         # SEC-13 ext: the cache alone never unlocks
             if cached.is_fresh:
                 return cached.cap_bytes  # fresh cached free cap
         return self._cap                 # free default
@@ -660,15 +779,34 @@ class CapGate:
             "current_size_bytes": current,
             "proposed_delta_bytes": proposed_delta_bytes,
         }
-        # Attach signed-credentials claim if we have one. Server uses it for
-        # tamper telemetry; the decision itself is unaffected.
-        if self._credentials_signature and self._credentials_claim:
+        if self._entitlement_token_fn is not None:
+            # 0.9.0 (D11): the entitlement INSTEAD of the HMAC claim. With no
+            # verified token (bootstrap) nothing extra is sent; the api accepts
+            # an absent token until min_client_version is set.
+            try:
+                token = self._entitlement_token_fn()
+            except Exception:
+                token = None
+            if isinstance(token, str) and token:
+                payload["entitlement"] = token
+        elif self._credentials_signature and self._credentials_claim:
+            # Legacy direct CapGate use: signed-credentials claim for the
+            # server's tamper telemetry; the decision itself is unaffected.
             payload["credentials_signature"] = self._credentials_signature
             payload["credentials_claim"] = self._credentials_claim
 
         try:
             resp = self._check_fn(self._check_url, payload)
         except TierAuthError as e:
+            # 0.9.0: let the account gate re-check itself (a refresh is the
+            # authority on revocation; 403 entitlement_invalid means the token
+            # we hold was refused).
+            if self._on_auth_denied is not None:
+                try:
+                    self._on_auth_denied(getattr(e, "server_code", None))
+                except Exception:
+                    pass
+            server_code = getattr(e, "server_code", None)
             # CAP-5 / CORE-2: authoritative "not entitled" (401/403). NEVER fail
             # open: the token is bad/expired/forged/revoked, so the account is
             # treated as free and the free cap is enforced. A recent PAID cache
@@ -678,15 +816,28 @@ class CapGate:
             new_size = current + proposed_delta_bytes
             if new_size <= self._cap:
                 return
-            raise CapExceededError(
-                "Your account could not be authorized and you're past the "
-                "5 MB free-tier cap. Re-run `sibyl init` to refresh "
-                "credentials, or stay under the cap.",
+            if server_code == "client_too_old":
+                denial = f"You're past the 5 MB free-tier cap and this plugin is too old for the server: {CLIENT_TOO_OLD_MESSAGE}."
+            elif server_code == "entitlement_invalid":
+                denial = ("You're past the 5 MB free-tier cap and Sibyl Labs did not accept "
+                          "this computer's sign-in file. Run sibyl init to sign in again.")
+            else:
+                denial = ("Your account could not be authorized and you're past the "
+                          "5 MB free-tier cap. Re-run `sibyl init` to refresh "
+                          "credentials, or stay under the cap.")
+            err = CapExceededError(
+                denial,
                 current_size=current,
                 cap=self._cap,
                 proposed_delta=proposed_delta_bytes,
                 upgrade_url=DEFAULT_UPGRADE_URL,
-            ) from e
+            )
+            if server_code == "client_too_old":
+                # Agent handoff row M2: the fix is an update, not a purchase.
+                from .exceptions import ENTITLEMENT_NEXT
+                err.next = ENTITLEMENT_NEXT["client_too_old"]
+                err.human_action = None
+            raise err from e
         except TierVerificationError as e:
             # Verification unreachable (timeout / connection error / 5xx — NOT an
             # auth refusal; those are TierAuthError, handled above). First, honor
@@ -768,9 +919,9 @@ class CapGate:
 
         # Got a response. Update the cache.
         ok = bool(resp.get("ok"))
-        tier = resp.get("tier", "free")
+        tier = resp.get("tier", FREE)
         cap_bytes = resp.get("cap_bytes") if "cap_bytes" in resp else (
-            None if tier in PAID_TIERS else self._cap
+            None if is_paid(tier) else self._cap
         )
         # T1-4 anchor: capture server-supplied subscription expiry so the
         # cache cannot be honored past actual end-of-validity, even if the
@@ -786,6 +937,20 @@ class CapGate:
                 ).astimezone(timezone.utc).timestamp()
             except (ValueError, TypeError):
                 server_expires_at = None
+        if cap_bytes is None and is_paid(tier):
+            self._server_uncapped_until = (
+                min(time.time() + GRACE_PERIOD_SECONDS, server_expires_at)
+                if server_expires_at is not None else time.time() + GRACE_PERIOD_SECONDS)
+        else:
+            self._server_uncapped_until = None
+        ent_tier = self._entitlement_tier()
+        if ent_tier is not None and ent_tier != tier and self._on_auth_denied is not None:
+            # The server's tier differs from the entitlement's (an upgrade or a
+            # downgrade since it was issued): refresh the entitlement now.
+            try:
+                self._on_auth_denied("tier_changed")
+            except Exception:
+                pass
         entry = TierCacheEntry(
             account_id=self.account_id,
             tier=tier,
@@ -849,7 +1014,8 @@ class CapGate:
             # would let a forged tier_cache.json spoof "uncapped" in status.
             # Mirrors the guard in check() / check_total().
             if not (cached.cap_bytes is None and self.account_id is None):
-                return cached.cap_bytes
-        if self._local_hint in PAID_TIERS:
+                if cached.cap_bytes is not None or self._cache_uncapped_trusted():
+                    return cached.cap_bytes
+        if is_paid(self._hint):
             return None
         return self._cap

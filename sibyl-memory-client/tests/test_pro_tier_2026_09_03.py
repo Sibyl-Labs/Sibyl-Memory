@@ -10,12 +10,13 @@ falls out of PAID_TIERS, which silently demotes a paying user to free-tier
 behavior (soft-cap warnings, paid-only feature gates raising TierGateError).
 """
 
+from sibyl_memory_client import tiers
 from sibyl_memory_client._capcheck import PAID_TIERS
 from sibyl_memory_client.client import MemoryClient
 from sibyl_memory_client.lint import TIER_SOFT_CAPS
 
 
-ALL_PAID = ("pro", "sync", "team", "lifetime", "stake", "enterprise")
+ALL_PAID = ("pro", "elite", "sync", "team", "lifetime", "stake", "enterprise")
 
 
 def test_pro_is_a_paid_tier_for_cap_checks():
@@ -46,7 +47,11 @@ def test_free_tier_still_capped():
 
 
 def test_paid_sets_agree_everywhere():
-    # The three tier surfaces must never drift from each other again.
-    assert PAID_TIERS == MemoryClient._PAID_ONLY_TIERS
+    # The tier surfaces must never drift from each other again: since the tier
+    # convention (2026-10-05) they are all the one shared tiers module.
+    assert PAID_TIERS == MemoryClient._PAID_ONLY_TIERS == tiers.PAID_TIERS
+    assert TIER_SOFT_CAPS is tiers.SOFT_CAPS
     lint_paid = {t for t, cap in TIER_SOFT_CAPS.items() if cap is None}
-    assert lint_paid == set(PAID_TIERS)
+    assert lint_paid == set(tiers.PAID) == {"pro", "elite"}
+    for tier in PAID_TIERS:
+        assert tiers.soft_cap(tier) is None, tier

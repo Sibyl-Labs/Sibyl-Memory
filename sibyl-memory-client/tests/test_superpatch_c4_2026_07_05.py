@@ -90,7 +90,8 @@ def _seed_pending_proposal(learner: Learner, *, slug: str, body: str) -> str:
 _SECRET_KEY = "exfiltrate_the_quarterly_secret_9f3a"
 
 
-def test_h1_dict_key_names_never_reach_sibyl_routed_prompt(tmp_path: Path) -> None:
+def test_h1_dict_key_names_never_reach_sibyl_routed_prompt(tmp_path: Path, entitle_as) -> None:
+    entitle_as("lifetime")  # 0.9.0: paid features key to the entitlement tier
     prompts: list[str] = []
 
     def capture(prompt: str) -> str:

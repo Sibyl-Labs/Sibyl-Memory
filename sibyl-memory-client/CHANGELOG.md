@@ -4,6 +4,410 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.9.0] - Unreleased
+
+Account-gated release (spec account-gated-plugin-spec-2026-09-27). Minor, not
+patch: every caller without an activated account now gets `EntitlementError`.
+
+### 2026-10-14 - Pre-release cleanup
+- Quickstart in the README now opens the client on your account's tenant (from
+  `credentials.json`), so what it writes is what the MCP server, Hermes and LangGraph read. It
+  also says what happens without a tenant and how `sibyl memory adopt` moves those rows.
+- README: the "What's in v0.4.x" heading is gone and spelling is US English.
+- The computer-limit messages build `account.sibyllabs.org/security` from one constant. The text
+  is unchanged.
+- Docstrings corrected: certifi is not the only dependency, `tier` / `set_tier` are hints that a
+  verified entitlement overrides.
+- Removed unused internal helpers and imports. No public API changed: `EntitlementGate.state_path`
+  has no reader but is kept, because a gate is reachable through the public
+  `MemoryClient.entitlement_gate` property.
+- The pinned-keys module docstring says where the private signing key lives only in general
+  terms (held by the Sibyl Labs api, never in this package); it no longer names internal
+  secret storage or release steps. Text only.
+- Comments, docstrings, test file names and this CHANGELOG describe each finding by what it fixed
+  instead of naming testers or internal QA rounds. Text and test file names only; no code changed.
+
+### 2026-10-10 - sign-in and display fixes
+- F-1 (contract C1): `classify_denial` reads the 401 body's `code`. For `signed_out_on_claim`
+  the outcome stays `denied` / `signed_out` (the MCP `reason` is unchanged) and carries `cause`
+  and `since` (the api's `signed_out_at`, shape-checked ISO, at most 40 characters). The gate
+  keeps both in `entitlement.json` (`denied.cause`, `denied.since`), `Decision` and `status()`
+  expose them (`cause`, `signed_out_at`), and `require()` raises `EntitlementError("signed_out")`
+  with the copy "This computer was signed out of your Sibyl Memory account when your email was
+  confirmed on the account page (<date> UTC). Run sibyl init --force ..." and `next: sibyl init
+  --force`. Any other 401 is unchanged. New in `exceptions`: `SIGNED_OUT_ON_CLAIM`,
+  `clean_iso`, `utc_minute`, `signed_out_on_claim_message`. Tests:
+  `tests/test_signed_out_on_claim_2026_10_10.py` (+15). Suite: 899 passed, 11 skipped
+  (was 884).
+
+### Fixed (shown tier and plan end, 2026-10-08)
+- F1: a verified, bound pass that arrives on a refresh (a blocking `refresh()` or the background
+  re-check, both through `_do_refresh`) now rewrites the saved `tier` in `credentials.json`
+  (`_entitlement.sync_credentials_tier`), so a computer that signed in on Free and then bought
+  Pro, or whose Pro ended, no longer keeps the sign-in-time tier on disk. Canonical labels only
+  (an unrecognised label is left alone), no write when the saved tier already normalises to the
+  pass's tier, only for the same account and session the pass is bound to, never through a
+  symlink; `signature` / `signed_at` are dropped with the edit (a signed field never changes
+  under an old signature); mkstemp + fsync + `os.replace` with the file's existing mode; the
+  `tier_cache.json` beside it is removed when the tier changed. Never raises.
+- F1: `MemoryClient.tier_for_display()` (the pass's tier when the computer holds a valid one,
+  else the saved hint; never the tier cache). `free_tier_status()` reports that tier and its cap
+  instead of the construction-time hint.
+- F2: `EntitlementGate.status()["plan"]` carries the server's additive `ends_at` / `renews_at`
+  (ISO strings, at most 40 characters; anything else is dropped). Payloads with keys this
+  version does not know were and stay valid passes.
+- Tests: `tests/test_tier_sync_2026_10_08.py` (+8); `test_lint.py` paid-tier status uses the
+  null gate (the pass now wins over the hint); the track-op coverage guard lists
+  `tier_for_display` (no storage access). Suite: 884 passed, 11 skipped (was 876 + 11).
+
+### Fixed (tests, 2026-10-07)
+- `test_13_automation_allowed_matrix`: the stale and locked band clients use an
+  `EntitlementGate(..., allow_refresh=False)`, so a background refresh cannot re-mint a fresh
+  token mid-test (flaked 3 in 40 under CPU load). Test only.
+
+### Added (agent handoff messages, 2026-10-06)
+Spec agent-handoff-messages-spec-2026-10-03 (rows C1 to C17, section 1.6; same coordinated release).
+- `exceptions.ENTITLEMENT_NEXT` and `exceptions.ENTITLEMENT_HUMAN_ACTION`, beside
+  `ENTITLEMENT_MESSAGES` / `ENTITLEMENT_RECOVERY` and keyed by the same eleven codes: the exact
+  command an agent runs next (`sibyl init`, `sibyl refresh`, `sibyl init --force`,
+  `sibyl email add <address>`, the `pip install -U ...` update, or `done`) and the sentence it
+  relays to its person (None when nobody has to act). The single source the MCP server, the
+  Hermes adapter and a LangGraph graph read.
+- `EntitlementError` gains `.next`, `.human_action`, `.summary` (the section 8 copy, what `str(e)`
+  was) and `.handoff_lines()`. `str(e)` is now `summary` followed by the block
+  (`ask your human: ...` when a person must act, then `next: ...`, always last), so every surface
+  that relays the text carries the handoff. `code`, `reason`, `recovery`, `account_url` and the
+  constructor's existing arguments are unchanged; `next=` / `human_action=` are new optional
+  keywords.
+- The computer-limit read-only refusal (code `policy_read_only`, `acct.devices.over`) carries
+  `next` `sibyl devices` and its own sentence (`DEVICES_READ_ONLY_NEXT`,
+  `DEVICES_READ_ONLY_HUMAN_ACTION`); the email copy is never named there.
+- `CapExceededError`, `TierGateError`, `TierVerificationError`, `TierAuthError` gain the same two
+  attributes as class defaults (`sibyl upgrade`, `sibyl upgrade`, `retry`, `sibyl init --force`)
+  and `.handoff_lines()`; their `str()` is unchanged. The over-the-cap denial for a plugin too old
+  for the server carries the update command instead of `sibyl upgrade`.
+- `exceptions.format_handoff(next, human_action)`.
+- Tests: `tests/test_handoff_2026_10_03.py` (+22). Suite on the handoff build: 876 passed,
+  11 skipped.
+
+### Changed (tier convention, 2026-10-05)
+Spec tier-convention-spec-2026-10-05 section 5 (same coordinated release; version unchanged).
+- One shared tier module, `sibyl_memory_client.tiers` (stdlib only): the canonical tiers are
+  `free`, `pro` and `elite`; `normalize`, `is_paid`, `display` (Free / Pro / Elite), `soft_cap`,
+  `PAID_TIERS`, `SOFT_CAPS`, `UNKNOWN_REASON`. Every former copy now routes through it:
+  `_capcheck.PAID_TIERS`, `lifecycle.entitled.PAID_TIERS`, `MemoryClient._PAID_ONLY_TIERS` (all
+  re-exported under their old names), the `devices_read_only_message` tuple, the lint caps and
+  the three five-MiB constants (`FREE_TIER_CAP_BYTES`, `DEFAULT_SOFT_CAP_BYTES`, `SOFT_CAPS[free]`).
+- Legacy labels from older servers and credentials (`sync`, `team`, `lifetime`, `stake` -> pro;
+  `enterprise` -> elite) are accepted as input-only aliases; tier comparisons are case and
+  whitespace tolerant.
+- An unrecognised tier label is treated as Free with the reason code `tier_unknown`:
+  `decision_allows` answers `(False, "tier_unknown")` (a paid claim answers its canonical tier),
+  the paid-feature `TierGateError` names the raw label, and `gate.status()` adds `tier_known`,
+  `tier_effective` and the server's `plan` (`acct.plan {tier, src}`) when present. The server
+  keeps the authoritative cap, so a write is never lost.
+- `lint.TIER_SOFT_CAPS` is now `tiers.SOFT_CAPS` (free, pro, elite); look a label up with
+  `tiers.soft_cap()`, which also accepts the aliases.
+- Upgrade copy in `TierGateError`, `CapExceededError` and the lint cap finding says Pro instead
+  of the retired tier names.
+- Tests: `tests/test_tiers_2026_10_05.py` (+37, including the source guard
+  `test_no_other_paid_tier_literal`); `test_pro_tier_2026_09_03.py` and
+  `test_lifecycle_2026_09_27.py` compare against `tiers.PAID_TIERS` and include elite. Suite
+  817 + 11 skipped -> 854 + 11 skipped (measured on the R1 line `accounts-patch` at `53b914e`,
+  TCP-3, tests in place: 854 passed, 11 skipped, 0 failed; re-run 2026-10-05 for the TCF check).
+
+### Added (paid tier R1, 2026-09-29, R1B-1)
+Plan plugin-paid-tier-2026-09-29, operator defaults D1-D15 (same coordinated release; version unchanged).
+- Automatic save by ACTIVE time (Pro): `lifecycle.state` counts active time per session (a gap
+  longer than 5 minutes counts as 5; `note_activity`, `add_active`), keeps bounded settings in
+  `lifecycle.json` `autosave` (interval 30 to 240 minutes, default 60; at most 8 a session and 12 a
+  day; a hand-edited file can only make it rarer), records each request (`record_nudge`), and a
+  save anywhere (the shared DB marker) restarts every open session's clock.
+  `reminders.autosave_due` is the rule: something to save, and 60 active minutes since the last
+  save, or the first-save rule (5 writes) or a compaction; never twice in one active interval.
+- `ProcessNotices` (MCP server, Hermes adapter): counts every tool call / turn, gives the
+  automatic-save request once per interval (account notice first, then the save request, then the
+  skill line), a one-time tier-change line (now on Pro / back on Free), and on Pro runs the local
+  learner after the debloat plan in the process-start thread.
+- Skill proposals (`lifecycle.proposals`): relevance filter (confidence 0.6, 3 events, 2 in the
+  last 7 days, one in the most recent session, two sessions), up to 3 named, once per session and
+  24 h; `run_learner` is Pro only, local-deterministic, and its writes are not counted as the
+  person's. `Learner.run(exclude_kinds=, unmuted=)`: an accepted slug is never proposed again, a
+  rejected one not for 30 days, a twice-rejected one not until unmuted. Evidence keeps the 20 most
+  recent events.
+- `skills.write_skill`, `proposal_skill_text`, `skill_name`, `validate_skill_text`: an accepted
+  proposal becomes a SKILL.md that passes Codex's `quick_validate` rules; recorded in the
+  manifest's `accepted` section, never removed by `sibyl skills uninstall`.
+- Computer limit: a `mem: read_only` token whose `acct.devices.over` is true raises
+  `policy_read_only` with the computer-limit copy (same code, same MCP `reason`);
+  `exceptions.device_limit_info`, `devices_read_only_message`. `EntitlementGate.status()` adds
+  `cap` and `src`.
+
+### Fixed (paid tier R1 check, 2026-09-29, R1B-4)
+- The computer-limit read-only copy says new memories save only on "the computer that signed in
+  most recently" (the server's rule: the newest sign-in stays writable), not "the most recently
+  used computer".
+- `lifecycle`: a compaction is kept on the SESSION (`sessions[..].compaction_seen`, cleared by a
+  save), so one session's compaction no longer makes another session due (Pro automatic save and
+  the free save reminder); the tenant-level `compaction_seen` / `save_due_now` keys are gone (an
+  old file's values are dropped on read). `writes_since_save` stays tenant-wide (plan D6.5).
+  `state.next_nudge_seq` / `note_seq_seen`: `record_nudge` returns the sequence number past any
+  request the Claude Code transcript already holds.
+
+### Changed (paid tier R1)
+- `SAVE.md` (skills v1.1.0, same release): the Codex row is `~/.codex/skills/<name>/SKILL.md` with
+  the quick_validate rules (was the stale `~/.codex/prompts`); headless mode describes the new
+  cadence and says the plugin proposes skills separately; curate mode also walks
+  `sibyl skills proposals` (accept only on a yes). Watermark hash and manifest checksum recomputed.
+  The SAVE shim says the same.
+- The learner's skill body points at `sibyl skills proposals` (there was never a `sibyl learn`).
+
+### Added (save and debloat, 2026-09-27, SD-1 to SD-3)
+Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unchanged).
+- `sibyl_memory_client.skills` and package data `_skills/SAVE.md`, `_skills/DEBLOAT.md`
+  (vendored from the public MIT repos `Sibyl-Labs/sibyl-save` v1.0.0 and `Sibyl-Labs/debloat`
+  v1.0.0 with the attribution watermark kept; every adaptation listed in `_skills/CHANGES.md`),
+  `_skills/manifest.json`. `install(home)` writes `~/.sibyl-memory/skills/` (0600 files in a
+  0700 directory, atomic, symlink-refusing, bounded reads) and never overwrites a person's
+  edit: a new version goes beside it as `<name>.upstream-<version>`. `status`, `reset`,
+  `canonical_text` (the installed edit wins), harness shims (`shim_text`, `install_shim`,
+  `remove_shim`, `uninstall`), all checksum-managed.
+- `sibyl_memory_client.lifecycle`: `measure` (a Python port of `context-hygiene.mjs` with the
+  same numbers, stat only; a conformance test runs both), `splitter` (pure, loss-free
+  HISTORY / CURRENT classification), `apply` (verified backup, history stored through the gated
+  client or to a sibling `*-history` file, source rewritten last, undo), `policy`
+  (`~/.sibyl-memory/debloat.json`, default `propose`), `state` (`~/.sibyl-memory/lifecycle.json`
+  and the write counter), `entitled.automation_allowed` (a verified fresh or stale entitlement
+  whose own tier is paid; nothing else), `capsule`, `reminders`, `runner`, `notices`.
+- `MemoryClient.enable_lifecycle_counting(home)`: a client the plugin's own surfaces enable (the
+  MCP server, the Hermes adapter, `sibyl save --fact`) counts successful writes for the save
+  reminder (an in-memory counter flushed at most every 30 s or 10 writes); the save procedure's
+  `sibyl_save:last_save` marker resets it. Off by default (SD-7): any other client writes no
+  lifecycle file. Counters and timestamps only; nothing about content.
+- `testing`: real-home guard helpers (`real_home`, `real_home_snapshot`, `real_home_changes`,
+  `assert_home_is_not_real`).
+
+### Tests (save and debloat)
+- `test_skills_2026_09_27.py` 16, `test_lifecycle_2026_09_27.py` 65 (incl. the Node conformance
+  check against the vendored upstream script, 20 loss-free round trips with CRLF and BOM, the
+  refusal matrix, apply ordering under injected failures, the gate matrix, two processes one
+  apply), `test_real_home_guard_2026_09_27.py` 4. Every package conftest now asserts HOME is
+  never the real home and fails the session if a watched real-home path changed.
+
+### Fixed (second independent check of save and debloat, 2026-09-27, SD-11 to SD-13)
+- No data-loss window in `apply_one`: the backup of an apply that did not report success is
+  removed only when the source is verifiably the file that was read (same size, mtime, inode
+  and device); an interruption right after the atomic rewrite keeps it (and so does a source
+  edited during the apply).
+- Symlinked folders are resolved, not refused (`apply.resolved_target`, `inside_boundary`): the
+  trim reads and writes `realpath(folder)/name`, so no folder on the written path is a symlink;
+  only a symlinked FILE is refused; the real location must be under the real home or the real
+  project root. `policy.auth_id` and `apply.backup_rel` use the same real-path identity; stored
+  `auto_files` entries are re-resolved once, and dropped with the one-time notice when their file
+  is gone. `symlinked_ancestor` is removed.
+- `run_automatic` names a file set to automatic that it did not trim ("on automatic but not
+  trimmed: <file>: <reason>") and records each file's id in `last_apply`.
+- The sibling `*-history` append is idempotent across days (compared on the history body under
+  any dated "moved from <name>" header).
+- `CapGate.decides_locally()` is True only for a fresh, account-matched, trusted UNCAPPED tier
+  cache (a capped answer depends on the real write size, which a hook cannot bound).
+- The SAVE shim describes `headless` as the once-per-session Pro nudge (first turn end after 5
+  memory writes or a compaction), not "at session end"; installed shims refresh through the
+  checksum path.
+
+### Tests (second independent check)
+- `test_sd_final_2026_09_27.py` (16); `test_sd_fixes_2026_09_27.py` F1 (migrated ids need an
+  existing file), F2 (symlinked folders resolved; a real location outside home is refused) and F5
+  (capped is never local) adjusted.
+
+### Fixed (independent check of save and debloat, 2026-09-27, SD-7 to SD-10)
+- Automatic context trim is authorised per FILE PATH (`policy.auth_id`: the normalised absolute
+  path, `~/<rel>` under home) and matched on the candidate's path only; a name authorised in one
+  project no longer trims the same name in every other project or `~/CLAUDE.md`. Name-only entries
+  from the earlier build are dropped with a one-time notice (`policy.take_legacy_notice`).
+- `apply` refuses, before anything is written, a file below a symlinked folder (any ancestor).
+- Bounded growth: an apply that does not rewrite its file removes its backup; at most 20 backups
+  per file; `plans/` keeps 50; `debloat/history.jsonl` rotates past 256 KB. Backups of a project
+  file are keyed by its absolute path (the shared `project/<name>` slot let an undo in one project
+  restore another project's file).
+- `undo(prefer=)` restores the backup the last apply recorded (now kept in `last_apply`) and
+  refuses a backup identical to the current file.
+- The sibling `*-history` append is idempotent.
+- Write counting is opt-in (`enable_lifecycle_counting`); the exit hook registers on the first
+  counted write.
+- `EntitlementGate(allow_refresh=False)` (never refreshes: for processes a harness kills after a
+  few seconds); `CapGate.decides_locally()` (would `check()` decide without the network).
+- `run_automatic(allow_apply=, deadline=)` (plan-only when a write could wait on the network or
+  the time budget is used); stale `.<name>.*.sibyl-tmp` files next to a candidate are swept.
+- Skill text: `SAVE.md` says Codex gets a marked block in its global AGENTS.md plus a skill (never
+  a custom prompt), and when the Pro save nudge comes (R1 replaced that rule with the active-time
+  cadence above); `DEBLOAT.md` explains `sibyl:keep` for live sections that look like
+  history and that `auto` is per file path. Watermark hashes and manifest checksums recomputed.
+- Codex gets the same SKILL.md shim frontmatter as Claude Code and Hermes.
+
+### Tests (independent check of save and debloat)
+- `test_sd_fixes_2026_09_27.py` (F1 per-path authorisation incl. the cross-repo and home cases,
+  F2 symlinked folders, F3 bounds, F4 undo, F5 no-refresh gate and `decides_locally`, F10 opt-in
+  counting, F12 idempotent sibling, the tmp sweep, the `sibyl:keep` advice); adjusted lifecycle,
+  skills and coverage-guard tests.
+
+### Fixed (independent check fix batch, 2026-09-27, GATE-15)
+- **`mem: none` scheduled no refresh.** The server-policy lock was the only
+  locked branch that never asked the server again, so a lifted policy (email
+  confirmed) reached the device only after a restart and a full exp. It now
+  schedules the same throttled background refresh as the other locked
+  branches (at most once per `LOCKED_RETRY_SECONDS`; a server rejection forces
+  one).
+- **The automatic adoption was silent.** When the first gated operation moves
+  rows written before sign-in, the client now gives out a one-time notice
+  through the existing notice path (`_consume_notice`): "N memories written
+  before sign-in were moved into your account on this computer." ("1 memory
+  ... was moved" for one). Counts only, never a key, a body or an account id.
+  `entitlement_notice()` returns it first (MCP shows it in its `notice`
+  field); new `adoption_notice()` returns only it (hermes logs it). Given out
+  once per client; the move itself happens once per account per store, so a
+  rebuilt client says nothing.
+- README privacy paragraph: the size check and the usage count also carry
+  this computer's signed access token (account id, tier, cap, device hash,
+  account flags; no personal data).
+- Tests: `test_release_fixes_2026_09_27.py` 9 (all fail before);
+  `test_every_public_memory_method_carries_track_op` allowlists the new
+  `adoption_notice` accessor (it reads no storage).
+
+### Fixed (gate fix before the independent check, 2026-09-27)
+- **Memory written before sign-in was invisible after sign-in.** Pre-account
+  installs stored rows under `DEFAULT_TENANT`; after `sibyl init` every surface
+  resolves the account tenant, and nothing re-tenanted them (`sibyl migrate`
+  does not). New `_adopt.py`: on the first gated operation of a client whose
+  tenant is the `ten`/`sub` of the entitlement the gate just verified, every
+  `DEFAULT_TENANT` row in all eleven tenant-scoped tables moves to the account
+  tenant in ONE local transaction (a crash rolls it all back), ids, bodies and
+  timestamps unchanged, nothing deleted, no network. Conflict rule: a business
+  key the account already has (`entities (category, name)`,
+  `state_documents.document_key`, `reference_documents.doc_key`) keeps the
+  account's row and the moved row is renamed `<key> (before sign-in)` (then
+  `(before sign-in 2)`, ...); an accepted skill proposal follows its renamed
+  reference doc. The external-content FTS tables and the search shadow follow
+  through their UPDATE triggers; the standalone journal FTS and the journal
+  rows of the search shadow are re-keyed explicitly. An audit row (counts and
+  renamed keys, never bodies) lands in the new `tenant_adoptions` table (schema
+  v5) in the same transaction, plus a `seen` row the first time an account uses
+  a store, so the automatic move happens on an account's FIRST sign-in only and
+  never when the store has held another account (data under another tenant or
+  an audit row for another account): that case needs
+  `MemoryClient.adopt_pre_signin_memory(confirm_other_accounts=True)` /
+  `sibyl memory adopt`, which asks. `MemoryClient.adoption` reports what the
+  automatic pass did.
+- **Bootstrap grace could be had, and restarted, with local files.** The 7-day
+  legacy bootstrap grace (spec D10) was anchored on `first_seen_legacy` in
+  `entitlement.json`: fabricated credentials with the api blocked got 7 days,
+  and deleting the file restarted them. `BOOTSTRAP_GRACE_SECONDS` is now 0 and
+  the anchor is gone: credentials without an entitlement need ONE verified
+  token from a successful online `/entitlement` refresh; until then every
+  operation raises `EntitlementError("setup_incomplete")` ("connect to the
+  internet once to finish setup"). An upgrade installed while offline therefore
+  waits for one connection.
+- **A local skew kept a once-valid token fresh forever.** `server_now = hwm -
+  skew` trusted the skew (or `received_at`) in `entitlement.json`; an edited
+  skew, or a file holding only a token (skew then derived from "now" on every
+  evaluation), moved server time back without bound. A skew read from the file
+  may now express at most a one-hour clock lead (`MAX_SKEW_AHEAD_SECONDS`); a
+  skew this process measured on its own successful refresh is used exactly as
+  measured. A clock genuinely more than an hour ahead, in a new process while
+  offline, sees its token expire early by the excess; online, the next refresh
+  restores it.
+- A stored `retry_after_until` further out than any server `Retry-After` could
+  set (one day) is ignored, so an edited file cannot suppress refreshes.
+- `sibyl_memory_client.testing.forbid_external_network` matched loopback by
+  string PREFIX (`localhost.example.com` and `127.evil.test` passed). It now
+  requires a loopback or unspecified IP literal or the name `localhost`, also
+  refuses non-loopback `getaddrinfo` lookups and `socket.create_connection`,
+  and records every refusal (`refused_connections`,
+  `assert_no_external_attempts`): every conftest in the family fails a test
+  that attempted a non-loopback connection, even one it caught.
+
+### Added
+- **Account gate on every memory operation.** `MemoryClient._track_op` calls
+  `EntitlementGate.require(kind)` before the wrapped method. The decorator now
+  covers every public read and write: `set_entity`, `get_entity`,
+  `list_entities`, `delete_entity`, `set_state`, `get_state`, `write_event`,
+  `read_events`, `set_reference`, `get_reference`, `archive_entity`, `search`,
+  `search_entities`, `learner`, `learn`, `list_skill_proposals`,
+  `accept_skill_proposal`, `reject_skill_proposal`, `lint`
+  (`multi_record_search` and `refine_zero` inherit it through `search` /
+  `list_entities`). `get_tenant`, `set_tenant`, `get_tier`, `storage`,
+  `schema_version` and `free_tier_status` stay open. A coverage test fails if a
+  public method that is not on the open list lacks the decorator.
+- `_entitlement.py`: the SE1 entitlement (`SE1.<b64url payload>.<b64url
+  Ed25519 sig>`, at most 4096 bytes). The signature over the ASCII bytes of
+  `SE1.<payload_b64>` is verified against each pinned key BEFORE the payload
+  JSON is parsed, and the payload's `kid` must name the key that verified.
+  States `no_account` / `bootstrap` / `fresh` / `stale` / `locked`; binding to
+  this computer (`sub` = account, `ten` = tenant or account, `dh` =
+  sha256 of the trimmed, lowercased session token); bands `exp` and
+  `exp + og` with a 300 s `nbf` tolerance; a clock high-water mark so a
+  rolled-back clock cannot extend a grace window (a successful refresh resets
+  it, so a corrected clock heals); an authoritative denial (401 signed out,
+  403 tamper under review, 403 client_too_old, 404 account deleted) discards
+  the token at once and is retried at most every 15 minutes; legacy
+  credentials with no entitlement get one blocking refresh and NO offline
+  grace (`setup_incomplete` until one check-in succeeds; see Fixed). `entitlement.json` lives
+  beside the credentials file: mode 0600, symlink-refusing, bounded read,
+  mkstemp + `os.replace`, an O_EXCL lock so several processes make one
+  refresh call. The session bearer is only ever sent to https *.sibyllabs.org
+  (or loopback). `SIBYL_API_BASE` is the only environment variable the module
+  reads; there is no switch that disables the gate (source-guard tests).
+- `_entitlement_keys.py`: the pinned public keys. The production key is
+  pinned (kid `cb6fda3561b7ba39`, generated 2026-10-02, replacing the build
+  placeholder `5dd0b6c80d97bae2`); `PLACEHOLDER_KIDS` is empty.
+  `scripts/check_release_keys.py --src src --expect-kids cb6fda3561b7ba39`
+  exits 0 (and still exits 1 against the placeholder). Release day: confirm
+  `/api/plugin/health` `entitlement_public_keys` lists the same kid, then run
+  the compat gate with it.
+- `EntitlementError` (`sibyl_memory_client.EntitlementError`): `code` is the
+  fine reason (`no_account`, `signed_out`, `expired_offline`,
+  `setup_incomplete`, `under_review`,
+  `account_deleted`, `invalid_entitlement`, `wrong_device`,
+  `policy_read_only`, `policy_none`, `client_too_old`), the message is the
+  plain-language copy with the one action, `recovery` and `account_url`.
+- `MemoryClient(..., credentials_path=, entitlement_gate=)` and the same on
+  `MemoryClient.local`. Construction never raises for entitlement reasons.
+  `require_entitlement(op)` and `entitlement_notice()` (the offline-grace /
+  email-nag line, at most once per process per 24 h per text).
+- `sibyl_memory_client.testing`: `NullEntitlementGate` (constructor-injected
+  only), `TestSigner`, `install_entitled_home`, `patch_trusted_keys`,
+  `forbid_external_network` for the family's test suites.
+
+### Changed
+- `_effective_tier()` prefers a verified entitlement's tier over the tier
+  cache and the credentials hint: an edited `tier` in credentials.json no
+  longer unlocks the learner or the linter (the CORE-10 residual is closed).
+  The `tier=` argument is only a hint: every operation needs a verified
+  entitlement, whose tier wins.
+- The cap gate takes the entitlement tier as its local hint and sends
+  `entitlement` (body and `X-Sibyl-Entitlement`) on `/check-write` INSTEAD of
+  `credentials_claim` / `credentials_signature`, so email and wallet are off
+  that wire. An uncapped tier cache is honoured only while the entitlement
+  says paid or this process just received an uncapped verdict (a forged
+  `tier_cache.json` alone never unlocks). A server tier that differs from the
+  entitlement's triggers a refresh.
+- `/check-write` 403 `entitlement_invalid` and `client_too_old` get one-action
+  copy (run `sibyl init`; `pip install -U ...`) and stay authoritative (free
+  cap enforced, never fail-open).
+- The heartbeat sends `User-Agent: sibyl-memory-client/<version>` (was
+  versionless, so the server's version floor could not apply) and the
+  device's entitlement as `X-Sibyl-Entitlement`, only with the bearer and only
+  to the trusted host.
+- New runtime dependency: `cryptography>=42` (Ed25519 verification;
+  hermes-agent already pulls it).
+
+### Compatibility
+- Verified in a fresh venv with the five built wheels against hermes-agent
+  0.19.0 (current on PyPI at build time).
+- Cross-checked against the api's shared test vector
+  (`tests/fixtures/entitlement-vector-1.json`, public test key
+  `ea5ac758286ce1d3`): the token verifies and reproduces byte for byte.
+
 ## [0.8.1] - 2026-09-03
 
 ### Added
@@ -518,9 +922,9 @@ unchanged.
 
 ## [0.7.0] - 2026-08-22
 
-Multi-language search, part 4 (Kravento / Bilbo Polish evaluation, closing out
+Multi-language search, part 4 (Polish-language evaluation, closing out
 what 0.6.1 left open). Independent adversarial re-verification of the 0.6.1
-release (cryptoxdylan, external contributor) found the N-series only partly
+release (an external contributor) found the N-series only partly
 closed the default-MCP-path defect class: N2/N3 held, but a nonzero-df
 function word could still anchor/pollute scoring (N4), a dropped negation word
 silently answered the opposite of the query (N5, newly discovered), and the
@@ -598,8 +1002,8 @@ wrong) negation behavior — see Changed. New optional `diagnostics` kwarg on
 
 ### Provenance
 
-cryptoxdylan (external contributor) independently reproduced both the
-2026-08-07 and 2026-08-13 Kravento/Bilbo reports as pytest regression suites
+An external contributor independently reproduced both the
+2026-08-07 and 2026-08-13 Polish-language evaluation reports as pytest regression suites
 against clean PyPI installs, confirmed F1/F2/F3/N2/N3 closed, and reproduced
 N4/N1'/N3'/N5 live on 0.6.1 (black-box, freshly-spawned MCP process included).
 He also flagged a packaging hazard closed in this release cycle (see mcp/
@@ -615,7 +1019,7 @@ verified against the scenarios he reproduced rather than his exact bytes.
 
 ## [0.6.1] - 2026-08-16
 
-Multi-language search, part 3 (Kravento / Bilbo Polish evaluation, follow-up to
+Multi-language search, part 3 (Polish-language evaluation, follow-up to
 0.6.0). Three targeted recall fixes on the retrieve-then-verify + rescue path.
 `search()` and `multi_record_search()` output shapes are unchanged and every
 change is strictly append-only / additive-at-cap, so this stays a
@@ -734,7 +1138,7 @@ did not recognise (N1 / Finding B), not a content-shaped abstention.
 
 ## [0.6.0] - 2026-08-12
 
-Multi-language search, part 2 (Kravento / Bilbo Polish evaluation). On the same
+Multi-language search, part 2 (Polish-language evaluation). On the same
 corpus, code, and store the Polish recall was 81% against English 100% — a gap
 that is entirely linguistic, not a bug. Two search-path changes (F2 + D2L) close
 it. Official harness (32-query PL/EN twin battery, LIMIT 10): **Polish recall
@@ -1218,7 +1622,7 @@ Pre-launch security audit hardening.
 
 ### Fixed
 
-- **Silent write loss under sustained load (CRITICAL; beta deadguy 2026-06-17,
+- **Silent write loss under sustained load (CRITICAL; beta report 2026-06-17,
   report 3.1).** When tier verification was unreachable (e.g. the check-write
   endpoint returning a rate-limit-shaped 401 under a heavy write burst) and there
   was no cached tier, the write was rejected with `TierVerificationError` -- and a
@@ -1231,7 +1635,7 @@ Pre-launch security audit hardening.
 
 ### Added
 
-- **Paraphrase zero-hit search fallback (beta deadguy 2026-06-14).** Natural-language
+- **Paraphrase zero-hit search fallback (beta report 2026-06-14).** Natural-language
   queries miss under strict token-AND (+ Porter stem). `MemoryClient.search` now
   retries with relaxed variants (stopwords stripped, then rarest token) ONLY when
   the strict search returns nothing. Strictly additive: a non-empty strict result
@@ -1258,8 +1662,8 @@ Pre-launch security audit hardening.
   the `account_id` already held. Flushes every 15 ops or 10 min and once at
   process exit; no-op without an `account_id`; opt out with
   `SIBYL_MEMORY_TELEMETRY=0`. Never blocks or breaks a memory op; offline-safe.
-  Closes the usage-visibility blind spot the beta reports surfaced (deadguy
-  2026-06-14). Regression tests: `tests/test_heartbeat_2026_06_16.py` (7 cases).
+  Closes the usage-visibility blind spot the beta reports surfaced
+  (2026-06-14). Regression tests: `tests/test_heartbeat_2026_06_16.py` (7 cases).
 
 ### Documented
 
@@ -1273,7 +1677,7 @@ Pre-launch security audit hardening.
 ### Fixed
 
 - **`set_reference(key, body)` raised StorageError on a dict/list body**
-  (beta report VRTX ISSUE-003, 2026-06-11). `body` now accepts a `str` or a
+  (beta report, 2026-06-11). `body` now accepts a `str` or a
   JSON-serializable `dict`/`list`; mappings/sequences are coerced to canonical
   JSON (via the same `_check_json` guard used for metadata) before the INSERT.
   Any other type raises a typed `ValidationError` naming the `body` parameter
@@ -1313,8 +1717,8 @@ Pre-launch security audit hardening.
 
 ### Fixed
 
-- **Multi-word search precision: "near-negative decoy" false positives** (chainriffs +
-  KAPPA Discord reports against v0.4.2 / v0.4.4; triaged from the 2026-06-06 bug intake).
+- **Multi-word search precision: "near-negative decoy" false positives** (Discord beta
+  reports against v0.4.2 / v0.4.4; triaged from the 2026-06-06 bug intake).
   The AND-of-tokens default (v0.4.2+) gives full recall but lets short rows that contain
   the query tokens in an unrelated context out-rank the real answer under BM25, which
   rewards term density over proximity (reported precision ~73% at recall 100%).
@@ -1341,7 +1745,7 @@ Pre-launch security audit hardening.
   `multi_record_search` used a corpus-fraction selectivity cutoff
   (`round(0.15 * corpus_n)`) calibrated on a 24-record reconstruction. Past ~150
   records the cutoff lost meaning: almost every term read as "selective," so
-  cross-cluster records cleared the gate and polluted results (tester Sylvain
+  cross-cluster records cleared the gate and polluted results (a tester
   Runs 16/17, ~0.36 recall at 50-100 companies). The resolver is now anchor-first:
   anchor terms are the rarest tokens, defined RELATIVE to the rarest query term
   (`df <= ANCHOR_BAND * min_df`, scale-invariant). The gate is a HYBRID: a
@@ -1360,15 +1764,15 @@ Pre-launch security audit hardening.
 - **Cross-tier rank comparability.** `search()` BM25 ranks are not on a common
   scale across FTS tables (`journal_events_fts` is contentless). Added a tier
   tiebreaker so content tiers (entity/state/reference) sort before journal at equal
-  rank, layered on the existing 0.4.7 journal cap. (tester email 19e7eb3096b4dae5)
+  rank, layered on the existing 0.4.7 journal cap. (tester report)
 
 ### Added
 
 - **`search_entities(category=...)`.** Optional exact-match category anchor on
   entity FTS, removing topical bleed across categories on multi-entity workloads
-  (tester email 19e7e75af0b7780a). Backward compatible (defaults to all categories).
+  (tester report). Backward compatible (defaults to all categories).
 
-Sourced from Sylvain's beta Runs 24-29 + the bugflow batch dedup; this single
+Sourced from beta Runs 24-29 + the bugflow batch dedup; this single
 patch also supersedes ~20 already-fixed entries that had accumulated in the
 bug-batch queue.
 
@@ -1383,13 +1787,13 @@ bug-batch queue.
   `NOT*`) that crashed the SQLite FTS5 parser with a syntax error. Prefix mode now
   hard-drops operator keywords with no fallback and returns an empty match for an
   all-operator query (no safe expansion exists). Non-prefix phrase mode is unchanged
-  (quoted phrases keep `"OR"` literal and valid). Reported via the acerieus stress suite
+  (quoted phrases keep `"OR"` literal and valid). Reported via a beta stress suite
   (LEARNING-SEARCH-PREFIX-OPERATOR-MUTATIONS-STAY-LITERAL, 2026-06-01). Found + verified
   by bugflow; operator-approved.
 
 ## [0.4.7] - 2026-06-02
 
-Bundled bug-fix release from beta/UserSignal reports (sylvain, acerieus, cryptoxdylan), triaged + adversarially verified via bugflow.
+Bundled bug-fix release from beta/UserSignal reports (several beta testers), triaged + adversarially verified via bugflow.
 
 ### Security
 
@@ -1431,7 +1835,7 @@ Bundled bug-fix release from beta/UserSignal reports (sylvain, acerieus, cryptox
 
 ## [0.4.5] - 2026-05-30
 
-Adversarial QA remediation (Acer stress-test suite): two findings + a review hardening.
+Adversarial remediation (beta stress-test suite): two findings + a review hardening.
 
 ### Fixed
 
@@ -1442,7 +1846,7 @@ Adversarial QA remediation (Acer stress-test suite): two findings + a review har
 
 - Corruption containment keys on the exception *class*, not a message substring (corruption surfaces under varied messages: "vtable constructor failed", "database disk image is malformed", ...). `ProgrammingError` is re-raised so a genuine code/binding bug is never masked as empty results.
 
-Regression coverage: `tests/test_acer_stress_2026_05_30.py` (7 tests). 96/96 suite green.
+Regression coverage: `tests/test_stress_suite_2026_05_30.py` (7 tests). 96/96 suite green.
 
 ### Added (Terminal B — multi-record retrieval, tester Run15)
 
@@ -1459,7 +1863,7 @@ Regression coverage: `tests/test_acer_stress_2026_05_30.py` (7 tests). 96/96 sui
 
 ## [0.4.4] - 2026-05-28
 
-Beta-tester bug-report remediation (chainriffs Discord + KAPPA rounds 3/4).
+Beta-tester bug-report remediation (Discord beta reports, external test rounds 3/4).
 
 ### Fixed
 
@@ -1476,7 +1880,7 @@ Beta-tester bug-report remediation (chainriffs Discord + KAPPA rounds 3/4).
 ### Security
 
 - **Identifier validation: path-traversal + metacharacter defense-in-depth**
-  (KAPPA #3 PARTIAL). `validate_identifier` now rejects the `..` traversal
+  (external test #3 PARTIAL). `validate_identifier` now rejects the `..` traversal
   marker and the shell/redirection/quote metacharacters `< > | ; " \``. SQL
   was already parameterized; this guards downstream non-parameterized
   consumers (filesystem export, CLI display, logs). Apostrophe is
@@ -1554,8 +1958,8 @@ so legacy `session_token`-as-bearer credentials still resolve.
 
 ## [0.4.0] - 2026-05-18
 
-KAPPA external-tester remediation release. Independent third-party install
-test (KAPPA, peer Tulip-referred) against the v0.3.3 family surfaced one
+External-tester remediation release. Independent third-party install
+test against the v0.3.3 family surfaced one
 blocker that broke `sibyl-memory-mcp` on PyPI plus four secondary findings.
 This release lands the engine-side fixes. Companion releases:
 `sibyl-memory-mcp` v0.1.2, `sibyl-memory-hermes` v0.3.2, `sibyl-memory-cli`
@@ -1563,7 +1967,7 @@ v0.1.3.
 
 ### Fixed
 
-- **KAPPA-BLOCKER**. `CapExceededError` and `TierVerificationError`
+- **external-test BLOCKER**. `CapExceededError` and `TierVerificationError`
   relocated from `_capcheck.py` to `exceptions.py` so they are importable
   from the canonical `sibyl_memory_client.exceptions` submodule path. The
   v0.3.3 family had them defined and re-exported only at the top-level
@@ -1571,19 +1975,19 @@ v0.1.3.
   imports from) raised `ImportError`. `_capcheck.py` now imports them back
   for full backwards compatibility with anyone reaching into the private
   module.
-- **KAPPA-RED**. `~/.sibyl-memory/memory.db` now chmod 0600 after the
+- **external-test RED**. `~/.sibyl-memory/memory.db` now chmod 0600 after the
   schema apply (was inheriting umask, typically 0644). WAL + SHM sidecar
   files also tightened to 0600 if present. Idempotent + non-fatal on
-  chmod failure. Closes the file-perm gap KAPPA observed on a multi-user
+  chmod failure. Closes the file-perm gap the external tester observed on a multi-user
   / CI / shared-dev-box install.
-- **KAPPA-YELLOW**. `set_entity`, `set_state`, and `set_reference` now
+- **external-test YELLOW**. `set_entity`, `set_state`, and `set_reference` now
   validate user-supplied identifiers (category, name, key) before write.
   Rejects: non-string, empty, control characters / null bytes, length
   > 1024. Raises `ValidationError` with a recovery hint. Read paths are
   unchanged: already-stored bad identifiers remain accessible so users
   can introspect and migrate. New module-level helper
   `validate_identifier(value, *, field_name)`.
-- **KAPPA-YELLOW**. `search()` and `search_entities()` no longer silently
+- **external-test YELLOW**. `search()` and `search_entities()` no longer silently
   swallow `sqlite3.OperationalError` into empty results. The error is now
   classified by `_classify_fts5_error()`:
   - schema-missing (`"no such table"`) returns empty (defense against
@@ -1602,11 +2006,11 @@ v0.1.3.
 
 ### Notes
 
-- The 2 MB free-tier cap (KAPPA's product question) is NOT changed in this
+- The 2 MB free-tier cap (the external tester's product question) is NOT changed in this
   release. Operator decision to be made separately on whether to raise
   the cap or document the intent more explicitly.
 - Existing 53/53 client tests pass unchanged. New tests covering the
-  KAPPA-attributed fixes added in `tests/test_smoke.py`.
+  external-test fixes added in `tests/test_smoke.py`.
 
 ---
 

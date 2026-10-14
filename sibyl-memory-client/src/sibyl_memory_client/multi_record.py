@@ -255,8 +255,8 @@ def _df0_droppable(tok: str) -> bool:
     return tok in _DF0_FUNCTION
 
 
-# --- N4 / N5 / N1' diagnostics (Kravento PL eval, 2026-08-18) ----------------
-# Independent adversarial re-verification (cryptoxdylan) of the 0.6.1 release
+# --- N4 / N5 / N1' diagnostics (Polish-language eval, 2026-08-18) ----------------
+# Independent adversarial re-verification (an external contributor) of the 0.6.1 release
 # found the N-series only partly closed the default-MCP-path defect class:
 #
 #   N4  a NONZERO-df function word ('our', matching inside 'c-our-ier' by pure
@@ -280,7 +280,7 @@ def _df0_droppable(tok: str) -> bool:
 #       `count: 0` stops being indistinguishable from "nothing is stored" and
 #       a caller can retry tier-filtered with the named blocking token instead.
 #
-# NOTE ON PROVENANCE: cryptoxdylan's own patch (reviewed, described exhaustively
+# NOTE ON PROVENANCE: the contributor's own patch (reviewed, described exhaustively
 # in his 2026-08-18 email with line-level rationale and a 339/343-passing test
 # run) failed to survive intact through the Gmail-attachment retrieval path
 # (gzip CRC mismatch, corruption confirmed byte-for-byte against two
@@ -334,7 +334,7 @@ COVERAGE_THRESHOLD = 0.45      # hard coverage floor: drop candidates below this
 ANCHOR_HYBRID_HI = 0.65        # a non-anchor candidate is kept only if coverage >= this
 _PER_TOKEN_LIMIT = 200         # recall depth per token
 # content tiers beat the contentless journal tier at equal coverage (cross-tier
-# BM25 scores are not comparable; tester email 19e7eb3096b4dae5)
+# BM25 scores are not comparable; tester report)
 _TIER_PRIORITY = {"entity": 0, "state": 0, "reference": 0, "journal": 1}
 
 
@@ -639,7 +639,7 @@ def multi_record_search(client, query: str, *, limit: int = 10,
             if rank < e["best"]:
                 e["best"] = rank
 
-    # N1 (df==0) + N4 (Kravento PL eval, 2026-08-18): drop FUNCTION-shaped tokens
+    # N1 (df==0) + N4 (Polish-language eval, 2026-08-18): drop FUNCTION-shaped tokens
     # BEFORE idf / min_df / anchor_cut — at ANY df, not only df==0. N1 alone left
     # a nonzero-df function word (e.g. 'our', matching inside 'c-our-ier' by pure
     # substring) in the idf denominator and eligible to anchor the ranking, which
@@ -668,7 +668,7 @@ def multi_record_search(client, query: str, *, limit: int = 10,
         df = {t: df[t] for t in toks}
         dropped_function.extend(zero_dropped)
 
-    # N4 (Kravento PL eval, 2026-08-18): among the tokens that still have
+    # N4 (Polish-language eval, 2026-08-18): among the tokens that still have
     # corpus support, a function-shaped one (e.g. 'our', matching inside
     # 'c-our-ier' by pure substring) must not pollute idf/anchor scoring
     # either. Separate from the df==0 step above and gated the same way — only
@@ -692,7 +692,7 @@ def multi_record_search(client, query: str, *, limit: int = 10,
         return _finish([], no_match_verdict())
     tokens_scored = len(toks)
 
-    # N5 (Kravento PL eval, 2026-08-18): dropping a negation word makes the
+    # N5 (Polish-language eval, 2026-08-18): dropping a negation word makes the
     # query answer as if it were never negated ('contract not approved' ->
     # the record saying it WAS approved). Full-text search has no negation
     # handling either way, so this is a policy call, not a quality regression:
