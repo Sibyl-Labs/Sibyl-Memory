@@ -1,4 +1,4 @@
-"""PKG-4 (VRTX/deadguy beta): read-only `sibyl memory list/search/recall` CLI.
+"""PKG-4 (beta reports): read-only `sibyl memory list/search/recall` CLI.
 Lets a tester inspect what's actually stored without writing through an agent."""
 from __future__ import annotations
 

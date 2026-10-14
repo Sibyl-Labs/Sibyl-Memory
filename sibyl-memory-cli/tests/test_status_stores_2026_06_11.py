@@ -1,5 +1,5 @@
 """PKG-2/3 regression: `sibyl status` discovers + lists every memory store and
-warns on split-brain divergence (VRTX beta report 2026-06-11).
+warns on split-brain divergence (beta report 2026-06-11).
 
 Read-only: discovery never creates or moves a DB.
 """

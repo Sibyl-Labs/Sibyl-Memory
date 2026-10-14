@@ -333,7 +333,7 @@ def test_cli9_orchestrator_skips_trim_when_backup_unverifiable(tmp_path):
 
     home = tmp_path / "home"; (home / "proj").mkdir(parents=True)
     cm = home / "proj" / "CLAUDE.md"
-    cm.write_text("# A\nidentity\n## later\njunk\njunk\n", encoding="utf-8")
+    cm.write_text("# A\nidentity\n## core\nrule\n## later\n" + "junk line worth trimming\n" * 30, encoding="utf-8")
     before = cm.read_text()
     db = home / ".sibyl-memory" / "memory.db"; db.parent.mkdir(parents=True)
 
@@ -361,7 +361,8 @@ def test_cli9_orchestrator_skips_trim_when_backup_unverifiable(tmp_path):
                              backup_parent=tmp_path / "bk", io=_SabotageIO(holder),
                              wirers={}, extract_fn=fake_extract)
     # debloat must have refused because the backup could not be re-verified
-    assert rep["phases"].get("debloat", {}).get("written") is False
+    # (2026-09-27: the debloat phase is a list of per-file records)
+    assert [r["written"] for r in rep["phases"]["debloat"]] == [False]
     assert cm.read_text() == before               # original untouched
 
 

@@ -22,7 +22,10 @@ Atlas build agent. Stay in scope.
 - user prefers tabs over spaces
 - API base is https://api.atlas.local
 - met Jordan about the Q3 roadmap
-"""
+""" + "".join(f"- accumulated note {i} about the Atlas project history\n" for i in range(20))
+# (2026-09-27 save/debloat build: the trim step now skips a file whose lean
+# version would keep over 90 % of it, so the fixture carries enough memory to
+# be worth trimming; the report's "debloat" phase is a list of per-file records.)
 
 
 def _home(tmp_path):
@@ -64,9 +67,10 @@ def test_orchestrator_full_flow(tmp_path):
     assert rep["phases"]["wire"]["codex"] in ("wired", "already")
     assert rep["phases"]["wire"]["claude-code"] in ("wired", "already")
     assert rep["phases"]["verify"]["new_total"] == 3
-    assert rep["phases"]["debloat"]["written"]
+    trims = {r["file"]: r for r in rep["phases"]["debloat"]}
+    assert trims["CLAUDE.md"]["written"]
     # live file trimmed, backup holds the full original
-    assert (proj / "CLAUDE.md").stat().st_size < rep["phases"]["debloat"]["before"]
+    assert (proj / "CLAUDE.md").stat().st_size < trims["CLAUDE.md"]["before"]
     bdir = Path(rep["phases"]["backup"]["dir"])
     assert "API base" in (bdir / "proj" / "CLAUDE.md").read_text()
     # codex config really got the block
@@ -103,5 +107,5 @@ def test_orchestrator_declined_debloat_keeps_file(tmp_path):
                              wirers={"codex": CodexWirer(config_path=h / ".codex" / "config.toml")},
                              extract_fn=fx)
     assert rep["phases"]["verify"]["new_total"] == 1
-    assert "debloat" not in rep["phases"]
+    assert not any(r["written"] for r in rep["phases"].get("debloat", []))
     assert (proj / "CLAUDE.md").read_text() == orig   # declined -> untouched

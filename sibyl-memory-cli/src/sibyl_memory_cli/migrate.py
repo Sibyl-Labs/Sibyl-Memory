@@ -13,6 +13,7 @@ debloat step, and only after a verified backup exists.
 """
 from __future__ import annotations
 
+import shlex
 import json
 import os
 import shutil
@@ -21,8 +22,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
-
-from . import _aesthetic as A
 
 # ----------------------------------------------------------------------
 # 1. Memory/agent file discovery (per harness)
@@ -38,6 +37,20 @@ HARNESS_FILES: dict[str, list[str]] = {
 }
 
 
+# Save/debloat build (spec plugin-save-debloat 6.1): one surface definition.
+# CONTEXT_FILES are the instruction files an agent loads on every session
+# (measured by `sibyl debloat`, trimmable by the migrate trim step);
+# CONFIG_FILES are backed up and extracted from, NEVER trimmed. The union is
+# every HARNESS_FILES entry (a test keeps the three from drifting).
+try:
+    from sibyl_memory_client.lifecycle.measure import CONFIG_FILES, CONTEXT_FILES
+except Exception:  # pragma: no cover - client without the lifecycle package
+    CONTEXT_FILES = frozenset({"CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", ".codex/AGENTS.md",
+                               "MEMORY.md", "memory.md", ".cursorrules", ".cursor/rules"})
+    CONFIG_FILES = frozenset({".claude/settings.json", ".codex/config.toml",
+                              ".hermes/config.yaml", ".hermes/memory"})
+
+
 @dataclass
 class FoundFile:
     harness: str
@@ -45,6 +58,7 @@ class FoundFile:
     rel: str            # path relative to home (for backup layout)
     is_dir: bool
     size: int
+    matched: str = ""   # the HARNESS_FILES entry it matched (root-relative name)
 
 
 def _backup_rel(p: Path, home: Path, cwd: Optional[Path]) -> str:
@@ -91,7 +105,7 @@ def scan_memory_files(home: Optional[Path] = None, cwd: Optional[Path] = None) -
                 seen.add(key)
                 is_dir = p.is_dir()
                 size = _tree_size(p) if is_dir else p.stat().st_size
-                found.append(FoundFile(harness, p, _backup_rel(p, home, cwd), is_dir, size))
+                found.append(FoundFile(harness, p, _backup_rel(p, home, cwd), is_dir, size, rel))
     return found
 
 
@@ -209,8 +223,8 @@ def wire_instructions(harness: str) -> list[str]:
         return CodexWirer().instructions()
     if harness == "hermes":
         return ["Open a new terminal and run:",
-                "    sibyl-memory-hermes install-plugin",
-                "Then set  memory.provider: sibyl  in ~/.hermes/config.yaml and restart Hermes."]
+                "    sibyl setup hermes",
+                "It installs the plugin and sets memory.provider: sibyl in your Hermes config.yaml. Restart Hermes."]
     return ["Register an MCP server named 'sibyl-memory' with command 'sibyl-memory-mcp' in your agent's MCP config, then restart it."]
 
 
@@ -355,8 +369,11 @@ def heuristic_lean(text: str) -> str:
                     break
             core_lines.append(ln)
         core = "\n".join(core_lines).strip()
-    pointer = ("\n\n<!-- The rest of this file's accumulated memory now lives in Sibyl Memory "
-               "and is recalled on demand. Full pre-migration backup is preserved. -->\n")
+    # The pointer claims only what is true: the whole file is in the backup,
+    # and the migrate extraction stored entries (not necessarily this text)
+    # in Sibyl Memory.
+    pointer = ("\n\n<!-- Trimmed by sibyl migrate: a full copy of this file is in the pre-migration "
+               "backup; the migrate extraction stored entries in Sibyl Memory, recalled on demand. -->\n")
     return core + pointer
 
 
@@ -442,11 +459,15 @@ class GuidedIO:
     def __init__(self, scripted=None):
         self.scripted = list(scripted or [])
         self.lines: list[str] = []
+        # True when the last confirm/pause hit end of input (no terminal):
+        # the flow then says which default it took (agent handoff, N6 / N9).
+        self.last_eof = False
 
     def say(self, s: str = "") -> None:
         self.lines.append(str(s))
 
     def confirm(self, q: str, *, default: bool = True) -> bool:
+        self.last_eof = False
         if self.scripted:
             ans = self.scripted.pop(0)
         else:
@@ -454,16 +475,18 @@ class GuidedIO:
                 ans = input(f"{q} [{'Y/n' if default else 'y/N'}]: ").strip()
             except EOFError:
                 ans = ""
+                self.last_eof = True
         return default if not ans else ans.strip().lower().startswith("y")
 
     def pause(self, q: str = "press Enter to continue") -> None:
+        self.last_eof = False
         if self.scripted:
             self.scripted.pop(0)
             return
         try:
             input(q)
         except EOFError:
-            pass
+            self.last_eof = True
 
 
 def run_guided_setup(*, home=None, cwd=None, db_path=None, backup_parent=None,
@@ -480,7 +503,9 @@ def run_guided_setup(*, home=None, cwd=None, db_path=None, backup_parent=None,
     home = Path(home).expanduser() if home else Path.home()
     db_path = Path(db_path).expanduser() if db_path else (home / ".sibyl-memory" / "memory.db")
     backup_parent = Path(backup_parent).expanduser() if backup_parent else home
-    report: dict = {"ok": True, "phases": {}}
+    # Agent handoff (spec 2026-10-03 rows N4 to N10): `handoff` is the block of
+    # a failing phase; `later` collects follow-ups for the final block.
+    report: dict = {"ok": True, "phases": {}, "later": []}
 
     # 1. scan + backup (deterministic, first, never modifies sources)
     files = scan_memory_files(home, cwd)
@@ -488,12 +513,17 @@ def run_guided_setup(*, home=None, cwd=None, db_path=None, backup_parent=None,
     if not files:
         io.say("No memory/agent files found. Nothing to migrate.")
         report["ok"] = False
+        report["handoff"] = {"next": "sibyl setup", "human": None}
         return report
     bk = run_backup(files, backup_parent, now=now)
     report["phases"]["backup"] = {"ok": bk.ok, "dir": str(bk.backup_dir), "files": len(bk.files)}
     if not bk.ok:
         io.say(f"Backup failed: {bk.error}. Aborting; nothing else touched.")
         report["ok"] = False
+        report["handoff"] = {
+            "next": "sibyl migrate --backup-dir <dir>",
+            "human": f"the backup folder {backup_parent} could not be written ({bk.error}); pick "
+                     "another with --backup-dir"}
         return report
     io.say(f"Backed up {len(bk.files)} files -> {bk.backup_dir} (originals untouched)")
 
@@ -512,6 +542,9 @@ def run_guided_setup(*, home=None, cwd=None, db_path=None, backup_parent=None,
             io.say(f"{name}: auto-wire incomplete ({outcome.message}). Do this manually:")
             for ln in wire_instructions(name):
                 io.say("  " + ln)
+            io.say(f"ask your human: run the steps above, restart {getattr(w, 'display_name', name)}, "
+                   "then tell me")
+            report["later"].append(f"sibyl setup {name} --force")
     report["phases"]["wire"] = wire_report
 
     # 3. extraction (the harness does it; default prints the prompt + pauses)
@@ -524,6 +557,9 @@ def run_guided_setup(*, home=None, cwd=None, db_path=None, backup_parent=None,
         io.say("Aborting before verify/trim — your originals and backup are intact.")
         report["phases"]["verify"] = {"new_total": 0, "by_category": {}, "ok": False, "unreadable": True}
         report["ok"] = False
+        report["handoff"] = {"next": "sibyl status",
+                             "human": f"{db_path} is not a readable SQLite file; move it aside or "
+                                      "point --db elsewhere"}
         return report
     target = next(iter(detected), "claude-code")
     if extract_fn is not None:
@@ -532,26 +568,175 @@ def run_guided_setup(*, home=None, cwd=None, db_path=None, backup_parent=None,
         io.say("Run this in your agent (it reads the backup, writes to Sibyl):")
         io.say(extraction_prompt(target, bk.backup_dir))
         io.pause("After it finishes, press Enter to verify")
+        if io.last_eof:
+            io.say("no terminal to wait on: verify runs now and will count 0; after your agent runs "
+                   "the prompt above, check with sibyl memory list and trim with sibyl debloat plan")
+            io.say("ask your human: nothing; I run the extraction prompt above myself in this session")
 
     # 4. verify
     v = verify_new_entries(db_path, baseline)
     report["phases"]["verify"] = v
     io.say(f"Verified {v['new_total']} new entries in Sibyl Memory.")
 
-    # 5. debloat (confirmed; safe because the backup exists)
-    cm = (Path(cwd) / "CLAUDE.md") if cwd else (home / "CLAUDE.md")
-    if debloat and v["ok"] and cm.exists():
-        if io.confirm(f"Trim {cm.name} to lean now? Full backup is safe at {bk.backup_dir}", default=False):
-            # CLI-9: re-verify the actual backup copy on disk RIGHT NOW before
-            # trimming, instead of trusting the earlier in-memory bk.ok.
-            backup_ok_now = bk.ok and verify_backup_of(cm, bk.backup_dir, home=home, cwd=cwd)
+    # 5. debloat (confirmed per file; safe because the backup exists).
+    # Save/debloat build (spec 6.2): every instruction file the scan found is a
+    # candidate (CLAUDE.md, AGENTS.md, .cursorrules, ...), not a hardcoded
+    # CLAUDE.md; configuration files are never candidates; .cursor/rules is a
+    # directory (measured by `sibyl debloat`, never trimmed). A project
+    # .debloat.json "surface" narrows the candidates. One question per file,
+    # default No; --yes never answers it.
+    if debloat and v["ok"]:
+        records: list[dict] = []
+        for f, why in trim_candidates(files, home=home, cwd=cwd):
+            if why:
+                io.say(f"{f.matched or f.path.name}: {why}; left as is.")
+                continue
+            label = _trim_label(f, home=home, cwd=cwd)
+            try:
+                text = f.path.read_bytes().decode("utf-8")
+            except (OSError, UnicodeDecodeError):
+                io.say(f"{label}: not UTF-8 text; left as is.")
+                _later_once(report, "sibyl debloat plan")
+                continue
+            lean = lean_text_for(text, f.path.name, bk.backup_dir)
+            if lean is None:
+                io.say(f"{label}: no safe trim found; left as is.")
+                _later_once(report, "sibyl debloat plan")
+                continue
+            if not io.confirm(f"Trim {label} to lean now? Full backup is safe at {bk.backup_dir}",
+                              default=False):
+                if io.last_eof:
+                    io.say(f"no terminal: {label} not trimmed (default no); later: "
+                           f"sibyl debloat apply {shlex.quote(label)} --yes")
+                records.append({"file": label, "written": False, "declined": True,
+                                "before": f.path.stat().st_size, "after": 0})
+                _later_once(report, "sibyl debloat plan")
+                continue
+            # CLI-9: re-verify the actual backup copy of THIS file on disk right
+            # now, instead of trusting the earlier in-memory bk.ok.
+            backup_ok_now = bk.ok and verify_backup_of(f.path, bk.backup_dir, home=home, cwd=cwd)
             if not backup_ok_now:
-                io.say(f"Backup of {cm.name} could not be re-verified — skipping trim. Original untouched.")
-                report["phases"]["debloat"] = {"written": False, "before": cm.stat().st_size,
-                                               "after": 0, "error": "backup re-verification failed"}
-            else:
-                lean = heuristic_lean(cm.read_text(encoding="utf-8", errors="replace"))
-                d = debloat_file(cm, lean, backup_exists=backup_ok_now)
-                report["phases"]["debloat"] = {"written": d["written"], "before": d["before"], "after": d["after"]}
-                io.say(f"Trimmed {cm.name}. Backup safe at {bk.backup_dir}")
+                io.say(f"Backup of {label} could not be re-verified; skipping trim. Original untouched.")
+                records.append({"file": label, "written": False, "before": f.path.stat().st_size,
+                                "after": 0, "error": "backup re-verification failed"})
+                _later_once(report, "sibyl debloat plan")
+                continue
+            d = debloat_file(f.path, lean, backup_exists=backup_ok_now)
+            records.append({"file": label, "written": d["written"], "before": d["before"],
+                            "after": d["after"], **({"error": d["error"]} if d.get("error") else {})})
+            if d["written"]:
+                io.say(f"Trimmed {label}. Backup safe at {bk.backup_dir}")
+        if records:
+            report["phases"]["debloat"] = records
     return report
+
+
+def _later_once(report: dict, cmd: str) -> None:
+    later = report.setdefault("later", [])
+    if cmd not in later:
+        later.append(cmd)
+
+
+def _trim_label(f: FoundFile, *, home: Path, cwd: Optional[Path]) -> str:
+    """The name a person recognises: project files relative to the project,
+    home files as ~/<rel>."""
+    if cwd is not None:
+        try:
+            return str(Path(f.path).relative_to(Path(cwd)))
+        except ValueError:
+            pass
+    try:
+        return "~/" + str(Path(f.path).relative_to(Path(home)))
+    except ValueError:
+        return f.path.name
+
+
+def _within_roots(p: Path, home: Path, cwd: Optional[Path]) -> bool:
+    ap = Path(os.path.normpath(str(p)))
+    for base in [home] + ([Path(cwd)] if cwd is not None else []):
+        bp = Path(os.path.normpath(str(base)))
+        try:
+            if ap == bp or ap.is_relative_to(bp):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _project_surface(cwd: Optional[Path], home: Path) -> Optional[set]:
+    """Resolved absolute paths named by a project .debloat.json "surface", or
+    None when there is none. Entries outside home and the project are ignored."""
+    if cwd is None:
+        return None
+    cfg = Path(cwd) / ".debloat.json"
+    try:
+        if not cfg.is_file() or cfg.is_symlink() or cfg.stat().st_size > 64 * 1024:
+            return None
+        data = json.loads(cfg.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    surface = data.get("surface") if isinstance(data, dict) else None
+    if not isinstance(surface, list):
+        return None
+    out = set()
+    for entry in surface:
+        if not isinstance(entry, str) or not entry:
+            continue
+        p = Path(entry) if Path(entry).is_absolute() else Path(cwd) / entry
+        if _within_roots(p, home, cwd):
+            out.add(os.path.normpath(str(p)))
+    return out
+
+
+def trim_candidates(files: list[FoundFile], *, home: Path, cwd: Optional[Path]
+                    ) -> list[tuple[FoundFile, str]]:
+    """(file, reason-it-is-skipped or '') for every scanned file that is an
+    instruction file, in scan order. Config files never appear; a directory
+    (.cursor/rules) appears with its reason; an empty file is skipped."""
+    surface = _project_surface(cwd, Path(home))
+    out: list[tuple[FoundFile, str]] = []
+    for f in files:
+        if f.matched not in CONTEXT_FILES:
+            continue
+        if surface is not None and os.path.normpath(str(f.path)) not in surface:
+            continue
+        if f.is_dir:
+            out.append((f, "a directory (measured by sibyl debloat, never trimmed)"))
+            continue
+        if f.size <= 0:
+            continue
+        if f.path.is_symlink():
+            out.append((f, "a symlink"))
+            continue
+        out.append((f, ""))
+    return out
+
+
+def lean_text_for(text: str, name: str, backup_dir: Path, *, now=None) -> Optional[str]:
+    """The lean version of an instruction file, or None when there is no safe
+    trim. The safe splitter's CURRENT projection when it finds history
+    (spec 6.2), else the first-H2 rule (heuristic_lean). A result that keeps
+    under 10 % or over 90 % of the original is not a safe trim; neither is a
+    file that is not Markdown or plain text."""
+    try:
+        from sibyl_memory_client.lifecycle import splitter as S
+    except Exception:  # pragma: no cover
+        S = None
+    kind = S.kind_for(name) if S is not None else ("markdown" if name.endswith(".md") else None)
+    if kind is None:
+        return None
+    lean = None
+    if S is not None:
+        pl = S.split(text, kind=kind, now=now)
+        if pl.safe:
+            eol = "\r\n" if "\r\n" in text else "\n"
+            sep = "" if (pl.current == "" or pl.current.endswith("\n")) else eol
+            lean = (pl.current + sep + "<!-- Trimmed by sibyl migrate: a full copy of this file is in "
+                    f"the backup at {backup_dir}; the migrate extraction stored entries in Sibyl "
+                    "Memory, recalled on demand. -->" + eol)
+    if lean is None:
+        lean = heuristic_lean(text)
+    before, after = len(text.encode("utf-8")), len(lean.encode("utf-8"))
+    if before == 0 or after >= before * 0.9 or after <= before * 0.1:
+        return None
+    return lean

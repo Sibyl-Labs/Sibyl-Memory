@@ -328,8 +328,15 @@ def test_claude_wire_existing_sibyl_is_noop(tmp_path):
     w = ClaudeCodeWirer(settings_path=p)
     outcome = w.wire()
     assert outcome.status == "already"
+    # 2026-09-27 save/debloat build: the first wire() of an already-registered
+    # server still adds the five lifecycle hooks (one backup). The no-op is the
+    # SECOND run: nothing changes and no further backup is written.
+    first = list(tmp_path.glob("settings.json.*.bak"))
+    assert len(first) <= 1
+    outcome = w.wire()
+    assert outcome.status == "already"
     # No backup written for no-op (audit #19: timestamped suffix pattern)
-    assert list(tmp_path.glob("settings.json.*.bak")) == []
+    assert list(tmp_path.glob("settings.json.*.bak")) == first
 
 
 def test_claude_wire_mismatched_sibyl_refused_without_force(tmp_path):

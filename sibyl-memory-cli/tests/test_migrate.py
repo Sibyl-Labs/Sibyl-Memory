@@ -119,7 +119,7 @@ def test_heuristic_lean_keepblock_and_first_section():
     assert "Identity" in lean2
     assert "Accumulated memory" not in lean2     # later section trimmed
     assert len(lean2) < len(BLOATED_CLAUDE)
-    assert "lives in Sibyl Memory" in lean2       # pointer appended
+    assert "stored entries in Sibyl Memory" in lean2    # pointer appended (SD-10 wording)
 
 
 def test_debloat_refuses_without_backup(tmp_path):

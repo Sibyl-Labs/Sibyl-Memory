@@ -4,6 +4,503 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.5.0] - Unreleased
+
+### 2026-10-14 - Pre-release cleanup
+- `sibyl migrate` tells Hermes users to run `sibyl setup hermes` instead of editing
+  `~/.hermes/config.yaml` by hand.
+- `sibyl setup --help` mentions Codex, and `--claude-settings` now says what it really sets: the
+  path to Claude Code's `settings.json` (default `~/.claude/settings.json`).
+- The account host shown while waiting for approval and after `sibyl logout` follows
+  `SIBYL_ACCOUNT_BASE` when it is set. With the default, the text is unchanged.
+- README: activation and status samples match what the commands print today (the free cap is
+  5,242,880 bytes, not 2,097,152), tier drift points at `sibyl refresh`, `sibyl --version` is
+  listed, the Upgrade section describes the current Pro pricing and flow, and the PyPI
+  description names Pro / Elite instead of the retired staker / subscription tiers.
+- Removed unused internal helpers and constants; docstrings describe current behavior.
+- `sibyl upgrade`, when it opens the plugin upgrade page instead of the account billing page, now
+  names the current offer: Pro $12/month or $108/year (USDC for one fixed period, or by card plus
+  applicable tax at sibyllabs.org/checkout followed by `sibyl claim`), or free Pro while 100,000 $SIBYL stays
+  staked. It no longer mentions a quarterly USDC plan.
+- Comments, docstrings, test file names and this CHANGELOG describe each finding by what it fixed
+  instead of naming testers or internal QA rounds. Text and test file names only; no code changed.
+
+### 2026-10-10 - sign-in and display fixes
+- F-1 (contract C1): the api's 401 `signed_out_on_claim` (this computer was signed out when the
+  account's email was first confirmed on the account page) is named everywhere the CLI used to
+  say only "signed out · run sibyl init" or "session expired": the `sibyl status` Access row (from
+  the gate's refresh) and server row, `sibyl email`, `sibyl email verify|add|confirm`, `sibyl
+  devices`, `sibyl upgrade` and `sibyl claim` print `signed out: this computer was signed out
+  when your email was confirmed on the account page (<date> UTC). run: sibyl init --force`, and
+  the handoff is `next: sibyl init --force`. Any other 401 keeps its old line.
+  `gate_http_line` / `gate_http_handoff` take the error body. Tests:
+  `tests/test_signin_display_fixes_2026_10_10.py` (F-1 block).
+- F-1a (contract C2): `sibyl init` with `cli_email_verify` on and the email unconfirmed sends the
+  code without the "confirm it now?" question; the only prompt is for the code (Enter skips).
+  Every path that leaves the email unconfirmed (Enter at the code prompt, a wrong or failed code,
+  no terminal, `--no-email`, and `cli_email_verify` off) prints `until you confirm your email
+  here, signing in on the account page signs this computer out. confirm later with: sibyl email
+  verify`. With no terminal no code is mailed unasked (the handoff stays `sibyl email verify`).
+  Tests: `tests/test_accounts_patch_2026_09_26.py` (two old rows rewritten, three added).
+- `sibyl setup <agent> --dry-run` compares with what is installed and says "already
+  in" for the skills (`skills v<v>: SAVE.md, DEBLOAT.md already in <dir>`), each shim (`shim
+  <path>: already in`), the Claude Code hooks (`hooks: 5 already in <settings>`) and the Codex
+  AGENTS.md block (`block: already in <path>`); missing, outdated and edited files say what a real
+  run would do. Still reads only.
+- times shown to people carry a zone, in UTC: `sibyl devices` (`last seen 2026-10-09
+  19:08 UTC`), the computer-limit list at `sibyl init`, `sibyl status` (Tier cache checked,
+  offline "as of", Expires, Issued), `sibyl claim` (Covers through), `sibyl memory` (updated),
+  and the save/autosave rows (`last save`, `last 19:08 UTC`). New module `_timefmt.py`.
+- `sibyl --version` prints every installed Sibyl package on one line, the CLI first:
+  `sibyl cli 0.5.0+dev.5 · client 0.9.0+dev.5 · mcp 0.3.0+dev.5` (hermes and langgraph when
+  installed). Still exits 0 without touching ~/.sibyl-memory.
+- `sibyl init` offers "send USDC from any mobile wallet" (the section line, the
+  subtitle and the agent's ask line) only when session-init minted this session's USDC-send bind
+  (`bind_amount_micros` and `bind_bus_wallet` set); while USDC sign-in is off the api sends both
+  null and init lists two paths, desktop wallet and email plus code.
+- Suite: 961 passed (was 930).
+
+### Fixed (`sibyl update` covers the MCP server, 2026-10-09)
+- `sibyl update` now also updates the MCP server (and LangGraph when installed). It checks every
+  Sibyl package that is installed among `sibyl-memory-cli`, `-client`, `-hermes`, `-mcp` and
+  `-langgraph`, and `--apply` upgrades the outdated ones in one `pip install -U` call; a package
+  that is not installed is not shown and is never installed. Before, the MCP server that the
+  installer puts on every install (`sibyl-memory-cli[mcp]`) stayed on its old version. The
+  `--json` document has the same keys, with one row per installed package; the pipx hint and the
+  exit codes are unchanged. Tests: `tests/test_update_installed_pkgs_2026_10_09.py` (+13); two
+  pipx handoff rows list the five packages. Suite: 930 passed (was 917).
+
+### Added (version row, 2026-10-08)
+- `sibyl --version` prints `sibyl <version>` (for example `sibyl 0.5.0` or `sibyl 0.5.0+dev.4`) and
+  exits 0. It needs no subcommand and reads or writes nothing under `~/.sibyl-memory`.
+- `sibyl status` opens with a `plugin` eyebrow and one `Version  cli <v> · client <v>` row (client
+  `not installed` when `sibyl-memory-client` is missing), in both the "Not activated." and the
+  activated layout, so a pasted status always carries the build. `sibyl whoami` is unchanged.
+  Tests: `tests/test_version_2026_10_08.py`. Tester guide line: `sibyl --version` replaces `pip list`.
+
+### Fixed (shown tier and plan end, 2026-10-08)
+- F1: every tier the CLI shows is the tier of this computer's current verified pass, the saved
+  credentials tier only when there is no valid pass (`_account_gate.display_tier` /
+  `peek_tier`): `sibyl status` (LOCAL Tier row, the uncapped / percent-of-cap DB size, the
+  local vs server drift check), the `sibyl init` "already activated" and "Activated." rows,
+  `sibyl whoami` and the `sibyl upgrade` current tier. `sibyl status` takes the access check-in
+  before printing the LOCAL rows (output order unchanged) and re-reads the credentials the
+  check-in may have rewritten. A tier cache that disagrees with a valid pass reads
+  `superseded by the access pass (checked ...)` instead of a second tier. `sibyl refresh` and
+  the background re-check rewrite the saved tier (client `sync_credentials_tier`). Looking up
+  the pass with no `entitlement.json` evaluates nothing, so it never leaves a file behind.
+- F2: the Access row says `active · re-checks in <h>h` (the pass re-check), not `renews in`,
+  which read like a billing renewal. A `Plan` row under it shows the billing date from the
+  pass's `acct.plan`: `Pro · ends 8 Oct 2027` (a cancellation, or a fixed term) or
+  `Pro · renews 8 Oct 2027` (a renewing card plan), in local time; no row when the server sends
+  no date (older api, Free, staker, Lifetime). The tier word is the one the Tier row shows.
+- README: the status sample and the Access table use `re-checks in`, and describe the Plan row.
+- Tests: `tests/test_tier_plan_2026_10_08.py` (+13); three label assertions updated to
+  `re-checks in`. Suite: 911 passed (was 898).
+
+### Changed (web-first onboarding QA patch, 2026-10-08)
+Decision D21 of onboarding-friction-final-analysis-2026-10-08 (findings F7, F12, P1). Messages
+only: flows, exit codes, streams and JSON keys are unchanged.
+- F7: after `Activated.`, `sibyl init` ends `next: sibyl status` instead of `next: sibyl setup`
+  when an agent on this computer is already wired (the installer runs `sibyl setup` before
+  `sibyl init`, so this is the common case). The check is the one `sibyl email confirm` already
+  uses (row E24: Hermes or Codex config, or `sibyl-memory` in `~/.claude.json` or
+  `~/.claude/settings.json`; file reads only, no subprocess). When wired, `later: sibyl setup`
+  is no longer queued behind `sibyl email add <address>` or `sibyl email verify`. With nothing
+  wired the output is unchanged.
+- Tests: seven new init rows (old api, verified, email required with none, unverified required
+  and not required, email confirmation not open, Codex wired), each with a harness wired.
+- P1: the approve hint under the code reads "already have a Sibyl Memory account (website or
+  another computer)? approve this one at <url> instead (sign in there, then type this code)".
+  The account may exist only on the website, so "already set up with this email on another
+  computer?" was the wrong question.
+- F12: with `features.device_approval` on, the `ask your human:` line printed while `sibyl init`
+  waits puts the likeliest path first: "if you already have a Sibyl Memory account, approve this
+  computer at <url> with the code <code>; otherwise open <activation page> and sign in with email
+  plus that code, a desktop wallet, or USDC from a mobile wallet; I pick it up here". An agent
+  relays one decision instead of four equal options. With the feature off the sentence is
+  unchanged. Tests assert the order, the code, the single `?r=` link and the unchanged
+  feature-off wording.
+- The "wire it into your agent" block after `Activated.` no longer tells people to hand-edit
+  `~/.hermes/config.yaml`, `pip install sibyl-memory-mcp` or import the provider by hand (it
+  contradicted the install flow: installer, then `sibyl setup`, then `sibyl init`, and the
+  dd0ce76 Hermes fix). With nothing wired it is one line, "wire it into your agent: sibyl setup
+  (wires Claude Code, Codex and Hermes)", and the handoff stays `next: sibyl setup`. With an
+  agent already wired (the F7 check) nothing is printed and the handoff ends
+  `next: sibyl status`. Two new tests cover both cases and the absence of the old commands.
+
+### Fixed (agent handoff check, 2026-10-07)
+Findings of the adversarial check of the handoff build (no loop left for an agent that follows
+only `next:`). Messages only: flows, exit codes, streams and JSON keys are unchanged.
+- Email, when the api does not take confirmation from the terminal (`features.cli_email_verify`
+  absent or false, row E11): `sibyl init` and the `sibyl email` state no longer hand back
+  `sibyl email add <address>` (which could only fail with `not_open` and ask for the address
+  again). They ask the person to add and confirm the email at the account page; init ends
+  `next: sibyl setup` with `later: sibyl email`, `sibyl email` ends `next: done`.
+- `sibyl setup`: a wirer error with no specific handoff (a Hermes or Codex config write, a Hermes
+  install-plugin failure) ends `next: done` with `ask your human:` naming the harness and the
+  error, instead of `next: retry`. A server that did not start ends `next: done` with "run
+  sibyl-memory-mcp in a terminal and tell me the first error line" (a missing credential:
+  `next: sibyl status`). An already-wired harness gets no restart ask; only a changed one does.
+- `sibyl update --apply`: a non-zero pip exit ends `next: done` with "pip exited N upgrading the
+  packages (output above); tell me what it said", instead of `next: retry`.
+- `sibyl logout` (rows O1 to O3) ends `next: done` with `later: sibyl init`: signing out no
+  longer starts a sign-in.
+- File labels in `sibyl debloat apply|auto|undo` handoffs, the undo hint and the migrate
+  "not trimmed" line are shell-quoted, so a label with a space still runs verbatim.
+- Tests: the convention lint sweep now covers memory search and recall, adopt A3/A4/A6/A7,
+  debloat auto, manual and undo, skills install, update --apply (pip failed, pip missing, pipx,
+  upgraded), setup X4 and X6 to X16 through the real wirers, migrate N3 to N10 through
+  `cmd_migrate`, health H1c/H2c, plus the E11 email and logout rows; each new scenario also
+  asserts it reached the path it is named for. Suite: 879 passed, 1 skipped (the installed
+  Claude Code binary contract test, which skips without `claude` on PATH).
+
+### Added (agent handoff messages, 2026-10-06)
+Spec agent-handoff-messages-spec-2026-10-03 (section 2 rows I, E, U, K, S, R, H, W, D, O, V, A,
+F, G, P, T, Y, Z, X, N). Messages only: no flow, command, exit code or server contract changes.
+- Every stop of a `sibyl` command ends with the handoff block, on stdout, TTY or not: zero or
+  more `later: <command>`, at most one `ask your human: <sentence>`, then `next: <command>`
+  (or `done`, `retry`, `retry in N minutes`), always the last line. Plain text at column 0, no
+  glyph, no colour. A placeholder (`<code>`, `<address>`, `<index>`, `<cs_code>`, `<file>`) only
+  appears with the `ask your human:` line that names it.
+- Waits print `ask your human:` and `waiting: <what> (up to m:ss)` once when the watching
+  starts: `sibyl init` (the bind, the computer-limit sign-out, device approval) and
+  `sibyl upgrade` (the plan change).
+- `--json` (`sibyl update`, `sibyl debloat`) prints no block; the document gains `next` and
+  `human_action`. `sibyl debloat --fyi` (one-line startup format) and `sibyl hook` (JSON for
+  Claude Code) print none.
+- `_handoff.py` (the block, waits, the JSON keys) and `_account_gate.access_handoff()`, so
+  `status`, `refresh`, `health` and the gate lines agree; the values come from the client's
+  `ENTITLEMENT_NEXT` / `ENTITLEMENT_HUMAN_ACTION`.
+- `sibyl claim` success line: "Run the next command and agents pick it up on their next call."
+  (was "Run `sibyl status` to see it. Your agent picks it up next session."). The tier-drift hint
+  in `sibyl status` names `sibyl refresh` (was `sibyl upgrade`, which opens a purchase page).
+- Non-interactive runs say which default they took: `no terminal: default Y|N taken` (setup
+  questions), `no terminal: proceeding (pass --yes to say so)` (migrate), the extraction and
+  trim lines of the guided migration.
+- Setup with nothing detected: `later: sibyl setup <target>`, the question, `next: sibyl status`.
+
+### Fixed (agent handoff messages, 2026-10-06; spec section 5.3)
+- `sibyl setup` with two or more harnesses detected, no `--yes` and no terminal no longer raises
+  a traceback at the picker: it wires all detected, as `--yes` does, and says so.
+- `sibyl save --fact` on a full free cap prints the cap line (`later: sibyl upgrade`,
+  `next: done`) instead of a `CapExceededError` traceback.
+- `sibyl migrate` with nothing extracted (a run without a terminal verifies at once) prints
+  "Backed up and wired. Extraction has not run yet." instead of "Done. Your memory now lives in
+  Sibyl".
+- The email `expired` fallback line needed no change (it is the copy when the server sends no
+  message); both paths are now tested.
+
+### Tests (agent handoff messages)
+- `tests/conftest.py`: `handoff(out)`, `json_handoff(payload)`, `assert_convention(out, err)`.
+- `tests/test_handoff_rows_2026_10_03.py`: one scenario per row, each through the lint.
+- `tests/test_handoff_convention_2026_10_03.py`: the lint, a sweep over every scenario, and a
+  source check (no em dash, glyph or ANSI in handoff copy).
+- `tests/test_agent_follows_next_2026_10_03.py`: an agent that reads only `next:` lines runs
+  init, email add, email confirm, setup, status to `done` against a stub api, and init, setup,
+  status to `done` against an old api.
+- The claim copy helper in `test_accounts_patch_2026_09_26.py` drops the block lines. Suite:
+  736 passed (453 before).
+
+### Changed (tier convention, 2026-10-05)
+Spec tier-convention-spec-2026-10-05 section 5 (same coordinated release; version unchanged).
+- `sibyl status` prints the tier as Free / Pro / Elite (local and server view, through the
+  client's shared `tiers` module); a legacy local label (stake) next to the server's canonical
+  one (pro) is no longer reported as drift. The computers line names the plan (`1 of 10 (Elite)`)
+  and the size line uses `tiers.is_paid`. Other tier lines (`init`, `whoami`, `claim`, `upgrade`)
+  keep their upper-case style but map legacy labels to the canonical word.
+- Access row for an unrecognised signed label: `active · access label "<raw>" is not recognised
+  by this version, treated as Free (tier_unknown) · run sibyl update`; a 503 `tier_unknown` from
+  the server reads `renewal paused · access label check (tier_unknown) · keep working; it retries
+  on its own` and keeps the last valid token.
+- Hooks: the stdlib-only `PAID_TIERS` mirror gains `elite` and still equals
+  `sibyl_memory_client.tiers.PAID_TIERS` (asserted); the unverified claim is stripped and
+  lowercased (`claim_label`); a `tier_unknown` answer is written to lifecycle.log.
+- `tests/smoke/venv-compat.sh`: `sibyl status` with an elite entitlement prints Elite and exits 0.
+- Tests: `tests/test_tiers_cli_2026_10_05.py` (+15, including the source guard: no legacy tier
+  literal outside the single hooks.py mirror line, which parses to the client set);
+  `test_f11_paid_tier_literal_matches_the_client` compares against `tiers.PAID_TIERS` and a sibling
+  covers elite / " Elite " / gold claims. Suite 437 -> 453.
+
+### Added (paid tier R1, 2026-09-29, R1B-2)
+Plan plugin-paid-tier-2026-09-29, operator defaults D1-D15 (same coordinated release; version unchanged).
+- The Claude Code Stop hook asks for a headless save by ACTIVE time on Pro: once early (5 memory
+  writes or a compaction), then every 60 active minutes (`sibyl autosave`), at most 8 a session and
+  12 a day, only with something to save. Each request is numbered ("save 2 of this session") so
+  the transcript guard works per request. `UserPromptSubmit` counts prompts and active time on
+  both tiers (a gap after a turn counts at most 5 minutes; the model's own turn at most 30). A
+  scripted `claude -p` run (no transcript, or fewer than two prompts) is never continued.
+  SessionStart adds the tier-change line and, on Pro, up to 3 named skill proposals (read-only).
+- `sibyl autosave [status|on|off|every <30-240>]` (free: says it is on Pro and keeps the setting).
+- `sibyl refresh`: one entitlement check now, the before/after diff (tier, cap, computers, email,
+  access), the procedures, shims, Codex block and (already wired) hooks refreshed, the lifecycle
+  rows. Exit 0 (1 on an authoritative denial, 2 offline); with no account it exits 0 and says to
+  run `sibyl init`.
+- `sibyl skills proposals [list|show|accept|reject|mute|unmute]` (Pro; free sees "on Pro").
+  `accept` writes a validated SKILL.md for the Claude Code, Codex and Hermes folders present (or
+  `--to <dir>`) plus the reference copy in memory; `reject` cools the slug off 30 days.
+- Computer limit: `sibyl init` sends `replace: {session_token}` on session-init when this computer
+  already holds credentials (`--replace` implies `--force`); a `device_limit` answer (409, or
+  `/check` bound:false with `limit`) prints the computers and, in a terminal, says this terminal
+  cannot sign another computer out and asks "Open the account page to sign <label> out? [y/N]"
+  (yes opens the account Security page, says to sign it out there and finish the sign-in in the
+  browser, and keeps waiting), otherwise clear instructions and exit 2. The Free upgrade line
+  names the Pro limit only when the api sends one (`pro_limit`), else "every computer you use". `sibyl devices` and `sibyl status` show
+  `1 of 1 (Free) · Pro: up to 10`; the read-only access row names the computer limit.
+- Codex AGENTS.md block: obey a Sibyl Memory `notice` asking for a save.
+
+### Fixed (paid tier R1 check, 2026-09-29, R1B-4)
+- Over-the-limit copy says new memories save only on "the computer that signed in most recently"
+  (the server keeps the newest sign-in writable), not "the most recently used computer".
+- The device-limit prompt no longer offers to "sign out ... and use this computer instead": this
+  terminal cannot sign another computer out, so it asks to open the account page and says what to
+  do there; the Free upgrade line has no hard-coded "up to 10".
+- Stop hook: an automatic-save request is recorded (per-session and per-day caps, the interval)
+  only when it is emitted; one suppressed by the transcript guard costs nothing and the next one is
+  numbered past it. A compaction makes only its own session due (the per-session
+  `compaction_seen`); the write count stays the account's (plan D6.5).
+
+One coordinated release with the accounts page. Two things change for users:
+every Sibyl Memory account needs a confirmed email for receipts, security
+notices, purchases and recovery (email does not gate memory), and **an
+activated account is now required for agents to use memory** (MCP, Hermes,
+LangGraph, the SDK). This is a FIVE-package release, not the CLI-only publish
+this entry first described: `sibyl-memory-client` 0.9.0, `sibyl-memory-hermes`
+0.5.0, `sibyl-memory-mcp` 0.3.0, `sibyl-memory-langgraph` 0.3.0 and this CLI
+(the number stays 0.5.0, decision D8). Floors: `client>=0.9.0`,
+`hermes>=0.5.0`, `mcp>=0.3.0` (extra), so a partial upgrade cannot pair a gated
+adapter with an un-gated engine. `credentials.json` schema is unchanged; a new
+`entitlement.json` sits beside it. After a confirm the credentials file is
+rewritten from the credentials the server re-signed; a local tier hint drops
+the old signature (see Security). `sibyl memory` never needs an account.
+Verified in a fresh venv with the five built wheels against hermes-agent 0.19.0
+(current on PyPI at build).
+
+### Added (save and debloat, 2026-09-27, SD-2)
+Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unchanged).
+- `sibyl save` (`--fact`, `--capsule` on Pro, `--preview`, `--status`; bare prints the three
+  ways to run the save procedure and writes nothing).
+- `sibyl debloat` (report, `--fyi`, `--json` with the plan when a policy exists, `--root`,
+  `--config`, `--include`; always exits 0), `sibyl debloat plan`, `apply [<file>] [--yes]`
+  (free: sibling `*-history` file; Pro: a memory reference document; a verified backup first),
+  `auto <file>` / `manual <file>` (the standing per-file authorisation), `undo [<file>]`.
+- `sibyl skills install|status|reset|uninstall`, `sibyl reminders on|off|quiet`, and
+  `sibyl hook <event>` (installed by setup; not for manual use).
+- `sibyl setup` / `sibyl migrate` wiring: Claude Code gets `~/.claude/skills/sibyl-save` and
+  `sibyl-debloat` plus five hooks in `~/.claude/settings.json` (SessionStart, UserPromptSubmit,
+  Stop, PreCompact, SessionEnd; absolute `sibyl` path; timeout 5 s; merged without touching
+  any other hook); Codex gets a marked block in `~/.codex/AGENTS.md` (no custom-prompt files:
+  Codex CLI 0.135.0 has no `~/.codex/prompts` loader, spec D9 fallback); Hermes gets
+  `$HERMES_HOME/skills/`. `sibyl init` installs the procedures right after `entitlement.json`;
+  `sibyl update --apply` refreshes them. `sibyl status` gains the `lifecycle` rows.
+- The Claude Code hooks: free = reminders (debloat FYI and unsaved-last-session at start,
+  save-due on a prompt); Pro = the start runs the debloat plan and reports, Stop asks the model
+  to run the save procedure headless (R1: by active time, see above; at 5 writes or after a compaction; never
+  on `stop_hook_active`; never twice), PreCompact and SessionEnd write the session capsule.
+  Output shapes verified against Claude Code 2.1.283's hook schemas.
+
+### Changed (save and debloat)
+- `sibyl migrate`'s trim step covers every instruction file the scan found (`CLAUDE.md`,
+  `AGENTS.md`, `.cursorrules`, ...), one question per file, each backup re-verified; config
+  files are never trimmed; `.cursor/rules` is measured, not trimmed; a project `.debloat.json`
+  surface narrows the candidates; a lean version keeping under 10 % or over 90 % is skipped.
+  The summary prints one `trimmed` line per file with its name. `--codex-config` now reaches the
+  Codex wirer.
+
+### Tests (save and debloat)
+- `test_lifecycle_cli_2026_09_27.py` 32, `test_migrate_trim_2026_09_27.py` 9; three existing
+  tests adjusted for the per-file trim records and the trim safety bounds (test_orchestrator,
+  test_prelaunch_fixes CLI-9, test_setup no-op). `tests/smoke/venv-compat.sh` gains the
+  save/debloat checks.
+
+### Fixed (second independent check of save and debloat, 2026-09-27, SD-11 to SD-13)
+- A symlinked folder above an instruction file no longer disables debloat (Fedora Atomic's
+  `/home -> var/home`, a stow-style `~/.claude -> ~/dotfiles/claude`, a project opened through a
+  link): the file is trimmed at its real location, never written through the link. `--root` is
+  resolved to its real path; `auto`, `manual` and `undo` use the real-path identity. A file whose
+  real location is outside your home and the project is refused.
+- `sibyl debloat undo` without a file undoes the exact file the last apply trimmed (recorded by
+  path); in another project it says where that file is instead of restoring the same name here.
+- An interactive `sibyl debloat apply` interrupted right after the rewrite keeps the backup.
+
+### Tests (second independent check)
+- `test_sd_final_cli_2026_09_27.py` (5): `--root` through a symlink, `auto` stores the real path,
+  a stow `~/.claude` free apply, bare undo across two projects, a record without an id.
+
+### Fixed (independent check of save and debloat, 2026-09-27, SD-7 to SD-10)
+- `sibyl debloat auto <file>` authorises that file at its path ("Automatic context trim for this
+  file at <path> means: ..."); `manual` takes a name or a path; name-only entries from the earlier
+  build are dropped with a one-time notice (`sibyl debloat`, `sibyl status`).
+- `sibyl debloat undo` restores the backup the file's last apply recorded and refuses one that is
+  identical to the current file.
+- Claude Code hooks never touch the network: the hook client's entitlement gate never refreshes,
+  its usage heartbeat is off, and a trim or capsule is written only when the cap gate decides
+  locally and within 2.5 s of the hook's start (otherwise the start plans only). Measured worst
+  case 0.29 s (was 17.5 s with a slow network); the timeout stays 5 s.
+- `sibyl` starts at `sibyl_memory_cli._entry.main`: `sibyl hook <event>` runs with the standard
+  library only until a hook needs the client; the free Stop returns on the unverified tier claim
+  (a paid claim is always verified); free PreCompact / SessionEnd neither verify nor open
+  memory.db. Free Stop 0.19 s -> 0.04 s. The package `__init__` is lazy.
+- Hook commands are `[ -x <sibyl> ] && exec <sibyl> hook <event>; exit 0`: they exit 0 quietly
+  once the package is gone; setup replaces entries of the earlier form. `sibyl skills uninstall
+  --help` says to run it before `pip uninstall`.
+- Codex: two skill shims in `~/.codex/skills/` (the format Codex CLI 0.135.0 validates).
+- `sibyl migrate` trim pointer: "a full copy of this file is in the backup ...; the migrate
+  extraction stored entries in Sibyl Memory".
+- `sibyl status` / `sibyl save` say when the Pro save nudge comes.
+- `venv-compat.sh`: four more checks (Codex dry run, the entry point, a wheel `sibyl hook stop`,
+  the guarded command with the binary gone).
+
+### Tests (independent check of save and debloat)
+- `test_sd_fixes_cli_2026_09_27.py`; adjusted `test_lifecycle_cli_2026_09_27.py` (per-path
+  authorisation, warm tier cache for Pro hook writes, the guarded hook command, Codex skills) and
+  `test_migrate_trim_2026_09_27.py` (pointer text).
+
+### Fixed (independent check fix batch, 2026-09-27, GATE-15)
+- `_bearer_headers` (used by `/access`, `/email-verify/request`,
+  `/email-verify/confirm`, `/upgrade-nonce`, `/stripe-claim`) now refreshes
+  first when this computer holds no usable token (the same ensure-fresh path
+  the logout / revoke calls use: one blocking `/entitlement` attempt, then
+  whatever usable token exists; a failed refresh sends none). Before, a device
+  back from offline past `exp + og`, or one that had not finished setup, sent
+  no token and would meet the cutoff's 403.
+- A 403 `client_too_old` while this computer holds no usable token now prints
+  the setup line ("setup is not finished on this computer. connect to the
+  internet once to finish setup. nothing was deleted."), not "update the
+  plugin": the plugin is current, the api refused the absent token. With a
+  token (or no client gate available) the update line stays. Applies to
+  email, devices, claim and upgrade.
+- Repo README: the fork table says `/check-write` refuses "from the client
+  cutoff"; the privacy paragraph says the size check and the usage count also
+  carry this computer's signed access token.
+- Tests: `test_release_fixes_2026_09_27.py` 15 (13 fail before; the two
+  guards, a usable token is not refreshed and `client_too_old` with a token
+  still says update, pass before and after).
+
+### Added (gate fix before the independent check, 2026-09-27)
+- `sibyl memory adopt [--yes]`: moves the store's rows written before sign-in
+  (the pre-account default tenant) into the signed-in account (client
+  `_adopt`: one local transaction, nothing deleted, a key the account already
+  has kept as `<key> (before sign-in)`, an audit row in the store, no network
+  of its own). Needs a verified sign-in. When the store has held another
+  account it explains and asks (`--yes` skips the question; a non-terminal
+  without `--yes` moves nothing). A re-run says there is nothing to move.
+- `sibyl init` does the same move on the first sign-in right after writing
+  `entitlement.json`, and prints the row count only (never content). A store
+  that has held another account is left alone with a pointer to
+  `sibyl memory adopt`.
+- `sibyl status`: the default-tenant hint names `sibyl memory adopt`; a new
+  `access` row `setup not finished · connect to the internet once to finish
+  setup` for credentials that have not received their first entitlement (the
+  client no longer grants an offline bootstrap grace).
+
+### Added (account gate, 2026-09-27)
+- `sibyl init` writes `entitlement.json` (0600, atomic, symlink-refusing) from
+  the `entitlement` the api sends next to `credentials` on `/check`, right after
+  credentials.json, and drops a token bound to a previous sign-in. An api that
+  sends none prints nothing new; the client bootstraps on first use. A
+  malformed value (not a string, over 4096 bytes, not SE1-shaped) is ignored.
+- `sibyl email confirm` writes the re-issued `entitlement` from the confirm
+  answer (the account state inside it must not lag a week).
+- Every session-authenticated call carries `X-Sibyl-Entitlement` when this
+  computer holds a verified, bound token inside its offline grace (spec 5.6);
+  a token the api would refuse is never sent. `sibyl claim` now sends the
+  bearer headers too.
+- `sibyl devices`, `sibyl devices revoke` and the logout revoke: with no
+  usable token they try one `/api/plugin/entitlement` refresh first, and on a
+  403 `entitlement_invalid` they retry once without the header, so signing out
+  or revoking a lost computer never blocks on the gate.
+- A 403 `entitlement_invalid` prints "this computer's sign-in file is damaged,
+  expired or belongs to another computer. run sibyl init to sign in again.";
+  a 403 `client_too_old` prints "update the plugin: pip install -U ..." (email,
+  devices, claim, upgrade).
+- `sibyl status`: an `access` row after one check-in attempt (`active · renews
+  in <h>h`, `offline · <n> days of grace left · connect once to renew`,
+  `paused · offline too long ...`, `signed out · run sibyl init`, `under review
+  · email sibyl@sibyllabs.org`, ...); when the server is unreachable, the
+  account rows from the last check-in labelled `as of <date>`; with no
+  credentials, "agents cannot use memory until you do. your local data is
+  kept."; a count-only hint when the default store holds entities under the
+  pre-account default tenant.
+- `sibyl logout` also removes `entitlement.json` (listed under `removed`).
+- `sibyl health` prints the entitlement state and the pinned key ids.
+- `sibyl memory list|search|recall` read local data with no account and no
+  network (a constructor-injected test gate, on purpose) and print "reading
+  local data without an account. agents need sibyl init." when there is none.
+  `sibyl migrate` says the extraction step needs `sibyl init`.
+
+### Added
+- `sibyl email`: shows whether the account email is confirmed, not confirmed,
+  or missing. `sibyl email add <address>` and `sibyl email verify` send a
+  six-digit code (`POST /api/plugin/email-verify/request`) and, in a terminal,
+  prompt for it; `sibyl email confirm <code>` confirms it from scripts
+  (`POST /api/plugin/email-verify/confirm`). Confirming from this computer keeps
+  it signed in and signs out every other computer set up on the account before.
+- `sibyl init` finishes the account right after `Activated.`: a wallet
+  activation is asked for an address, an email activation is offered a code to
+  confirm the address. Terminal only; `--no-email`, a non-TTY shell or
+  `SIBYL_NONINTERACTIVE=1` skip the prompt and print the one-line reminder.
+- `sibyl init` follows web device approval: when the email already has an
+  owner it prints `approve this computer at https://account.sibyllabs.org/activate?r=...`
+  once, switches the spinner to `waiting for approval at account.sibyllabs.org`,
+  and stops with exit 2 when the owner chose "Not me". The link names the
+  request by a sha256 handle, never the session id.
+- `sibyl status` rows `Email`, `Account` (incomplete, the grace date, and
+  whether purchases are refused) and `Dashboard`, when the server reports them.
+- `SIBYL_ACCOUNT_BASE` override for the account page origin (testing only).
+
+### Changed
+- `sibyl dashboard` opens the account page the server advertises
+  (`features.web_dashboard_url`) with no token in the URL; you sign in there
+  with your email or wallet. While the page is not open it prints
+  `the account page is not open yet.` and shows `sibyl status` as before.
+- `sibyl upgrade` opens the account billing page when the server offers card
+  checkout there, otherwise the stake / USDC page through the one-time
+  `upgrade-nonce` exchange link. An expired session prints `session expired.
+  re-run sibyl init.` (exit 1, nothing opened); any other failure except a
+  missing endpoint prints `could not start the upgrade. try again.` and exits 2.
+  It warns `a confirmed email is required before buying` whenever the server
+  says purchases are blocked (`account.purchase_blocked`), not only past grace.
+- `sibyl claim` explains the two new refusals by their `code`:
+  `unclaimed_account` (run `sibyl email verify`, or `sibyl email add` when no
+  email is on file, then claim again) and `email_required` (add and confirm an
+  email, then claim again).
+- `sibyl devices` / `devices revoke` print `this account is under review.
+  email sibyl@sibyllabs.org.` for a review hold instead of a raw body, and
+  `already revoked` for a device revoked earlier. `sibyl logout` says
+  `signed out on the server too.` when the server confirmed the revoke.
+- `sibyl whoami` is unchanged and still offline: it does not show whether the
+  email is confirmed. Use `sibyl email` or `sibyl status`.
+
+### Security
+- A signed field of `credentials.json` (account, tenant, tier, email, wallet,
+  issued_at, schema_version) never changes under an old signature.
+  `sibyl email confirm` writes the credentials the server re-signed (through
+  the same field allowlist as `sibyl init`, keeping this computer's bearer) and
+  changes nothing when the server sends none. `sibyl upgrade` and `sibyl claim`
+  still write the new `tier` (and the staker `wallet`) as a local hint, and
+  drop `signature` and `signed_at` from the file with that edit (neither is in
+  the allowlist; `sibyl init` never writes them), so the plugins send no
+  signed claim for it. 0.4.1 kept the old signature next to the edited field,
+  which the server reports as a stale or tampered credential.
+- `sibyl upgrade` no longer puts the bearer in the browser URL. It uses the
+  one-time exchange code (or the account page, which takes no token). The old
+  `?session=` link is used only against an api that has no `upgrade-nonce`
+  endpoint at all.
+- `sibyl dashboard` no longer opens `SIBYL_DASHBOARD_BASE?session=<bearer>`;
+  the variable is ignored.
+- Links printed or opened on the account origin are checked first: an approval
+  link must be `https://account.sibyllabs.org/activate?r=<64 hex>`, and a
+  dashboard link must be that origin exactly (a lookalike host such as
+  `account.sibyllabs.org.example` is refused).
+
+### Compatibility
+- Against an api from before this release (no `features`, no `account`, no
+  email-verify endpoints) 0.5.0 prints what 0.4.1 printed: no prompts, no new
+  status rows; `sibyl email` says `this server does not report email state
+  yet.`, and `sibyl email add/verify` say email confirmation is not available
+  on this server yet.
+
 ## [0.4.1] - 2026-09-04
 
 ### Added
@@ -107,7 +604,7 @@ so anything parsing this command's output should read this entry.
 
 ## [0.3.21] - 2026-08-12
 
-Multi-language search, part 2 (Kravento / Bilbo Polish evaluation) — CLI leg.
+Multi-language search, part 2 (Polish-language evaluation) — CLI leg.
 
 ### Fixed
 - **F1 — `sibyl memory list/search/recall` read the wrong tenant on an
@@ -245,8 +742,8 @@ Pre-launch security audit hardening.
 
 ### Added
 
-- **Read-only `sibyl memory list | search | recall`** (beta reports VRTX +
-  deadguy, 2026-06). Inspect what is actually stored without writing through an
+- **Read-only `sibyl memory list | search | recall`** (beta reports,
+  2026-06). Inspect what is actually stored without writing through an
   agent: `list [category]`, full-text `search <query>` across all tiers, and
   `recall <category> <name>`. Opens the resolved DB read-only via the SDK (never
   writes) and respects `--db`, so you can inspect any split-brain store that
@@ -258,7 +755,7 @@ Pre-launch security audit hardening.
 ### Added
 
 - **`sibyl status` now lists every memory store on the machine + warns on
-  split-brain divergence** (beta report VRTX, 2026-06-11). A new read-only
+  split-brain divergence** (beta report, 2026-06-11). A new read-only
   `_discover_stores()` enumerates the SDK/CLI/MCP default
   (`~/.sibyl-memory/memory.db`), the Hermes adapter
   (`$HERMES_HOME/sibyl/memory.db`), per-profile DBs
@@ -317,7 +814,7 @@ Pre-launch security audit hardening.
   `claude mcp add --scope user` returning exit 0 did not guarantee the server
   showed up in `claude mcp list`. The wirer now verifies via `claude mcp get`
   after adding; if the server is absent it returns an error with concrete
-  remediation instead of a false "wired". (beta report cryptoxdylan)
+  remediation instead of a false "wired". (beta report)
 
 ## [0.3.10] — 2026-06-01
 
@@ -595,8 +1092,8 @@ to the whole surface.
 ### Compatibility
 
 - Backward compat preserved: existing `dim/bold/green/yellow/red/cyan`
-  helpers stay in `cli.py` (used by the legacy `print_status` path
-  which is now superseded but not removed). New `_aesthetic.a.*`
+  helpers stay in `cli.py` (the legacy `print_status` path they served
+  was removed later, in 0.5.0). New `_aesthetic.a.*`
   helpers layer on top.
 - All visual choices honor `NO_COLOR`. Plain text fallback is
   visually clean (no garbage escapes leak).
@@ -685,8 +1182,8 @@ sibyl-memory-hermes` + `sibyl-memory-hermes install-plugin` + manual
 
 ## [0.1.3] — 2026-05-18
 
-KAPPA external-tester remediation release. Family-wide alignment with the
-v0.4.0 client + v0.3.2 hermes (KAPPA-attributed fixes: exception export
+External-tester remediation release. Family-wide alignment with the
+v0.4.0 client + v0.3.2 hermes (external-test fixes: exception export
 path, db file perms, identifier validation, FTS5 error surfacing). No CLI
 code changes in this release.
 
@@ -698,7 +1195,7 @@ code changes in this release.
 ### Notes
 
 - `sibyl init / upgrade / status / health` surface is unchanged from
-  v0.1.2. KAPPA's fixes flow through transparently via the dependency
+  v0.1.2. The external tester's fixes flow through transparently via the dependency
   bump.
 
 ---

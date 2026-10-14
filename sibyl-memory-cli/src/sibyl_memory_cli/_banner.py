@@ -70,15 +70,6 @@ def _supports_truecolor() -> bool:
     return False
 
 
-def _color_supported() -> bool:
-    """Plain ANSI color (3/4-bit). Stricter than truecolor."""
-    if os.environ.get("NO_COLOR"):
-        return False
-    if os.environ.get("TERM", "").lower() == "dumb":
-        return False
-    return sys.stdout.isatty()
-
-
 def _rgb(r: int, g: int, b: int) -> str:
     return f"\033[38;2;{r};{g};{b}m"
 

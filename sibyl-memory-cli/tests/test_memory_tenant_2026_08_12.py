@@ -1,4 +1,4 @@
-"""F1 (Kravento PL eval 2026-08-12): `sibyl memory` reads the ACTIVATED tenant.
+"""F1 (Polish-language eval 2026-08-12): `sibyl memory` reads the ACTIVATED tenant.
 
 cmd_memory used to open the store with MemoryClient.local(path=...) and no
 tenant_id, so it always read DEFAULT_TENANT while the MCP server writes under the

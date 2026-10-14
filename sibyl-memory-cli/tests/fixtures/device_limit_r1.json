@@ -1,0 +1,51 @@
+{
+  "_source": "plan plugin-paid-tier-2026-09-29 section 4.2 (the contract Track A implements). Labels only, never tokens.",
+  "limit_object": {
+    "code": "device_limit",
+    "limit": 1,
+    "tier": "free",
+    "devices": [
+      {"label": "work-laptop", "os_family": "macos", "last_seen_at": "2026-09-28T17:02:11.000Z"}
+    ],
+    "manage_url": "https://account.sibyllabs.org/security",
+    "upgrade_url": "https://sibyllabs.org/pro"
+  },
+  "check_at_limit": {
+    "bound": false,
+    "limit": {
+      "code": "device_limit",
+      "limit": 1,
+      "tier": "free",
+      "devices": [
+        {"label": "work-laptop", "os_family": "macos", "last_seen_at": "2026-09-28T17:02:11.000Z"}
+      ],
+      "manage_url": "https://account.sibyllabs.org/security",
+      "upgrade_url": "https://sibyllabs.org/pro"
+    }
+  },
+  "bind_409_body": {
+    "code": "device_limit",
+    "limit": 1,
+    "tier": "free",
+    "devices": [
+      {"label": "work-laptop", "os_family": "macos", "last_seen_at": "2026-09-28T17:02:11.000Z"}
+    ],
+    "manage_url": "https://account.sibyllabs.org/security",
+    "upgrade_url": "https://sibyllabs.org/pro"
+  },
+  "_r1b4_optional_pro_limit": "NOT in plan 4.2: an optional integer the CLI names in the Free upgrade line when an api sends it; without it the line says 'every computer you use' with no number. Track A to confirm or leave out.",
+  "bind_409_body_with_pro_limit": {
+    "code": "device_limit",
+    "limit": 1,
+    "tier": "free",
+    "pro_limit": 10,
+    "devices": [
+      {"label": "work-laptop", "os_family": "macos", "last_seen_at": "2026-09-28T17:02:11.000Z"}
+    ],
+    "manage_url": "https://account.sibyllabs.org/security",
+    "upgrade_url": "https://sibyllabs.org/pro"
+  },
+  "entitlement_acct_devices_ok": {"n": 1, "limit": 1, "over": false},
+  "entitlement_acct_devices_over": {"n": 3, "limit": 1, "over": true},
+  "entitlement_acct_devices_pro": {"n": 2, "limit": 10, "over": false}
+}
