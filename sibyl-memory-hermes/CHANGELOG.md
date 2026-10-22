@@ -4,6 +4,27 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.5.1] - Unreleased
+
+Hermes plugin-catalog build.
+
+### 2026-10-22 - catalog folder and manifest fix
+- `plugin.yaml` did not parse: the unquoted `description` holds a second colon
+  (`Sibyl Memory: local-first...`). Quoted. `hermes plugins validate` stopped at this
+  check before any other ran.
+- New `hermes-catalog/`: the folder a catalog entry points `subdir` at. `__init__.py` is
+  the bundled adapter byte for byte (the catalog loads the folder directly and never runs
+  `install-plugin`; the repo's `_hermes_plugin/__init__.py` is a stub, so the catalog
+  found no `register()` there). `plugin.yaml` declares `sibyl-memory-hermes` and
+  `sibyl-memory-client` with upper bounds so a catalog install pulls them in. The README
+  is the catalog page and lists the network calls, files outside `$HERMES_HOME`, the
+  paid-plan debloat pass and the background threads.
+- When the SDK package is missing, the tools now say so and point at a reinstall instead
+  of "restart Hermes", which does not fix it. The never-initialized case keeps its message.
+- `tests/test_catalog_install_2026_10_22.py`: the catalog adapter matches the bundled one,
+  both manifests carry the package version and a quoted description, both dependencies
+  have bounds, and the missing-package message.
+
 ## [0.5.0] - Unreleased
 
 Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.3).
