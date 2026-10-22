@@ -201,6 +201,10 @@ def _entitlement_tool_error(exc: BaseException) -> str:
 _CAP_HUMAN = ("the free 5 MB memory cap is full; Pro is a purchase, so it is your call; "
               "nothing was deleted")
 _NOT_INITIALIZED_HUMAN = "restart Hermes so the sibyl memory provider loads"
+# A catalog install loads this file straight from the repo, so the SDK package
+# can be missing; a restart does not fix that, a reinstall does.
+_NOT_INSTALLED_HUMAN = ("the sibyl-memory-hermes package is missing from Hermes' Python environment; "
+                        "reinstall the sibyl plugin so its dependencies install, then restart Hermes")
 
 # Timeouts + sizes: all named constants, no magic numbers in dispatch logic.
 _SYNC_JOIN_TIMEOUT = 5.0          # wait this long for previous sync_turn write
@@ -879,7 +883,8 @@ class SibylAdapter(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
         if not self._sibyl:
-            return _handoff_tool_error("Sibyl provider not initialized", "done", _NOT_INITIALIZED_HUMAN)
+            human = _NOT_INITIALIZED_HUMAN if self.is_available() else _NOT_INSTALLED_HUMAN
+            return _handoff_tool_error("Sibyl provider not initialized", "done", human)
         self._note_activity()
         try:
             return self._handle_tool_call(tool_name, args)
