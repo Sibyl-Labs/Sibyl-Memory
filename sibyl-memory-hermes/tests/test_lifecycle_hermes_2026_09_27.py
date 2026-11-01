@@ -169,7 +169,7 @@ def test_install_plugin_writes_skills_in_the_documented_hermes_dir(entitled_test
         assert SK.frontmatter_fields(p.read_text())["name"] == shim
         assert f"~/.sibyl-memory/skills/{name}" in p.read_text()
     assert (Path.home() / ".sibyl-memory" / "skills" / "SAVE.md").exists()
-    assert "procedures v1.1.0: SAVE.md installed" in capsys.readouterr().out
+    assert "procedures v1.2.0: SAVE.md installed" in capsys.readouterr().out
 
 
 # SD-9 (F10): the adapter opts its client in; the SDK alone does not ---------

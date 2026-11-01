@@ -1,0 +1,11 @@
+name: sibyl
+description: "Sibyl Memory: local-first, SQLite-backed, structured-tier memory (warm entities, hot state, cold journal, reference docs). Backed by sibyl-memory-hermes."
+version: 0.6.0
+homepage: https://sibyllabs.org/memory
+author: SIBYL, Sibyl Labs LLC
+license: MIT
+# Hermes plugin catalog: the catalog clones this folder at a pinned commit and
+# installs these into Hermes' environment. Keep the bounds within one minor line.
+python_dependencies:
+  - sibyl-memory-hermes>=0.6.0,<0.7
+  - sibyl-memory-client>=0.10.0,<0.11

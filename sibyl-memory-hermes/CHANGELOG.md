@@ -4,6 +4,83 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.6.0] - 2026-10-31
+
+One release: the paid tier R2 line, the shipped 0.9.0 family fixes it was built beside, the graph line (tiered retrieval and relations) and the release merge items below.
+
+### Release summary
+- Installable from the Hermes plugin catalog (`hermes-catalog/`).
+- The usage count is OFF unless you opt in with `SIBYL_MEMORY_TELEMETRY=1`.
+- `sibyl_search` keeps results inside the output budget; Pro skill signals.
+
+### Release merge (2026-10-28)
+- Hermes plugin catalog build, ported from PR #33 by CryptoxDylan (thank you): both `plugin.yaml`
+  files quote `description` (its second colon made the manifest invalid YAML); new `hermes-catalog/`
+  (`__init__.py` is the bundled adapter byte for byte, regenerated from the merged adapter;
+  `plugin.yaml` declares `sibyl-memory-hermes>=0.6.0,<0.7` and `sibyl-memory-client>=0.10.0,<0.11`;
+  `README.md` is the catalog page); when the SDK package is missing, the tools say so and ask for a
+  reinstall instead of "restart Hermes". The PR's 0.5.1 is absorbed into 0.6.0.
+- Telemetry default off: `SibylMemoryProvider` builds its client with
+  `telemetry=(SIBYL_MEMORY_TELEMETRY == "1")`. README privacy disclosure and the catalog README updated.
+- Tests: `test_catalog_install_2026_10_22.py` (5, from the PR), `test_telemetry_default_off_2026_10_28.py` (5).
+
+### Paid tier R2: skill signals (built 2026-09-29)
+
+Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-client 0.10.0.
+`plugin.yaml` version 0.6.0.
+
+### Unchanged (tier convention, 2026-10-05; carried from 0.5.0)
+- No code change; the `credentials.py` docstring lists the canonical tiers (carried from 0.5.0).
+
+### Added
+- Skill signals: `handle_tool_call` records one tool event before dispatch (name and the 12-hex
+  fingerprint of the sorted top-level argument names; never a value), Pro only; entity writes
+  through the client as hashes; the per-turn journal and the capsule are not recorded.
+  `shutdown` flushes the buffer before the learner pass, so the session's sequences can become
+  proposals at once.
+
+### Tests
+- `tests/test_signals_capture_hermes_2026_09_29.py` (4): names and shapes on Pro with the
+  session key; shutdown flushes and the learner proposes the repeated sequence; canaries never on
+  disk; free and recording off record nothing.
+
+### Changed (R2 check fixes, 2026-09-30)
+- R2F-N4 (README only): the signals file keeps tool and MCP server names in plain text.
+
+### Tiered retrieval and relations (graph line, built 2026-10-22)
+
+### Fixed - sibyl_search output budget (MCP parity, 2026-10-22)
+- `sibyl_search` holds one result to ~22,000 estimated tokens
+  (`SIBYL_MEMORY_HERMES_OUTPUT_TOKENS`) and a 190,000-char cap
+  (`SIBYL_MEMORY_HERMES_OUTPUT_BUDGET`) with the MCP server's degrade order (snippet-hit
+  bodies, snippets, link samples, then trailing hits); the verdict carries `degraded`,
+  `truncated: n`, `hint`, and `returned` / `tiers_hit` / `name_matches` describe what was
+  returned.
+
+### Fixed - release train (V1 panel B, 2026-10-22)
+- `version = "0.6.0"`, requires `sibyl-memory-client>=0.10.0` (the provider uses the
+  V1 search engine; 0.5.0 + client 0.9.0 is the published pair). README: upgrade the
+  packages together (`sibyl update --apply`).
+- Tests: `test_release_floor_2026_10_22.py` (2): the floor is the train's client and the
+  provider imports against it.
+
+### Changed
+- README: the tier table gains the gated, name-first `search_multi_record(query,
+  scope="graph")` row. The lifecycle test pins the bundled procedures at v1.2.0 (SAVE.md
+  agent guidance, client section 3).
+
+### Added
+- `provider.search_multi_record(..., scope="all", with_links=True)` passes both
+  through to `multi_record_search`: name-first results (`match`), `chars`,
+  `title`, and the `links` edge summary on hits by default.
+- `sibyl_search` takes `scope` ("all" | "graph"); the schema description says
+  how name queries and links work. Bad scope -> tool error.
+- Tests: `test_tier_search_2026_10_22.py` (3).
+
+### Changed
+- `sibyl_search` caps each hit's `snippet` at 600 chars, matching the MCP
+  server (the client snippet is now 40 tokens).
+
 ## [0.5.0] - Unreleased
 
 Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.3).
