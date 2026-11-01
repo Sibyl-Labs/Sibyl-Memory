@@ -134,7 +134,9 @@ The plugin's save and debloat procedures belong to agent sessions (the MCP serve
 adapter, the Claude Code hooks), not to a framework store, so this package has no lifecycle of
 its own. A LangGraph agent that also uses the MCP server gets the `save` and `debloat` prompts
 there. The Pro automatic save (by active time) and the skill proposals ride the MCP server and
-the Hermes adapter too; `SibylStore` never asks for a save.
+the Hermes adapter too; `SibylStore` never asks for a save. The skill signals (0.10: repeated tool
+sequences, repeated entity rewrites) are recorded by the MCP server, the Hermes adapter and the
+Claude Code Stop hook; a `SibylStore` records none.
 
 Uninstalling the CLI: run `sibyl skills uninstall` before `pip uninstall sibyl-memory-cli`; it
 removes the Claude Code hooks that call the `sibyl` command (they exit quietly once it is gone,
