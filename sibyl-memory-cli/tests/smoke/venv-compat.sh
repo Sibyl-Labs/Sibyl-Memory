@@ -7,6 +7,7 @@
 # hermes-agent from PyPI, then asserts:
 #   * every command below exits 0 with no credentials;
 #   * `sibyl memory list` exits 0 on a store and prints the no-account line;
+#   * `sibyl memory neighbors` lists a v6 edge on that store (0.10.0 graph line);
 #   * the MCP server answers memory_list with an isError result whose text is
 #     JSON with code == "ACCOUNT_REQUIRED" (a ToolError envelope, NOT a Python
 #     exception);
@@ -35,6 +36,11 @@
 #     `sibyl skills proposals` with no account exits 0 (nothing proposed); a
 #     recorded 409 device_limit answer makes `sibyl init` print the computers
 #     and the replace prompt (no network: the CLI's HTTP call is replaced);
+#   * paid tier R2 (spec plugin-paid-tier-r2 1.6): `sibyl skills signals status` with
+#     no account says Pro and writes nothing; `sibyl hook stop` with a transcript and
+#     no account exits 0 silently and records nothing; with a throwaway test key in one
+#     process (Pro), the Stop slice, an MCP tool call and the client's entity write
+#     record tool names and hashes only in a 0600 signals.json, with no connection;
 #   * tier convention (spec tier-convention 2026-10-05): `sibyl status` with an
 #     elite entitlement (a throwaway test key, this process only, no network)
 #     prints `Tier  Elite` and exits 0;
@@ -146,6 +152,17 @@ c.set_entity('compat', 'probe', {'note': 'written before an account existed'})
 PYEOF
 out=\$('$B/sibyl' memory list) && echo \"\$out\" | grep -q 'compat/probe' && echo \"\$out\" | grep -q 'reading local data without an account'"
 
+run "sibyl memory neighbors reads a v6 edge without an account" bash -c "
+'$B/python' - <<'PYEOF'
+from sibyl_memory_client import DEFAULT_TENANT, MemoryClient, entity_ref
+from sibyl_memory_client.testing import NullEntitlementGate
+c = MemoryClient.local('$FAKE_HOME/.sibyl-memory/memory.db', tenant_id=DEFAULT_TENANT,
+                       entitlement_gate=NullEntitlementGate())
+c.set_entity('compat', 'hub', {'note': 'hub'})
+c.link(entity_ref('compat', 'hub'), entity_ref('compat', 'probe'), 'source_of')
+PYEOF
+out=\$('$B/sibyl' memory neighbors --entity compat hub) && echo \"\$out\" | grep -q 'source_of' && echo \"\$out\" | grep -q 'probe'"
+
 run "mcp: memory_list -> isError ACCOUNT_REQUIRED (not an exception)" "$B/python" - <<'PYEOF'
 import asyncio, json
 from mcp.types import CallToolRequest
@@ -159,7 +176,12 @@ assert root.isError is True, root
 payload = json.loads(root.content[0].text)
 assert payload["code"] == "ACCOUNT_REQUIRED" and payload["reason"] == "no_account", payload
 tools = asyncio.run(mcp.list_tools())
-assert len(tools) == 8, [t.name for t in tools]
+# 0.10.0: the eight memory tools plus the graph line's seven (links + reference read side)
+assert sorted(t.name for t in tools) == sorted([
+    "memory_remember", "memory_recall", "memory_search", "memory_list", "memory_forget",
+    "memory_set_state", "memory_get_state", "memory_record_event", "memory_set_reference",
+    "memory_get_reference", "memory_list_references", "memory_delete_reference",
+    "memory_link", "memory_unlink", "memory_neighbors"]), [t.name for t in tools]
 print("  mcp", payload["code"], payload["reason"], "| tools listed:", len(tools))
 PYEOF
 
@@ -246,6 +268,61 @@ assert "work-laptop" in out and "account.sibyllabs.org/security" in out, out
 assert "Pro works on every computer you use: https://sibyllabs.org/pro" in out, out
 assert "up to 10" not in out, out
 print("  init at the limit: exit", rc, "| prompt:", asked[0].strip())
+PYEOF
+
+echo "== paid tier R2 (spec plugin-paid-tier-r2 1.6: skill signals)"
+run "sibyl skills signals with no account: exit 0, says Pro, no file" bash -c "cd '$FAKE_HOME' && out=\$(env PATH='$SPATH' '$B/sibyl' skills signals status) && echo \"\$out\" | grep -q 'Skill signals are on Pro.' && test ! -e '$FAKE_HOME/.sibyl-memory/signals.json'"
+run "sibyl hook stop with a transcript, no account: exit 0, silent, nothing recorded" bash -c "cd '$FAKE_HOME' && printf '%s\n' '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"x\"}}]}}' > '$FAKE_HOME/t.jsonl' && out=\$(echo '{\"session_id\": \"compat\", \"stop_hook_active\": false, \"transcript_path\": \"$FAKE_HOME/t.jsonl\"}' | env PATH='$SPATH' '$B/sibyl' hook stop) && test -z \"\$out\" && test ! -e '$FAKE_HOME/.sibyl-memory/signals.json'"
+run "Pro (test key, this process only): Stop slice, MCP and client record names and hashes only, no connection" "$B/python" - <<PYEOF
+import asyncio, json, os, pathlib, socket, stat, time
+refused = []
+_real_connect = socket.socket.connect
+def _guard(self, address):
+    host = address[0] if isinstance(address, tuple) else str(address)
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        refused.append(host); raise ConnectionRefusedError(host)
+    return _real_connect(self, address)
+socket.socket.connect = _guard
+home = pathlib.Path("$FAKE_HOME/r2"); home.mkdir(parents=True, exist_ok=True)
+os.environ["HOME"] = str(home)
+from sibyl_memory_client import MemoryClient, _entitlement as E
+from sibyl_memory_client.testing import TestSigner, write_credentials, write_entitlement
+from sibyl_memory_client.lifecycle import signals as SG
+signer = TestSigner()
+E.TRUSTED_KEYS = dict(signer.trusted)
+E.http_refresh = lambda a, t: E.RefreshOutcome("transient", code="offline")
+d = home / ".sibyl-memory"; d.mkdir(parents=True, exist_ok=True)
+write_credentials(d); write_entitlement(d, signer.mint(tier="pro", cap=None, src="pro"))
+CANARY = "CANARY-VALUE-7a1f"
+tr = home / "t.jsonl"
+line = lambda n: json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": n,
+                            "input": {"canary_key_9b2c": CANARY}}]}})
+tr.write_text("\n".join(line(n) for n in ["Read", "Edit", "Bash"] * 3) + "\n")
+from sibyl_memory_cli import hooks as H
+t0 = time.perf_counter()
+H.run_hook("stop", json.dumps({"session_id": "compat", "stop_hook_active": False, "transcript_path": str(tr)}),
+           home=home)
+dt = time.perf_counter() - t0
+import sibyl_memory_mcp.server as server
+server.DEFAULT_DB_PATH = d / "memory.db"; server.DEFAULT_CRED_PATH = d / "credentials.json"
+from sibyl_memory_client import _capcheck
+_capcheck._default_check_write_fn = lambda url, payload, timeout=4.0: {"ok": True, "tier": "pro", "cap_bytes": None}
+from mcp.types import CallToolRequest
+m = server.build_server(); h = m._mcp_server.request_handlers[CallToolRequest]
+asyncio.run(h(CallToolRequest(method="tools/call", params={"name": "memory_remember", "arguments":
+    {"category": "people", "name": "Canary Person 3e5d", "body": {"v": CANARY}}})))
+SG.flush_all()
+p = SG.path_of(home)
+raw = p.read_bytes()
+assert oct(stat.S_IMODE(p.stat().st_mode)) == "0o600", oct(p.stat().st_mode)
+for c in (CANARY, "canary_key_9b2c", "Canary Person", "people"):
+    assert c.encode() not in raw, c
+sig = json.loads(raw)
+names = sorted({t for e in sig["ngrams"].values() for t in e["tools"]})
+assert names == ["Bash", "Edit", "Read"], names
+assert len(sig["entity_writes"]) == 1 and not refused, refused
+print(f"  signals.json {len(raw)} bytes, 0600 | tools {names} | 1 entity hash | stop slice {dt:.3f} s | "
+      f"connections refused: {len(refused)}")
 PYEOF
 
 echo "== tier convention (spec tier-convention 2026-10-05)"

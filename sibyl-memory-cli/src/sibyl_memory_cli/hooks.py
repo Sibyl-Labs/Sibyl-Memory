@@ -35,6 +35,13 @@ the transcript guard applies per request; a request is recorded (per-session
 and per-day caps, the interval) only when it is actually emitted. PreCompact
 and SessionEnd write the session capsule.
 
+Skill signals (R2, Pro): Stop also reads the transcript INCREMENTALLY from the
+session's stored byte offset (at most 4 MiB per Stop) and records each
+tool_use block's name and the hashed, sorted key names of its input in
+~/.sibyl-memory/signals.json; values and text are never kept. The learner
+never runs in a hook: the next MCP server start turns the record into
+proposals.
+
 Time bound (Claude Code kills a hook at its timeout, 5 s): nothing in a hook
 touches the network. The Pro client's entitlement gate never refreshes, its
 usage heartbeat is off (the exit flush would wait on the network), and a
@@ -398,6 +405,18 @@ def _run(event: str, stdin_text: str, home: Path, cred: Path, db: Path, now: flo
     if event == "stop":
         if not pro:
             return ""
+        # R2 (spec plugin-paid-tier-r2 1.2): skill signals from the Claude Code
+        # workflow. The transcript is read from this session's stored offset,
+        # at most 4 MiB per Stop; only each tool_use block's name and the
+        # hashed sorted key names of its input are kept (signals.json), the
+        # parsed text is dropped. Local only; never the learner here.
+        try:
+            from sibyl_memory_client.lifecycle import signals as SG
+            srep = SG.record_transcript(home, sk, payload.get("transcript_path"), tenant_id=tenant, now=now)
+            if srep.get("events"):
+                ST.log(f"hook stop: signals {srep['events']} tool events", home)
+        except Exception as e:
+            ST.log(f"hook stop: signals skipped {type(e).__name__}", home)
         scripted = not (isinstance(payload.get("transcript_path"), str) and payload["transcript_path"])
 
         def _stop(st: dict[str, Any]) -> tuple[int, str] | None:

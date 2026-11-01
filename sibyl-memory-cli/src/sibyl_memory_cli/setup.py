@@ -1288,6 +1288,175 @@ class CodexWirer:
 
 
 # ----------------------------------------------------------------------
+# CursorWirer: Cursor (and Grok Bot, which runs on a Cursor cloud machine)
+# reads MCP servers from ~/.cursor/mcp.json. Format verified against Cursor's
+# docs (https://cursor.com/docs/context/mcp): top-level "mcpServers", each
+# stdio entry {"type": "stdio", "command": ..., "args": [...], "env": {...}}.
+# Same protocol as the other wirers: timestamped backup, atomic write, a
+# corrupt file is never replaced, foreign entries are never touched.
+# ----------------------------------------------------------------------
+
+MCP_BINARY_NAME = "sibyl-memory-mcp"
+
+
+def mcp_command_path() -> str:
+    """Absolute path of the MCP server binary for a client config, resolved
+    from PATH, then from the running interpreter's own scripts directory (a
+    venv that is not activated). Falls back to the bare name."""
+    w = shutil.which(MCP_BINARY_NAME)
+    if w:
+        return os.path.abspath(w)
+    cand = Path(sys.executable).parent / MCP_BINARY_NAME
+    if cand.exists():
+        return str(cand)
+    return MCP_BINARY_NAME
+
+
+def mcp_servers_snippet(command: Optional[str] = None) -> str:
+    """Copy-paste ``mcpServers`` JSON any MCP client accepts for a stdio
+    server (A2: lets an agent wire itself from `sibyl setup` output)."""
+    cmd = command or mcp_command_path()
+    return json.dumps(
+        {"mcpServers": {"sibyl-memory": {"type": "stdio", "command": cmd}}}, indent=2)
+
+
+class CursorWirer:
+    name = "cursor"
+    display_name = "Cursor"
+    initial = "u"
+
+    MCP_BINARY = MCP_BINARY_NAME
+    MCP_PACKAGE = "sibyl-memory-mcp"
+    MCP_NAME = "sibyl-memory"
+
+    def __init__(self, *, config_path: Optional[Union[str, Path]] = None):
+        self.config_path = (
+            Path(config_path).expanduser() if config_path
+            else Path.home() / ".cursor" / "mcp.json"
+        )
+
+    def _entry(self) -> dict:
+        return {"type": "stdio", "command": mcp_command_path()}
+
+    def is_present(self) -> bool:
+        if self.config_path.exists() or self.config_path.parent.is_dir():
+            return True
+        return bool(shutil.which("cursor") or shutil.which("cursor-agent"))
+
+    def _mcp_binary_found(self) -> bool:
+        return shutil.which(self.MCP_BINARY) is not None
+
+    _last_install_error: Optional[str] = None
+
+    def _install_hint(self) -> str:
+        return f"\n{self._last_install_error}" if self._last_install_error else ""
+
+    def _ensure_mcp_binary(self) -> bool:
+        if self._mcp_binary_found():
+            return True
+        self._last_install_error = _install_pkg_or_instruct(self.MCP_PACKAGE)
+        return self._mcp_binary_found()
+
+    def verify_mcp_starts(self) -> tuple:
+        binary = shutil.which(self.MCP_BINARY)
+        if not binary:
+            return False, f"'{self.MCP_BINARY}' not found on PATH"
+        return _verify_mcp_starts(binary)
+
+    def current_state(self) -> dict:
+        exists = self.config_path.exists()
+        block: Optional[dict] = None
+        parse_error: Optional[str] = None
+        if exists:
+            try:
+                cfg = json.loads(self.config_path.read_text(encoding="utf-8") or "{}")
+                servers = cfg.get("mcpServers") if isinstance(cfg, dict) else None
+                if isinstance(servers, dict) and isinstance(servers.get(self.MCP_NAME), dict):
+                    block = servers[self.MCP_NAME]
+            except Exception as e:
+                parse_error = f"{type(e).__name__}: {e}"
+        cmd = (block or {}).get("command")
+        is_ours = bool(isinstance(cmd, str)
+                       and Path(cmd.replace("\\", "/")).name.startswith(self.MCP_BINARY))
+        return {
+            "settings_path": str(self.config_path),
+            "config_exists": exists,
+            "config_parse_error": parse_error,
+            "sibyl_mcp": block,
+            "mcp_binary_found": self._mcp_binary_found(),
+            "wired_with_sibyl": bool(is_ours and self._mcp_binary_found()),
+        }
+
+    def wire(self, *, force: bool = False, dry_run: bool = False,
+             prompt_fn: Optional[Callable[..., str]] = None) -> WireOutcome:
+        state = self.current_state()
+        if state["config_parse_error"]:
+            return WireOutcome(self.name, "error",
+                f"{self.config_path} is not valid JSON ({state['config_parse_error']}). "
+                "Fix the file or move it aside and re-run setup; it was not modified.")
+        if state["wired_with_sibyl"] and not force:
+            return WireOutcome(self.name, "already",
+                f"{self.display_name} already has the sibyl-memory MCP server in {self.config_path}")
+        block = state["sibyl_mcp"]
+        if block and not state["wired_with_sibyl"] and not force:
+            if prompt_fn is None:
+                return WireOutcome(self.name, "skipped",
+                    "Existing sibyl-memory MCP entry differs. Use --force to overwrite.")
+            if prompt_fn("Cursor has a 'sibyl-memory' MCP entry pointing elsewhere. Update?",
+                         default="N") != "y":
+                return WireOutcome(self.name, "skipped", "MCP entry update declined.")
+        if dry_run:
+            verb = "update" if block else "add"
+            return WireOutcome(self.name, "dry-run",
+                f"Would {verb} mcpServers.sibyl-memory in {self.config_path}")
+        if not self._ensure_mcp_binary():
+            return WireOutcome(self.name, "error",
+                f"'{self.MCP_BINARY}' not on PATH. Install it: pip install {self.MCP_PACKAGE}"
+                + self._install_hint())
+        backup = _timestamped_backup(self.config_path)
+        try:
+            self._write_config()
+        except Exception as e:
+            return WireOutcome(self.name, "error",
+                f"config write failed: {type(e).__name__}: {e}", backup_path=backup)
+        return WireOutcome(self.name, "wired",
+            f"Added SIBYL Memory MCP server to {self.config_path}", backup_path=backup)
+
+    def _write_config(self) -> None:
+        cfg: dict = {}
+        if self.config_path.exists():
+            raw = self.config_path.read_text(encoding="utf-8")
+            if raw.strip():
+                try:
+                    loaded = json.loads(raw)
+                except ValueError as e:
+                    raise ValueError(
+                        f"{self.config_path} is not valid JSON ({e}). Fix the file or move "
+                        "it aside and re-run setup; it was not modified.") from e
+                if not isinstance(loaded, dict):
+                    raise ValueError(
+                        f"{self.config_path} top level is not a JSON object "
+                        f"(got {type(loaded).__name__}); it was not modified.")
+                cfg = loaded
+        if not isinstance(cfg.get("mcpServers"), dict):
+            cfg["mcpServers"] = {}
+        cfg["mcpServers"][self.MCP_NAME] = self._entry()
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.config_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, self.config_path)
+
+
+class GrokBotWirer(CursorWirer):
+    """`sibyl setup grokbot`: Grok Bot runs on a Cursor cloud machine with local
+    stdio MCP, so it is the Cursor wiring plus a printed confirmation. Explicit
+    target only (never auto-detected, so Cursor is not wired twice)."""
+    name = "grokbot"
+    display_name = "Grok Bot (Cursor)"
+    initial = "g"
+
+
+# ----------------------------------------------------------------------
 # Registry + dispatch
 # ----------------------------------------------------------------------
 
@@ -1295,7 +1464,14 @@ ALL_WIRERS: dict = {
     "hermes": HermesWirer,
     "claude-code": ClaudeCodeWirer,
     "codex": CodexWirer,
+    "cursor": CursorWirer,
 }
+
+# Explicit-target-only wirers (never part of auto-detect).
+EXPLICIT_WIRERS: dict = {
+    "grokbot": GrokBotWirer,
+}
+SETUP_TARGETS: tuple = tuple(ALL_WIRERS) + tuple(EXPLICIT_WIRERS)
 
 
 # True once a prompt in this run met end of input (no terminal): an overwrite
@@ -1332,7 +1508,24 @@ def _wirer_kwargs(args: argparse.Namespace, name: str) -> dict:
         kw["settings_path"] = args.claude_settings
     if name == "codex" and getattr(args, "codex_config", None):
         kw["config_path"] = args.codex_config
+    if name in ("cursor", "grokbot") and getattr(args, "cursor_config", None):
+        kw["config_path"] = args.cursor_config
     return kw
+
+
+def _print_generic_config(dim, cyan) -> None:
+    """A2: any MCP client (Grok Bot included) can wire itself from this."""
+    cmd = mcp_command_path()
+    print(dim("Any MCP client can use the server directly. Command (absolute path):"))
+    print(f"  {cyan(cmd)}")
+    if cmd == MCP_BINARY_NAME:
+        print(dim(f"  ('{MCP_BINARY_NAME}' is not installed yet: pip install sibyl-memory-mcp)"))
+    print()
+    print(dim("Add this to the client's MCP config (the mcpServers block):"))
+    print(mcp_servers_snippet(cmd))
+    print()
+    print(dim("Cursor or Grok Bot: sibyl setup cursor  |  sibyl setup grokbot"))
+    print()
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
@@ -1347,12 +1540,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
     # Resolve target wirers
     target = getattr(args, "target", None)
     if target:
-        if target not in ALL_WIRERS:
+        cls = ALL_WIRERS.get(target) or EXPLICIT_WIRERS.get(target)
+        if cls is None:
             print(red(f"Unknown setup target: {target}"))
-            print(f"Available: {', '.join(ALL_WIRERS)}")
-            _h.handoff("sibyl setup <hermes|claude-code|codex>", human=which_human)
+            print(f"Available: {', '.join(SETUP_TARGETS)}")
+            _h.handoff("sibyl setup <" + "|".join(SETUP_TARGETS) + ">", human=which_human)
             return 1
-        wirers: dict = {target: ALL_WIRERS[target](**_wirer_kwargs(args, target))}
+        wirers: dict = {target: cls(**_wirer_kwargs(args, target))}
         skip_present_check = True   # explicit target = wire it even if not detected on PATH
     else:
         wirers = {name: cls(**_wirer_kwargs(args, name)) for name, cls in ALL_WIRERS.items()}
@@ -1376,6 +1570,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
     else:
         detected = {n: w for n, w in wirers.items() if w.is_present()}
 
+    if getattr(args, "print_config", False):
+        _print_generic_config(dim, cyan)
+        return 0
+
     if not detected:
         print(yellow("No agent frameworks detected on this machine."))
         print()
@@ -1388,7 +1586,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
         print(dim("To override detection, point setup at a custom path:"))
         print(f"  {cyan('sibyl setup --hermes-home /custom/path')}")
         print(f"  {cyan('sibyl setup --claude-settings /custom/settings.json')}")
+        print(f"  {cyan('sibyl setup --cursor-config /custom/mcp.json')}")
         print()
+        _print_generic_config(dim, cyan)
         # Row X3: nothing to wire is not a stop for the account; the agent
         # moves on and keeps the targeted setup for when its person answers.
         _h.handoff("sibyl status", human=which_human, later=("sibyl setup <target>",))
@@ -1407,6 +1607,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
     if len(detected) > 1 and not args.yes:
         choices = ", ".join(f"[{w.initial}]{w.display_name}" for w in detected.values())
         try:
+            # Grok Bot onboarding (2026-10-28): never read a non-terminal stdin
+            # (under `curl | sh` it is the installer script itself).
+            if not sys.stdin.isatty():
+                raise EOFError
             ans = input(
                 f"Wire which? {choices}, [a]ll, [n]one (default: all): "
             ).strip().lower()
@@ -1515,6 +1719,17 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     nxt, human, later = _setup_handoff(outcomes, detected, verify_msgs,
                                        unanswered=bool(args.yes) or _PROMPT_EOF)
+    for o in outcomes:
+        if o.name == "grokbot" and o.status in ("wired", "already"):
+            w = detected["grokbot"]
+            print(bold("Grok Bot confirmation"))
+            print(f"  server name : {w.MCP_NAME}")
+            print(f"  command     : {mcp_command_path()}")
+            print(f"  config file : {w.config_path}")
+            print(dim("  Reload MCP servers in Cursor (or start a new Grok Bot session), then "
+                      "run: sibyl doctor"))
+            print()
+
     _h.handoff(nxt, human=human, later=later)
     return 0 if all(o.status != "error" for o in outcomes) and not any_verify_fail else 2
 

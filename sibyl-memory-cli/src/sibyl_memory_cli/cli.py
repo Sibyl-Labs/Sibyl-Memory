@@ -2690,6 +2690,11 @@ def cmd_health(args: argparse.Namespace) -> int:
     return 0 if ok_state else 1
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    from .doctor import run_doctor
+    return run_doctor(args)
+
+
 # ---- `sibyl update` ----------------------------------------------------
 
 # Every Sibyl package `sibyl update` knows about. The installer
@@ -3159,7 +3164,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_h = sub.add_parser("health", help="Run the provider self-check")
     p_h.set_defaults(func=cmd_health)
 
-    p_mem = sub.add_parser("memory", help="Inspect your memory store (list / search / recall), or adopt memory from before sign-in")
+    p_doc = sub.add_parser(
+        "doctor",
+        help="End-to-end check: start the MCP server, list tools, save a marked test memory, recall it, delete it",
+    )
+    p_doc.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_doc.set_defaults(func=cmd_doctor)
+
+    p_mem = sub.add_parser("memory", help="Inspect your memory store (list / search / recall / neighbors), or adopt memory from before sign-in")
     mem_sub = p_mem.add_subparsers(dest="mem_cmd")
     p_ml = mem_sub.add_parser("list", help="List entities (optionally filtered by category)")
     p_ml.add_argument("category", nargs="?", default=None, help="Optional category to filter by")
@@ -3173,6 +3185,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_mr.add_argument("category", help="Entity category")
     p_mr.add_argument("name", help="Entity name")
     p_mr.set_defaults(func=cmd_memory)
+    p_mn = mem_sub.add_parser(
+        "neighbors",
+        help="List the edges of one node (entity, reference document or state document)")
+    p_mn_node = p_mn.add_mutually_exclusive_group(required=True)
+    p_mn_node.add_argument("--entity", nargs=2, metavar=("CATEGORY", "NAME"),
+                           help="An entity node")
+    p_mn_node.add_argument("--reference", metavar="KEY", help="A reference document node")
+    p_mn_node.add_argument("--state", metavar="KEY", help="A state document node")
+    p_mn.add_argument("--relation", action="append", default=None,
+                      help="Only this relation (repeatable)")
+    p_mn.add_argument("--direction", choices=("out", "in", "both"), default="both")
+    p_mn.add_argument("--tier", choices=("entity", "reference", "state"), default=None,
+                      help="Only edges whose other node is in this tier")
+    p_mn.add_argument("--limit", type=int, default=50, help="Max edges (default 50, max 200)")
+    p_mn.add_argument("--cursor", default=None, help="next_cursor from a previous page")
+    p_mn.set_defaults(func=cmd_memory)
     p_ma = mem_sub.add_parser(
         "adopt",
         help="Move memory written on this computer before sign-in into your account "
@@ -3191,14 +3219,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_update.set_defaults(func=cmd_update)
 
     # v0.1.4: one-command auto-detect-and-wire setup for any agent stack
-    from .setup import cmd_setup
+    from .setup import cmd_setup, SETUP_TARGETS
     p_setup = sub.add_parser(
         "setup",
         help="Auto-detect Hermes / Claude Code / Codex and wire SIBYL as the memory provider",
     )
     p_setup.add_argument(
-        "target", nargs="?", choices=["hermes", "claude-code", "codex"],
-        help="Wire just this framework (default: detect all)",
+        "target", nargs="?", choices=list(SETUP_TARGETS),
+        help="Wire just this framework (default: detect all). grokbot = Cursor wiring + confirmation",
     )
     p_setup.add_argument(
         "--yes", "-y", action="store_true",
@@ -3223,6 +3251,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument(
         "--codex-config", default=None,
         help="Override ~/.codex/config.toml autodetection",
+    )
+    p_setup.add_argument(
+        "--cursor-config", default=None,
+        help="Override ~/.cursor/mcp.json autodetection",
+    )
+    p_setup.add_argument(
+        "--print-config", action="store_true",
+        help="Print the absolute sibyl-memory-mcp path and a copy-paste mcpServers JSON block, then exit",
     )
     p_setup.set_defaults(func=cmd_setup)
 
@@ -3301,7 +3337,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_skp = sk_sub.add_parser(
         "proposals",
         help="Pro: skills Sibyl proposes from your sessions (list, show, accept, reject, mute, unmute)",
-        description=("Skill proposals are mined locally from your journal on Pro. Nothing is created "
+        description=("Skill proposals are mined locally on Pro, from your journal and from the tool "
+                     "sequences and entity rewrites in ~/.sibyl-memory/signals.json (sibyl skills "
+                     "signals). Nothing is created "
                      "without an accept: `accept <id>` writes a SKILL.md for Claude Code, Codex and Hermes "
                      "(the folders present on this computer, or --to <dir>) and a reference copy in memory; "
                      "`reject <id>` keeps it from coming back for 30 days (twice rejected: muted until "
@@ -3313,6 +3351,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_skp.add_argument("--note", help="accept / reject: a note kept with the decision")
     p_skp.add_argument("--days", type=int, help="mute: how many days (default 30)")
     p_skp.set_defaults(func=_lc.cmd_skills)
+    p_sksg = sk_sub.add_parser(
+        "signals",
+        help="Pro: the local record skill proposals learn from (status, clear, off, on)",
+        description=("On Pro, Sibyl keeps a small local record (~/.sibyl-memory/signals.json) of which "
+                     "tools your agent calls in which order and which entities are rewritten, so it can "
+                     "propose a skill for a sequence you repeat. Tool and MCP server names are kept; argument names and "
+                     "entity names only as hashes; never a value. Nothing leaves this computer. `clear` "
+                     "deletes the file, `off` stops recording, `on` starts it again from now."))
+    p_sksg.add_argument("signals_action", nargs="?", default="status",
+                        choices=["status", "clear", "off", "on"])
+    p_sksg.set_defaults(func=_lc.cmd_skills)
     p_sk.set_defaults(func=_lc.cmd_skills)
 
     p_as = sub.add_parser("autosave", help=("Pro automatic save: status, on, off, or every <minutes> of "
@@ -3438,9 +3487,45 @@ def cmd_memory(args: argparse.Namespace) -> int:
         print(body if isinstance(body, str) else json.dumps(body, indent=2, ensure_ascii=False))
         _h.handoff("done", later=signin_later)
         return 0
-    print(a.warn_line("Usage: sibyl memory {list|search|recall|adopt} ..."))
+    if op == "neighbors":
+        return _cmd_memory_neighbors(args, client, signin_later)
+    print(a.warn_line("Usage: sibyl memory {list|search|recall|neighbors|adopt} ..."))
     _h.handoff("sibyl memory list", later=signin_later)
     return 1
+
+
+def _cmd_memory_neighbors(args: argparse.Namespace, client: Any, signin_later: tuple) -> int:
+    """`sibyl memory neighbors`: the edges of one node (v6 relations), read-only."""
+    if getattr(args, "entity", None):
+        node = {"tier": "entity", "category": args.entity[0], "key": args.entity[1]}
+    elif getattr(args, "reference", None):
+        node = {"tier": "reference", "key": args.reference}
+    else:
+        node = {"tier": "state", "key": args.state}
+    try:
+        res = client.neighbors(node, relation=args.relation, direction=args.direction,
+                               tier=args.tier, limit=args.limit, cursor=args.cursor)
+    except Exception as e:
+        print(a.warn_line(str(e)))
+        _h.handoff("sibyl memory list", later=signin_later)
+        return 1
+    deg = res.get("degree") or {}
+    label = (f"{node['category']}/{node['key']}" if node["tier"] == "entity"
+             else f"{node['tier']} {node['key']}")
+    print(a.eyebrow(f"{label}  out {deg.get('out', 0)}  in {deg.get('in', 0)}"))
+    if not res.get("edges"):
+        print(a.dim("(no edges)"))
+    for e in res.get("edges") or []:
+        n = e.get("node") or {}
+        other = (f"{n.get('category')}/{n.get('key')}" if n.get("tier") == "entity"
+                 else f"{n.get('tier')} {n.get('key')}")
+        arrow = "->" if e.get("direction") == "out" else "<-"
+        state = "" if n.get("exists") else ("  (archived)" if n.get("archived") else "  (missing)")
+        print(a.kv(f"{arrow} {e.get('relation')}", other + state))
+    if res.get("next_cursor"):
+        print(a.dim(f"  more: --cursor {res['next_cursor']}"))
+    _h.handoff("done", later=signin_later)
+    return 0
 
 
 def _cmd_memory_adopt(args: argparse.Namespace, db_path: Path) -> int:
@@ -3489,8 +3574,13 @@ def _cmd_memory_adopt(args: argparse.Namespace, db_path: Path) -> int:
         print(a.dim("  Nothing moved."))
         _h.handoff("sibyl status")
         return 1
+    held = list(getattr(res, "held_links", None) or []) if res is not None else []
     if res is None or res.status == "nothing_to_move":
-        print(a.dim("Nothing to move: no memory from before sign-in in this store."))
+        if held:
+            print(a.dim(f"Nothing moved: {len(held)} links from before sign-in are held back."))
+            _print_held_links(held)
+        else:
+            print(a.dim("Nothing to move: no memory from before sign-in in this store."))
         _h.handoff("done")
         return 0
     print(a.success_line(f"Moved {res.moved} rows from before sign-in into your account."))
@@ -3499,8 +3589,25 @@ def _cmd_memory_adopt(args: argparse.Namespace, db_path: Path) -> int:
     if res.renamed:
         print(a.dim(f"  {len(res.renamed)} kept under a new name ending in (before sign-in): "
                     "your account already had that key."))
+    dropped = getattr(res, "dropped_links", None) or []
+    if dropped:
+        print(a.dim(f"  {len(dropped)} links were already in your account and were not copied twice."))
+    if held:
+        _print_held_links(held)
     _h.handoff("done")
     return 0
+
+
+def _print_held_links(held: list) -> None:
+    """Edges adoption could not place: their endpoint name exists in the
+    account twice (the account's own and a "(before sign-in)" copy) and no
+    record says which one they belong to. They stay where they are."""
+    print(a.dim(f"  {len(held)} links not moved: each points at a name your account holds both "
+                "as itself and as \"(before sign-in)\", and nothing records which one it meant."))
+    for h in held[:5]:
+        f, t = h.get("from") or {}, h.get("to") or {}
+        print(a.dim(f"    {f.get('key')} --{h.get('relation')}--> {t.get('key')}"))
+    print(a.dim("  Forget (archive) the copy they should not attach to, then run sibyl memory adopt again."))
 
 
 def main(argv: list[str] | None = None) -> int:

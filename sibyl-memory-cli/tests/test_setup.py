@@ -384,6 +384,6 @@ def test_claude_wire_mismatched_dry_run(tmp_path):
 # ----------------------------------------------------------------------
 
 def test_registry_has_all_wirers():
-    assert set(ALL_WIRERS) == {"hermes", "claude-code", "codex"}
+    assert set(ALL_WIRERS) == {"hermes", "claude-code", "codex", "cursor"}
     assert ALL_WIRERS["hermes"] is HermesWirer
     assert ALL_WIRERS["claude-code"] is ClaudeCodeWirer
