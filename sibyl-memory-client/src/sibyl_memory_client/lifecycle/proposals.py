@@ -16,7 +16,8 @@ Relevant (plan 3.1 / 3.5, deterministic): ``status = pending``, confidence at
 least 0.6, at least 3 evidence events, at least 2 of them in the last 7 days,
 at least one newer than the start of the person's most recent session (the
 pattern recurred in the last session), evidence from at least two sessions
-(two events at least 30 minutes apart), kind not muted. Nothing is created
+(two events at least 30 minutes apart; waived for ``tool_sequence``, R2),
+kind not muted. Nothing is created
 without an explicit accept; the free tier sees none of it.
 """
 from __future__ import annotations
@@ -40,7 +41,15 @@ NAMED_MAX = 3
 PROMPT_THROTTLE_SECONDS = 24 * 3600
 COOL_OFF_DAYS = 30
 MUTE_DAYS_DEFAULT = 30
-KINDS = ("repeated_action", "structural_similarity", "temporal_routine", "co_occurrence")
+KINDS = ("repeated_action", "structural_similarity", "temporal_routine", "co_occurrence",
+         "tool_sequence", "correction_loop")
+# R2 (plan 3.5): a tool sequence may be cited from inside one session, so the
+# two-sessions span rule does not apply to it (every other rule does).
+# R2F N1: correction_loop too. Its detector already demands 3+ rewrites over
+# at least 10 minutes in one session (or a delete and rewrite within 24 h);
+# the 30-minute span would silently drop every loop between 10 and 30 minutes.
+# The detector's own thresholds are the gate.
+SPAN_WAIVED_KINDS = frozenset({"tool_sequence", "correction_loop"})
 
 
 def muted_kinds(st: dict[str, Any], now: float) -> set[str]:
@@ -95,6 +104,8 @@ def is_relevant(row: dict[str, Any], now: float, *, anchor: float | None,
     since = anchor if anchor is not None else now - RECENT_DAYS * 86400
     if not any(t >= since for t in ts):
         return False
+    if row.get("pattern_kind") in SPAN_WAIVED_KINDS:
+        return True
     return ts[-1] - ts[0] >= SESSION_GAP_SECONDS
 
 
@@ -162,14 +173,29 @@ def run_learner(client: Any, *, home: Path | str | None = None, now: float | Non
         if getattr(getattr(dec, "entitlement", None), "mem", None) != "full":
             return None      # read-only or paused by policy: the learner writes nothing
         st = ST.LifecycleState(home_p).load()
+        # R2: the skill-signal snapshot (tool sequences, correction loops),
+        # local only; nothing when recording is off.
+        sig = None
+        try:
+            from . import signals as SG
+            if SG.settings_of(st)[0]:
+                sig = SG.load(home_p, now=now)
+        except Exception:
+            sig = None
         with ST.suppressed():
             learner = client.learner()
-            return learner.run(exclude_kinds=muted_kinds(st, now), unmuted=unmuted_slugs(st))
+            rep = learner.run(exclude_kinds=muted_kinds(st, now), unmuted=unmuted_slugs(st),
+                              signals=sig)
+        keys = list(getattr(rep, "signal_keys", None) or [])
+        if keys and sig is not None:
+            ng = [k for k in keys if k in (sig.get("ngrams") or {})]
+            SG.mark_proposed(home_p, ng, now=now)
+        return rep
     except Exception as e:
         ST.log(f"learner: {type(e).__name__}", home_p)
         return None
 
 
-__all__ = ["CONFIDENCE_FLOOR", "COOL_OFF_DAYS", "KINDS", "MUTE_DAYS_DEFAULT", "NAMED_MAX",
+__all__ = ["CONFIDENCE_FLOOR", "COOL_OFF_DAYS", "KINDS", "SPAN_WAIVED_KINDS", "MUTE_DAYS_DEFAULT", "NAMED_MAX",
            "PROMPT_THROTTLE_SECONDS", "db_path_of", "is_relevant", "last_session_start",
            "muted_kinds", "read_relevant", "run_learner", "skill_prompt", "unmuted_slugs"]

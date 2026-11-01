@@ -12,7 +12,11 @@ Modules:
                 stale entitlement whose tier is paid);
 * ``capsule``   the Pro session capsule;
 * ``reminders`` the free reminder lines and the Pro report lines;
-* ``runner``    the Pro process-start run; ``notices`` per-process delivery.
+* ``runner``    the Pro process-start run; ``notices`` per-process delivery;
+* ``proposals`` skill proposals on Pro (the learner run, the relevance rule);
+* ``signals``   the Pro skill signals (tool sequences, entity rewrites) in
+                ``~/.sibyl-memory/signals.json``: names and hashes, never a
+                value (R2).
 
 Nothing here opens a network connection. Content of an instruction file is
 read only to split it, and goes only to the backup, the person's own memory

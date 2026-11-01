@@ -304,6 +304,7 @@ def assert_no_external_attempts(start: int) -> None:
 
 REAL_HOME_WATCHED = (
     ".sibyl-memory/lifecycle.json", ".sibyl-memory/lifecycle.log", ".sibyl-memory/lifecycle.lock",
+    ".sibyl-memory/signals.json",
     ".sibyl-memory/skills", ".sibyl-memory/debloat", ".sibyl-memory/debloat.json",
     ".sibyl-memory/debloat.lock",
     ".claude/skills/sibyl-save", ".claude/skills/sibyl-debloat", ".claude/settings.json",

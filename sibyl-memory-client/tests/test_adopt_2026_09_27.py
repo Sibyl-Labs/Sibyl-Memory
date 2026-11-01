@@ -399,6 +399,8 @@ def test_all_tables_move_including_minor_ones(tmp_path) -> None:
     c0.set_state("s", {"k": 1})
     c0.set_reference("r", "ref")
     c0.write_event(acted=["e"])
+    c0.link({"tier": "entity", "category": "project", "key": "a"},
+            {"tier": "state", "key": "s"}, "about")   # v6 memory_links
     with c0.storage.transaction() as conn:
         a_id = conn.execute("SELECT id FROM entities WHERE name='a'").fetchone()[0]
         for sql, args in (

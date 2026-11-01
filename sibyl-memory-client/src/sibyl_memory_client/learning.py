@@ -128,6 +128,9 @@ class LearningRunReport:
     started_at: str = ""
     completed_at: str = ""
     summarizer: str = ""
+    # R2: the signals.json keys (n-gram keys, entity hashes) that became
+    # proposals in this run, so the caller can mark them ``proposed_at``.
+    signal_keys: list[str] = field(default_factory=list)
 
 
 class Summarizer(Protocol):
@@ -199,6 +202,8 @@ class LocalDeterministicSummarizer:
                 f"`{pair[0]}` and `{pair[1]}` consistently appear together in "
                 f"the same journal entries."
             )
+        elif pattern_kind in ("tool_sequence", "correction_loop"):
+            return _signal_body(pattern_kind, events, hints, title), title
         else:
             lines.append("(pattern kind unrecognized: flagged for review)")
 
@@ -361,7 +366,8 @@ class Learner:
     # Public entry points
     # ------------------------------------------------------------------
     def run(self, *, since: str | None = None, exclude_kinds: Iterable[str] = (),
-            unmuted: dict[str, Any] | None = None) -> LearningRunReport:
+            unmuted: dict[str, Any] | None = None,
+            signals: dict[str, Any] | None = None) -> LearningRunReport:
         """Scan journal events since the last watermark and propose skills.
 
         ``exclude_kinds``: pattern kinds the person muted (no proposal of that
@@ -369,7 +375,12 @@ class Learner:
         accepted, for ``REJECT_COOL_OFF_DAYS`` after a rejection, and at all
         once rejected ``REJECT_MUTE_COUNT`` times (``unmuted`` maps a slug to
         the epoch seconds of a ``sibyl skills proposals unmute``; only
-        rejections after it count)."""
+        rejections after it count).
+
+        ``signals`` (R2): the loaded ``signals.json`` snapshot
+        (``lifecycle.signals.load``); when given, the ``tool_sequence`` and
+        ``correction_loop`` detectors run too, even when the journal has
+        nothing new."""
         run_id = new_id()
         started_at = _utc_now_iso()
 
@@ -389,7 +400,13 @@ class Learner:
 
         # Skip detection entirely if there's nothing new
         proposal_ids: list[str] = []
-        if scanned == 0:
+        signal_candidates: list[_Candidate] = []
+        if signals:
+            import time as _time
+            _now = _time.time()
+            signal_candidates.extend(_detect_tool_sequence(signals, _now, min_hits=self._min_hits))
+            signal_candidates.extend(_detect_correction_loop(signals, self._storage, self._tenant_id, _now))
+        if scanned == 0 and not signal_candidates:
             self._log_run(
                 run_id=run_id,
                 started_at=started_at,
@@ -412,11 +429,13 @@ class Learner:
 
         # Run detectors, accumulate candidate proposals
         candidates: list[_Candidate] = []
-        candidates.extend(_detect_repeated_actions(events, min_hits=self._min_hits))
-        candidates.extend(_detect_structural_similarity(events, min_hits=self._min_hits))
-        candidates.extend(_detect_co_occurrence(events, min_hits=self._min_hits))
-        # temporal_routine: light-touch detector, deliberately last
-        candidates.extend(_detect_temporal_routine(events, min_hits=self._min_hits))
+        if events:
+            candidates.extend(_detect_repeated_actions(events, min_hits=self._min_hits))
+            candidates.extend(_detect_structural_similarity(events, min_hits=self._min_hits))
+            candidates.extend(_detect_co_occurrence(events, min_hits=self._min_hits))
+            # temporal_routine: light-touch detector, deliberately last
+            candidates.extend(_detect_temporal_routine(events, min_hits=self._min_hits))
+        candidates.extend(signal_candidates)
 
         # Deduplicate by slug: keep the highest-confidence candidate per slug
         deduped: dict[str, _Candidate] = {}
@@ -436,16 +455,18 @@ class Learner:
         ranked = [c for c in ranked if c.slug not in existing_slugs and c.kind not in excluded]
 
         # Persist
+        signal_keys: list[str] = []
         for c in ranked:
             body, title = self._summarizer.summarize(c.kind, c.events, c.hints)
             pid = self._insert_proposal(c, body=body, title=title)
             proposal_ids.append(pid)
+            signal_keys.extend(c.signal_keys)
 
         # Watermark: advance on the monotonic rowid so no same-ts row is ever
         # skipped next run (Hardening #15). Keep the max ts too, for readable logs.
-        max_rowid = max((ev.get("rowid") or 0) for ev in events)
-        cursor_after_rowid = max(max_rowid, after_rowid or 0)
-        cursor_after_ts = max((ev.get("ts") or "") for ev in events) or None
+        max_rowid = max([(ev.get("rowid") or 0) for ev in events] or [0])
+        cursor_after_rowid = max(max_rowid, after_rowid or 0) if (events or after_rowid) else None
+        cursor_after_ts = (max((ev.get("ts") or "") for ev in events) or None) if events else since
 
         self._log_run(
             run_id=run_id,
@@ -466,6 +487,7 @@ class Learner:
             started_at=started_at,
             completed_at=_utc_now_iso(),
             summarizer=self._summarizer.name,
+            signal_keys=signal_keys,
         )
 
     def list_proposals(
@@ -762,7 +784,8 @@ class Learner:
                     title,
                     body,
                     dumps([
-                        {"event_id": ev["id"], "ts": ev["ts"], "snippet": _short_event_snippet(ev)}
+                        {"event_id": ev.get("id"), "ts": ev.get("ts"),
+                         "snippet": ev.get("snippet") or _short_event_snippet(ev)}
                         # the most recent 20 (the relevance filter reads recency)
                         for ev in candidate.events[-20:]
                     ]),
@@ -817,6 +840,7 @@ class _Candidate:
     confidence: float
     events: list[dict[str, Any]]
     hints: dict[str, Any]
+    signal_keys: list[str] = field(default_factory=list)
 
 
 def _detect_repeated_actions(
@@ -977,6 +1001,248 @@ def _detect_temporal_routine(
             },
         ))
     return out
+
+
+# ======================================================================
+# Skill-signal detectors (R2, spec plugin-paid-tier-r2 1.4): they read the
+# signals.json snapshot, never the journal, and return candidates with
+# SYNTHETIC evidence (event_id null, a timestamp and a one-line snippet), so
+# the rest of the pipeline (slug dedupe, blocked slugs, insert, relevance,
+# accept / reject) is unchanged.
+# ======================================================================
+
+SEQ_ONE_SESSION = 3
+SEQ_ACROSS_SESSIONS = 5
+SEQ_MIN_SESSIONS = 2
+SEQ_WINDOW_DAYS = 7
+LOOP_MIN_REWRITES = 3
+LOOP_MIN_SPAN_SECONDS = 10 * 60
+LOOP_RECREATE_SECONDS = 24 * 3600
+ENTITY_RESOLVE_LIMIT = 5000
+REMOVED_ENTITY = "an entity that has since been removed"
+
+# The agent's retrieval rhythm, not a skill: a sequence made only of these is
+# never proposed.
+_READ_ONLY_TOOLS = frozenset({
+    "memory_search", "memory_recall", "memory_list", "memory_get_state",
+    "sibyl_search", "sibyl_recall", "sibyl_list", "sibyl_prefetch", "prefetch",
+})
+
+
+def _bare_tool(name: str) -> str:
+    """``mcp__<server>__<tool>`` -> ``<tool>``."""
+    if name.startswith("mcp__"):
+        parts = name.split("__")
+        if len(parts) >= 3:
+            return parts[-1]
+    return name
+
+
+def _slug_tool(name: str) -> str:
+    """``mcp__x__y`` -> ``x-y``; any other name safe-slugged."""
+    if name.startswith("mcp__"):
+        parts = [p for p in name.split("__")[1:] if p]
+        return _safe_slug("-".join(parts))
+    return _safe_slug(name)
+
+
+def _iso_ts(ts: float) -> str:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(float(ts), timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _contains(seq: list[Any], sub: list[Any]) -> bool:
+    n = len(sub)
+    return any(seq[i:i + n] == sub for i in range(len(seq) - n + 1))
+
+
+def _detect_tool_sequence(signals: dict[str, Any], now: float, *, min_hits: int = SEQ_ONE_SESSION
+                          ) -> list[_Candidate]:
+    """``tool_sequence``: an n-gram (3..5 tool calls) seen ``min_hits`` (3)
+    times in one session, or 5 times in the last 7 days across at least 2
+    sessions. Excluded: all names identical; only memory read tools. The
+    longest gram wins over a contained gram seen no more often, and the
+    windows of one loop (A B C A B C ...) are one pattern."""
+    import time as _time
+    ngrams = (signals or {}).get("ngrams") or {}
+    horizon = now - SEQ_WINDOW_DAYS * 86400
+    first_day = _time.strftime("%Y-%m-%d", _time.gmtime(now - (SEQ_WINDOW_DAYS - 1) * 86400))
+    q: list[dict[str, Any]] = []
+    for key, e in ngrams.items():
+        tools = list(e.get("tools") or [])
+        shapes = list(e.get("shapes") or [])
+        if len(tools) < 3 or len(set(tools)) == 1:
+            continue
+        if all(_bare_tool(t) in _READ_ONLY_TOOLS for t in tools):
+            continue
+        sessions = [s for s in (e.get("sessions") or []) if s[2] >= horizon]
+        best = max((int(s[1]) for s in sessions), default=0)
+        recent = sum(int(c) for d, c in (e.get("days") or {}).items() if d >= first_day)
+        if not (best >= min_hits or (recent >= SEQ_ACROSS_SESSIONS and len(sessions) >= SEQ_MIN_SESSIONS)):
+            continue
+        q.append({"key": key, "e": e, "tools": tools, "shapes": shapes,
+                  "toks": list(zip(tools, shapes)), "count": max(recent, best),
+                  "sessions": len(sessions)})
+    # Longest wins: a contained gram seen no more often than the longer one is
+    # the same occurrences.
+    q = [c for c in q if not any(len(o["toks"]) > len(c["toks"]) and o["count"] >= c["count"]
+                                 and _contains(o["toks"], c["toks"]) for o in q)]
+    # One loop, one pattern: a window of a kept sequence repeated (A B C A B C)
+    # seen no more often is not a second pattern.
+    kept: list[dict[str, Any]] = []
+    for c in sorted(q, key=lambda c: (-c["count"], len(c["toks"]), c["key"])):
+        if any(k is not c and c["count"] <= k["count"]
+               and _contains(k["toks"] * (len(c["toks"]) // len(k["toks"]) + 2), c["toks"])
+               for k in kept):
+            continue
+        kept.append(c)
+    out: list[_Candidate] = []
+    for c in kept:
+        tools, shapes = c["tools"], c["shapes"]
+        slug = _safe_slug("seq-" + "-".join(_slug_tool(t) for t in tools[:3]))
+        if any(o is not c and o["tools"] == tools and o["shapes"] != shapes for o in kept):
+            import hashlib as _h
+            slug = _safe_slug(slug + "-" + _h.sha256("|".join(shapes).encode()).hexdigest()[:4])
+        conf = 0.60 + 0.05 * (c["count"] - 3) + (0.05 if c["sessions"] >= 2 else 0.0)
+        conf = round(min(0.85, max(0.60, conf)), 2)
+        arrow = " -> ".join(tools)
+        e = c["e"]
+        stamps = sorted(e.get("ts") or [])[-20:]
+        events = [{"id": None, "ts": _iso_ts(t), "snippet": arrow, "acted": arrow} for t in stamps]
+        title = "Recurring sequence: " + ", ".join(tools)
+        out.append(_Candidate(
+            kind="tool_sequence", slug=slug, confidence=conf, events=events,
+            hints={"tool_names": tools, "shapes": shapes, "hits": c["count"],
+                   "sessions": c["sessions"], "first_seen": _iso_ts(e.get("first") or now),
+                   "last_seen": _iso_ts(e.get("last") or now), "slug": slug, "title": title},
+            signal_keys=[c["key"]],
+        ))
+    return out
+
+
+def _resolve_entities(storage: Any, tenant_id: str, hashes: set[str]) -> dict[str, tuple[str, str]]:
+    """Hash -> (category, name) for the entities that exist now (one bounded
+    SELECT; the names never went into signals.json)."""
+    if not hashes:
+        return {}
+    from .lifecycle.signals import entity_hash
+    out: dict[str, tuple[str, str]] = {}
+    try:
+        with storage.connection() as conn:
+            rows = conn.execute("SELECT category, name FROM entities WHERE tenant_id = ? LIMIT ?",
+                                (tenant_id, ENTITY_RESOLVE_LIMIT)).fetchall()
+    except Exception:
+        return {}
+    for r in rows:
+        h = entity_hash(tenant_id, r[0], r[1])
+        if h in hashes:
+            out[h] = (r[0], r[1])
+    return out
+
+
+def _detect_correction_loop(signals: dict[str, Any], storage: Any, tenant_id: str, now: float
+                            ) -> list[_Candidate]:
+    """``correction_loop``: one entity written 3 or more times in one session
+    spanning at least 10 minutes (a shorter burst is the save procedure at
+    work), or deleted / archived and written again within 24 hours."""
+    from .lifecycle.signals import OP_NAMES
+    writes = (signals or {}).get("entity_writes") or {}
+    hits: dict[str, dict[str, Any]] = {}
+    for h, rows in writes.items():
+        rows = sorted(rows, key=lambda r: r[1])
+        sets = [r for r in rows if r[0] == "s"]
+        by_session: dict[str, list[float]] = defaultdict(list)
+        for r in sets:
+            by_session[r[2]].append(r[1])
+        loop_session = None
+        for s8, ts in by_session.items():
+            if len(ts) >= LOOP_MIN_REWRITES and max(ts) - min(ts) >= LOOP_MIN_SPAN_SECONDS:
+                if loop_session is None or len(ts) > len(by_session[loop_session]):
+                    loop_session = s8
+        recreated = any(r[0] in ("d", "a") and any(0 < w[1] - r[1] <= LOOP_RECREATE_SECONDS for w in sets)
+                        for r in rows)
+        if loop_session is None and not recreated:
+            continue
+        hits[h] = {"rows": rows, "sets": sets, "loop_session": loop_session,
+                   "by_session": by_session, "recreated": recreated,
+                   "sessions": len({r[2] for r in rows})}
+    if not hits:
+        return []
+    names = _resolve_entities(storage, tenant_id, set(hits))
+    out: list[_Candidate] = []
+    for h, info in hits.items():
+        resolved = names.get(h)
+        label = f"{resolved[0]}/{resolved[1]}" if resolved else None
+        slug = _safe_slug(f"fix-{resolved[0]}-{resolved[1]}") if resolved else f"fix-{h[:8]}"
+        conf = 0.75 if info["sessions"] >= 2 else 0.65
+        conf = round(min(0.85, conf), 2)
+        events = []
+        for op, ts, _s8 in info["rows"][-20:]:
+            snip = f"{OP_NAMES.get(op, 'set_entity')} {label}" if label else \
+                f"{OP_NAMES.get(op, 'set_entity')} (removed entity)"
+            events.append({"id": None, "ts": _iso_ts(ts), "snippet": snip, "acted": snip})
+        loop = info["loop_session"]
+        in_loop = sorted(info["by_session"][loop]) if loop is not None else []
+        title = f"Recording {label}" if label else "Recording a removed entity"
+        out.append(_Candidate(
+            kind="correction_loop", slug=slug, confidence=conf, events=events,
+            hints={"entity": label or REMOVED_ENTITY, "rewrites": len(info["sets"]),
+                   "rewrites_in_one_session": len(in_loop),
+                   "loop_day": _iso_ts(in_loop[0])[:10] if in_loop else None,
+                   "deleted_then_recreated": bool(info["recreated"]), "sessions": info["sessions"],
+                   "first_seen": _iso_ts(info["rows"][0][1]), "last_seen": _iso_ts(info["rows"][-1][1]),
+                   "slug": slug, "title": title},
+            signal_keys=[h],
+        ))
+    return out
+
+
+def _signal_body(kind: str, events: list[dict[str, Any]], hints: dict[str, Any], title: str) -> str:
+    """The local-deterministic bodies of the two signal kinds (copy DRAFT,
+    JANUS reviews before 0.10 ships)."""
+    lines = [f"# {title}", ""]
+    n = len(events)
+    if kind == "tool_sequence":
+        tools = list(hints.get("tool_names") or [])
+        arrow = " -> ".join(tools)
+        sessions = int(hints.get("sessions") or 1)
+        where = "in one session" if sessions <= 1 else f"across {sessions} sessions"
+        since = str(hints.get("first_seen") or "?")[:10]
+        lines += [f"_Auto-detected from {n} recorded occurrences of one tool sequence._", "",
+                  "## Pattern", "",
+                  f"Recurring tool sequence: `{arrow}`, seen {hints.get('hits', n)} times {where} "
+                  f"since {since}. The arguments had the same shape each time.", ""]
+    else:
+        entity = hints.get("entity") or REMOVED_ENTITY
+        shown = f"`{entity}`" if entity != REMOVED_ENTITY else entity
+        lead = "The entity " + shown if entity != REMOVED_ENTITY else "An entity (" + entity + ")"
+        parts = []
+        k = int(hints.get("rewrites_in_one_session") or 0)
+        total = int(hints.get("rewrites") or 0)
+        if k:
+            more = total - k
+            parts.append(f"{lead} was rewritten {k} times in one session on {hints.get('loop_day')}"
+                         + (f", and {more} more {'time' if more == 1 else 'times'} since." if more > 0 else "."))
+        if hints.get("deleted_then_recreated"):
+            parts.append(("It" if parts else lead) + " was removed and written again within a day.")
+        lines += [f"_Auto-detected from {n} recorded writes to one entity._", "", "## Pattern", "",
+                  " ".join(parts) + " A short checklist for how this entity is recorded would save "
+                  "the rewrites.", ""]
+    lines += ["## Evidence", ""]
+    for ev in events[-5:]:
+        lines.append(f"- `{ev.get('ts') or '?'}`: {ev.get('snippet') or _short_event_snippet(ev)}")
+    if n > 5:
+        lines.append(f"- _and {n - 5} earlier occurrences_")
+    lines += ["", "## Suggested skill", ""]
+    if kind == "tool_sequence":
+        for i, t in enumerate(hints.get("tool_names") or [], 1):
+            lines.append(f"{i}. {t}")
+        lines += ["", "Fill in what each step checks; the sequence is the skeleton, you know the intent."]
+    else:
+        lines += ["1. What to check before writing this entity.",
+                  "2. What the entry must contain.",
+                  "3. When to archive it instead of rewriting it."]
+    return "\n".join(lines)
 
 
 # ======================================================================

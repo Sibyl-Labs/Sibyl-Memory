@@ -16,6 +16,7 @@ Design notes:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -27,6 +28,8 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 from .exceptions import SchemaError, StorageError
+
+_log = logging.getLogger("sibyl_memory_client.storage")
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
@@ -453,6 +456,14 @@ class Storage:
             # exactly the span a concurrent opener can be blocked for, then put
             # it back so the ordinary read path keeps failing fast.
             conn.execute(f"PRAGMA busy_timeout = {int(_MIGRATION_BUSY_TIMEOUT_MS)}")
+            # v6 (spec tiered-retrieval 2.B): on a PRE-v6 store, create
+            # memory_links and copy entity_relations into it in ONE transaction,
+            # BEFORE the schema script (which would otherwise create the table
+            # empty). The table's existence is then the crash-atomic "copied"
+            # marker: a crash rolls back both, and the next open retries; a
+            # completed copy never re-runs, so an unlinked migrated edge is not
+            # resurrected. Runs under the widened busy timeout above.
+            self._migrate_links_v6()
             try:
                 conn.executescript(sql)
             except sqlite3.Error as e:
@@ -466,6 +477,10 @@ class Storage:
                     # every distro build do, and it is unconditional from 3.38.
                     recovery="Check disk space and file permissions on the store, then retry.",
                 ) from e
+        # v6 identity columns (edge stamps, updated_at, adoption links_audit):
+        # additive ALTERs + stamp backfill for stores created before they
+        # shipped, in ONE transaction (crash-atomic; re-checked under the lock).
+        self._migrate_links_identity()
         # Run migrations that need imperative work beyond CREATE IF NOT EXISTS,
         # still under the widened timeout, then restore the default on every
         # connection this Storage holds.
@@ -474,6 +489,42 @@ class Storage:
         finally:
             with self.connection() as conn:
                 conn.execute(f"PRAGMA busy_timeout = {int(_BUSY_TIMEOUT_MS)}")
+
+    def _migrate_links_v6(self) -> None:
+        from . import _links
+        with self.connection() as conn:
+            if not _links.needs_v6_migration(conn):
+                return
+        try:
+            with self.transaction() as conn:
+                if _links.needs_v6_migration(conn):   # re-check under the write lock
+                    receipt = _links.apply_v6_migration(conn)
+                    if isinstance(receipt, dict):
+                        _log.info("memory_links (v6) migration receipt: %s",
+                                  json.dumps(receipt, sort_keys=True))
+        except (sqlite3.Error, StorageError) as e:
+            raise SchemaError(
+                f"memory_links (v6) migration failed: {type(e).__name__}",
+                recovery="Nothing was changed (the migration is one transaction). Check disk "
+                         "space and file permissions on the store, then retry.",
+            ) from e
+
+    def _migrate_links_identity(self) -> None:
+        from . import _links
+        with self.connection() as conn:
+            if not _links.needs_identity_columns(conn):
+                return
+        try:
+            with self.transaction() as conn:
+                if _links.needs_identity_columns(conn):
+                    n = _links.apply_identity_columns(conn)
+                    _log.info("memory_links identity columns added; %d edge sides stamped", n)
+        except (sqlite3.Error, StorageError) as e:
+            raise SchemaError(
+                f"memory_links identity-column migration failed: {type(e).__name__}",
+                recovery="Nothing was changed (the migration is one transaction). Check disk "
+                         "space and file permissions on the store, then retry.",
+            ) from e
 
     def _migrate_if_needed(self) -> None:
         """Run any pending schema migrations + guarantee the FTS index is built.
@@ -719,7 +770,7 @@ class Storage:
         """
         allowed = {
             "entities", "state_documents", "journal_events",
-            "reference_documents", "archived_entities",
+            "reference_documents", "archived_entities", "memory_links",
         }
         if table not in allowed:
             raise StorageError(

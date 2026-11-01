@@ -46,14 +46,18 @@ lexicon are defaults validated against the synthetic multi-cluster scale test
 (tests/test_anchor_resolver_2026_06_06.py) + the LongMemEval retrieval diagnostic;
 re-validate if corpus structure changes.
 
-Uses only the public MemoryClient surface (search / list_entities), so it adds
-no coupling to client internals.
+Stage 1 uses the client's ids-only recall primitives when present
+(``_recall_token`` / ``_load_rows`` / ``_hydrate_hits``, 2.D scale fixes,
+2026-10-22) and falls back to the public ``search()`` surface otherwise, so a
+duck-typed client keeps working unchanged.
 """
 from __future__ import annotations
 import json
 import math
+import os
 import re
 
+from . import _flags
 from .verdicts import (
     GateCause,
     GateCounters,
@@ -325,6 +329,58 @@ _PREP_RE = re.compile(
     r'\b(draft|triage|forecast|planning|proposed|tentative|pending|agenda|'
     r'scheduled|rehearsal|sample|option|wip|follow-?up)\b|work in progress')
 
+# --- prep-gate prefilter (2.D latency fix, 2026-10-22) -------------------------
+# On a terminal query every candidate reaches the prep gate, and at K = 5,000
+# per token that is tens of thousands of rows whose bodies would be decoded and
+# re-serialised just to learn that most of them carry no prep marker at all.
+# `_PREP_FTS_QUERY` asks the FTS index (rowids only) which rows COULD match
+# `_PREP_RE`; only those are decoded and run through `_pure_prep`, every other
+# candidate gets "" (not pure prep), which is what the regex would have said.
+# It is a SUPERSET by construction, so the gate's result is unchanged:
+#   * each marker as a word (porter-stemmed like the index: "planning" ->
+#     "plan") AND as a prefix ("pendingé" indexes as "pending", "draft中" as
+#     "draft中"; the regex sees "\\u..." after the word, a word boundary);
+#   * `"in progress"*` for the unbounded "work in progress" alternative;
+#   * `u00*` for rows written with \\u00XX escapes (json.dumps decodes them,
+#     the index sees "u0064raft");
+#   * the tails of markers that follow a literal TAB / CR / FF in plain
+#     reference text (json.dumps turns TAB+"riage" into "\\triage", which the
+#     regex reads as the word "triage"; the index sees "riage").
+# Reference rows whose metadata may carry `status` bypass the prefilter (the
+# gate reads the status, which the index does not hold). The property test
+# tests/test_scale_latency_2026_10_22.py pins the superset against _PREP_RE;
+# change both together.
+_PREP_MARKERS = ("draft", "triage", "forecast", "planning", "proposed",
+                 "tentative", "pending", "agenda", "scheduled", "rehearsal",
+                 "sample", "option", "wip", "follow", "followup")
+_PREP_CTRL_TAILS = ("riage", "entative", "ehearsal", "orecast", "ollow")
+_PREP_FTS_QUERY = " OR ".join(
+    [f"{m} OR {m}*" for m in _PREP_MARKERS]
+    + ['"in progress"*', "u00*"]
+    + [f"{t}*" for t in _PREP_CTRL_TAILS])
+
+# --- terminal-side pre-screen for reference documents (V1 panel, 2026-10-22) --
+# The prep gate reads the HEAD (first 2,000 chars) of a reference document for
+# its PREP markers (D4: long documents mention "draft" almost always), but the
+# TERM side reads the WHOLE document: "Draft budget ... approved by the board"
+# with the decision at char 10,000 is a decision record, and 0.9.0 kept it
+# (NOCTURNE exp1 EXP4). Only rows whose head is pure prep need the full text;
+# `_TERM_FTS_QUERY` asks the FTS index (rowids only) which of them COULD match
+# `_TERM_RE` anywhere, and only those bodies are read and run through the
+# regex (lookbehind included). A SUPERSET by construction, erring toward
+# keeping: each marker as a word and as a prefix (porter stems only shorten a
+# term, which widens the match), plus the tails a JSON escape completes
+# ("\f" + "inal" serialises to "\\final", which the regex reads as "final";
+# "\b" + "ound", "\r" + "esolved"). Any FTS error keeps every row (exact path).
+# tests/test_search_fixes_v1_2026_10_22.py pins the superset against _TERM_RE.
+_TERM_MARKERS = ("final", "finaliz", "finalized", "resolved", "approved",
+                 "published", "closed", "sent", "emailed", "decision", "signed",
+                 "bound")
+_TERM_CTRL_TAILS = ("inal", "ound", "esolved")
+_TERM_FTS_QUERY = " OR ".join(
+    [f"{m} OR {m}*" for m in _TERM_MARKERS]
+    + [f"{t}*" for t in _TERM_CTRL_TAILS])
+
 # --- anchor-first resolver constants (see CAVEAT in the module docstring) ---
 # Replaces the 24-record bench tuning (SELECTIVE_CUTOFF_FRAC = 0.15) that
 # collapsed at scale. The anchor is defined RELATIVE to the rarest query term,
@@ -332,10 +388,66 @@ _PREP_RE = re.compile(
 ANCHOR_BAND = 2.0              # a term is an "anchor" if df <= ANCHOR_BAND * rarest-term df
 COVERAGE_THRESHOLD = 0.45      # hard coverage floor: drop candidates below this
 ANCHOR_HYBRID_HI = 0.65        # a non-anchor candidate is kept only if coverage >= this
-_PER_TOKEN_LIMIT = 200         # recall depth per token
+_PER_TOKEN_LIMIT = 200         # recall depth floor per token (K at N <= 4,000)
+
+# --- recall depth scales with the corpus (2.D D1, 2026-10-22) ----------------
+# A fixed 200-row top-K per token capped df at 200, so at 42k rows IDF was
+# identical (6.34) for every common token and coverage degraded to "fraction of
+# tokens whose top-200 holds this row": gold best coverage 0.21 at K=200 (5/55
+# questions cleared the 0.45 floor), 0.49 at K=2,000 (30/55), measured on the
+# 42k-doc bench store (spec 1.4). K now scales with the corpus:
+#     K = clamp(200, ceil(RECALL_FRACTION * corpus_n), RECALL_DEPTH_MAX)
+# At corpus_n <= 4,000 K is 200, exactly the depth the gates were tuned on. A
+# gold row absent from a token's top-K still counts as NOT matching that token,
+# so the abstain/precision character is unchanged: no OR fallback, no floor
+# change. df is no longer len(top-K): it is the true per-tier COUNT (see
+# MemoryClient._recall_token). Both constants are env-overridable for
+# diagnostics only; never tune them on a benchmark (spec 5, "benchmark-chasing").
+def _env_num(name: str, default, cast):
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+RECALL_FRACTION = _env_num("SIBYL_MEMORY_RECALL_FRACTION", 0.05, float)
+RECALL_DEPTH_MAX = _env_num("SIBYL_MEMORY_RECALL_DEPTH_MAX", 5_000, int)
+
+
+def recall_depth(corpus_n: int) -> int:
+    """Per-token recall depth K for a corpus of ``corpus_n`` rows."""
+    try:
+        n = max(0, int(corpus_n or 0))
+    except (TypeError, ValueError):
+        n = 0
+    hi = max(_PER_TOKEN_LIMIT, int(RECALL_DEPTH_MAX))
+    return max(_PER_TOKEN_LIMIT, min(hi, math.ceil(float(RECALL_FRACTION) * n)))
+
 # content tiers beat the contentless journal tier at equal coverage (cross-tier
 # BM25 scores are not comparable; tester report)
-_TIER_PRIORITY = {"entity": 0, "state": 0, "reference": 0, "journal": 1}
+#
+# 2.C (R3, operator decision 2026-10-22): at EQUAL coverage the curated tiers
+# (entity, state) outrank the reference document they came from, and the
+# document outranks the journal. Coverage still sorts first, so a phrase that
+# lives only in a document still surfaces the document. client._TIER_RANK holds
+# the same values for the raw path (a test pins the equality).
+_TIER_PRIORITY = {"entity": 0, "state": 0, "reference": 1, "journal": 2}
+
+# 2.C search scope: "all" (default, every tier) or "graph" (entity + state, the
+# fast "find the hub" call). Under "graph" stage 1, df, the corpus count (IDF and
+# recall depth) are all restricted to those tiers, so the anchor band is computed
+# on the same population as the candidates.
+SCOPES = {"all": None, "graph": ("entity", "state")}
+_SCOPE_TABLES = {"entity": "entities", "state": "state_documents",
+                 "reference": "reference_documents", "journal": "journal_events"}
+
+# stage-0 `match` tags (hit field)
+MATCH_NAME = "name"
+MATCH_NAME_PARTIAL = "name_partial"
+MATCH_TEXT = "text"
 
 
 def _significant_tokens(query: str):
@@ -401,7 +513,7 @@ _MAX_FANOUT_TOKENS = 24
 _CORPUS_TIERS = ("entities", "state_documents", "reference_documents", "journal_events")
 
 
-def _corpus_count(client) -> int:
+def _corpus_count(client, tiers: tuple[str, ...] | None = None) -> int:
     """Cheap corpus size for IDF weighting (CORE-6/MH-3, cross-tier since #27).
 
     Prefer the client's storage COUNT(*) over the old
@@ -429,11 +541,35 @@ def _corpus_count(client) -> int:
             tenant = None
     if storage is not None and tenant is not None and hasattr(storage, "count_rows"):
         try:
-            return sum(storage.count_rows(tier, tenant) for tier in _CORPUS_TIERS)
+            tables = (_CORPUS_TIERS if tiers is None
+                      else tuple(_SCOPE_TABLES[t] for t in tiers))
+            return sum(storage.count_rows(tier, tenant) for tier in tables)
         except Exception:
             pass
     # Fallback: bounded list (still cheaper than the old 100000 with the clamp).
     return len(client.list_entities(limit=10_000))
+
+
+# Every _TERM_RE match starts where one of these literals starts ("finaliz\w*"
+# starts with "final"). `_term_anywhere` finds them at C speed and runs the
+# anchored regex (lookbehind and word boundaries included) only there.
+_TERM_LITERALS = ("final", "resolved", "approved", "published", "closed", "sent",
+                  "emailed", "decision", "signed", "bound")
+
+
+def _term_anywhere(text: str) -> bool:
+    """``bool(_TERM_RE.search(text))``, about 5x faster on long documents
+    (the whole-document TERM check reads up to 1 MiB per row). Equivalence is
+    pinned by tests/test_search_fixes_v1_2026_10_22.py."""
+    match = _TERM_RE.match
+    find = text.find
+    for lit in _TERM_LITERALS:
+        i = find(lit)
+        while i != -1:
+            if match(text, i):
+                return True
+            i = find(lit, i + 1)
+    return False
 
 
 def _pure_prep(body_lower: str) -> bool:
@@ -441,9 +577,45 @@ def _pure_prep(body_lower: str) -> bool:
     return bool(_PREP_RE.search(body_lower)) and not bool(_TERM_RE.search(body_lower))
 
 
+def _tag_text(row):
+    """A gated-engine row: ``match: "text"`` (new dict; shadow rows are shared)."""
+    if not isinstance(row, dict):
+        return row
+    out = dict(row)
+    out.setdefault("match", MATCH_TEXT)
+    return out
+
+
+def _merge_stage0(client, name_hits, rows, query: str, limit: int):
+    """Stage-0 rows first (hydrated here), then the engine's rows minus any row
+    stage 0 already placed, cut to ``limit``. A name row deleted between the
+    lookup and hydration is dropped, never invented."""
+    hydrate = getattr(client, "_hydrate_hits", None)
+    terms = list(dict.fromkeys(_significant_tokens(query)))
+    if hydrate is not None:
+        hyd = hydrate([({k: v for k, v in h.items() if k != "match"}, terms)
+                       for h in name_hits])
+    else:
+        hyd = [dict(h) for h in name_hits]
+    tags = {(h["tier"], h["key"], h["category"]): h["match"] for h in name_hits}
+    named = []
+    for h in hyd:
+        ident = (h.get("tier"), h.get("key"), h.get("category"))
+        out = {k: v for k, v in h.items() if k != "_rid"}
+        out["match"] = tags.get(ident, MATCH_NAME_PARTIAL)
+        named.append(out)
+    seen = {(h["tier"], h["key"], h["category"]) for h in named}
+    text = [_tag_text(r) for r in rows
+            if not (isinstance(r, dict)
+                    and (r.get("tier"), r.get("key"), r.get("category")) in seen)]
+    return (named + text)[:max(int(limit), 0)]
+
+
 def multi_record_search(client, query: str, *, limit: int = 10,
                          corpus_n: int | None = None,
-                         diagnostics: dict | None = None) -> SearchResults:
+                         diagnostics: dict | None = None,
+                         scope: str = "all",
+                         with_links: bool = False) -> SearchResults:
     """Two-stage retrieve-then-verify search over a MemoryClient.
 
     Returns a ranked list of hit dicts in the SAME shape client.search() returns
@@ -453,6 +625,32 @@ def multi_record_search(client, query: str, *, limit: int = 10,
     always says why.
 
     For exact single-entity lookups, prefer client.recall() / get_entity().
+
+    TIER-AWARE SEARCH (spec tiered-retrieval 2.C, R3)
+    -------------------------------------------------
+    Stage 0 (exact-name resolution) runs first: when the query IS an entity's
+    name (case-insensitive, ASCII fold), or ``<category>:<name>``, that entity
+    leads the result with ``match: "name"``, followed by up to three entities
+    whose NAME holds the query as a phrase (``match: "name_partial"``). Every
+    other row is ``match: "text"`` and passed the gates exactly as before.
+    Stage 0 never qualifies a row by body text, and it never overrides
+    ABSTAINED_ON. NEGATION_ABSTAIN has one exception (operator decision,
+    2026-10-22): when the whole query is exactly an entity's name (or
+    ``<category>:<name>``), those ``match: "name"`` rows are returned and
+    nothing else, so "Not Invented Here" is reachable; a partial name or any
+    other negated query still abstains.
+
+    ``scope="graph"`` runs the whole gated engine (recall, df, corpus count)
+    over the entity + state tiers only; ``"all"`` (default) over all four.
+
+    At equal coverage entity/state rows sort ahead of reference rows, which
+    sort ahead of journal rows (``_TIER_PRIORITY``).
+
+    Every returned hit also carries ``match``, ``chars`` (full surfaced body
+    length) and ``title`` (reference ``metadata.title``, else None), and with
+    ``with_links=True`` a ``links`` edge summary for the returned hits, from
+    one batch statement. The verdict gains ``tiers_hit``, ``name_matches``,
+    ``recall_depth`` and ``scope`` (additive).
 
     THE VERDICT CONTRACT (stage 3, 2026-08-31)
     ------------------------------------------
@@ -508,10 +706,22 @@ def multi_record_search(client, query: str, *, limit: int = 10,
     # --- verdict bookkeeping ------------------------------------------------
     # Numeric / enum only. Nothing here ever holds stored-record content, so the
     # envelope composes with the MCP MH-1 fence instead of routing around it.
+    if scope not in SCOPES:
+        from .exceptions import ValidationError
+        raise ValidationError("scope must be 'all' or 'graph'")
+    scope_tiers = SCOPES[scope]
     gates = GateCounters()
+    depth = None                    # verdict.recall_depth: set once stage 1 runs
+    # Stage 0 (2.C): entities this query NAMES, ids-only, best first. Taken
+    # before tokenising, because a name made of short words or stopwords
+    # ("The Who") has no significant token and would exit below with nothing.
+    name_finder = getattr(client, "_name_matches", None)
+    name_hits = name_finder(query) if name_finder is not None else []
     tokens_total = 0
     tokens_scored = 0
     candidates = 0
+    ranked_n = 0        # ranked fallback: rows appended at the final exit
+    gated_rows = 0      # ranked fallback: rows the gated engine returned before that
     dropped_function: list = []
     negation_dropped: list = []
 
@@ -535,8 +745,43 @@ def multi_record_search(client, query: str, *, limit: int = 10,
         # diagnostics dict keeps reporting exactly what it reported before.
         legacy_code = verdict.code
         legacy_tokens = list(verdict.tokens)
+        # Stage 0 joins here, at the single exit, so every path (gated, honest
+        # miss, nothing-to-search) gets it the same way, and an ABSTENTION
+        # never does: the abstain gates win over a name match, except an exact
+        # whole-query name on NEGATION_ABSTAIN (below).
+        if name_hits and verdict.code not in (VerdictCode.ABSTAINED_ON,
+                                              VerdictCode.NEGATION_ABSTAIN):
+            rows = _merge_stage0(client, name_hits, rows, query, limit)
+        elif (verdict.code is VerdictCode.NEGATION_ABSTAIN
+              and any(h.get("match") == MATCH_NAME for h in name_hits)):
+            # Operator decision 2 (V1 panel, 2026-10-22): the query IS an
+            # entity's name ("Not Invented Here", or `project:Not Invented
+            # Here`), so the negation word is part of the name, not a negated
+            # question. Only the exact `match: "name"` rows survive; partial
+            # names and text rows still abstain with the rest of the query.
+            rows = _merge_stage0(
+                client, [h for h in name_hits if h.get("match") == MATCH_NAME],
+                [], query, limit)
+        else:
+            rows = [_tag_text(r) for r in rows]
+        decorate = getattr(client, "_decorate_hits", None)
+        deco_info: dict = {}
+        if decorate is not None and rows:
+            rows = decorate(rows, with_links=with_links, info=deco_info)
+        verdict.recall_depth = depth
+        verdict.scope = scope
         out = stamp(rows, verdict)
         v = out.verdict
+        v.links_ms = deco_info.get("links_ms")
+        v.decoration_note = deco_info.get("note")
+        if ranked_n:
+            # count only the ranked rows that survived the stage-0 merge cut
+            v.ranked_appended = sum(1 for r in out if isinstance(r, dict) and r.get("match") == "ranked")
+            if gated_rows == 0:
+                v.code = VerdictCode.RANKED_FALLBACK
+        v.name_matches = sum(
+            1 for r in out
+            if isinstance(r, dict) and r.get("match") in (MATCH_NAME, MATCH_NAME_PARTIAL))
         # An empty result against a store with nothing in it is EMPTY_STORE
         # whatever the local cause was: "one word blocked your query" is useless
         # advice when there is nothing to block. Probed across all four
@@ -595,15 +840,28 @@ def multi_record_search(client, query: str, *, limit: int = 10,
     tokens_total = len(original_toks)   # verdict: the pre-drop working set
     tokens_scored = len(original_toks)  # revised down as tokens are dropped
     if corpus_n is None:
-        corpus_n = _corpus_count(client)  # CORE-6/MH-3: cheap COUNT(*), not full scan
+        # CORE-6/MH-3: cheap COUNT(*), not full scan. 2.C: over the scope's tiers.
+        corpus_n = _corpus_count(client, scope_tiers)
 
     terminal_q = bool(set(toks) & _TERMINAL_Q)
 
+    # Stage 1 (2.D D1): ids only. `_recall_token` returns the same candidate
+    # rows `search(t, limit=K)` would, minus body and snippet, plus TRUE df
+    # (per-tier COUNT). Bodies are read once, after the gates, for the final
+    # rows only; the prep gate reads its text in one batch on terminal queries.
+    # A client without the primitive (an older or duck-typed client) keeps the
+    # 0.9.0 path: `search()` per token, df = len(hits).
+    depth = recall_depth(corpus_n)
+    recall = getattr(client, "_recall_token", None)
     cand: dict = {}
     df: dict = {}
+    tier_kw = {} if scope_tiers is None else {"tiers": scope_tiers}
     for t in toks:
-        hits = client.search(t, limit=_PER_TOKEN_LIMIT)
-        df[t] = len(hits)
+        if recall is not None:
+            hits, df[t] = recall(t, limit=depth, **tier_kw)
+        else:
+            hits = client.search(t, limit=depth, **tier_kw)
+            df[t] = len(hits)
         if df[t] == 0:
             # N1: abstain only on a CONTENT-shaped zero-df term (the injection /
             # "rejected" class). A FUNCTION-shaped zero-df token ("kiedy",
@@ -624,20 +882,47 @@ def multi_record_search(client, query: str, *, limit: int = 10,
                 candidates = None
                 return _finish([], abstained_on_verdict(t))
             continue  # accumulate no candidates for a droppable zero-df token
+        cand_get = cand.get   # hot loop: up to K rows per token (2.D latency)
         for h in hits:
-            key = (h.get("tier"), h.get("key"), h.get("category"))
-            e = cand.get(key)
+            hg = h.get
+            key = (hg("tier"), hg("key"), hg("category"))
+            e = cand_get(key)
             if e is None:
-                # CORE-6/MH-3: only serialize+lower the body when a terminal-state
-                # query will actually consult it (the prep/terminal gate). For
-                # non-terminal queries the body string is never read, so skip the
-                # per-hit json.dumps entirely.
-                body_lower = json.dumps(h.get("body")).lower() if terminal_q else ""
-                e = cand[key] = {"m": set(), "best": 0.0, "hit": h, "body": body_lower}
-            e["m"].add(t)
-            rank = h.get("rank", 0.0) or 0.0
+                # The FIRST hit seen for a row is kept, as in 0.9.0 (its rank is
+                # the hit's `rank`). `strict` collects the tokens this row
+                # matched in FTS (not via the shadow), for the final snippet.
+                e = cand[key] = {"m": {t}, "best": 0.0, "hit": h, "body": "",
+                                 "strict": [t] if "_rid" in h else []}
+            else:
+                e["m"].add(t)
+                if "_rid" in h and t not in e["strict"]:
+                    e["strict"].append(t)
+            rank = hg("rank", 0.0) or 0.0
             if rank < e["best"]:
                 e["best"] = rank
+
+    if terminal_q and cand:
+        # CORE-6/MH-3 + D1/D4: the prep/terminal gate is the FIRST gate, so on a
+        # terminal query every candidate reaches it (keeping its place keeps the
+        # verdict's gate counters exact). Its text is loaded in ONE batch here,
+        # never per token: json.dumps(<decoded body>).lower() for entity/state/
+        # journal (the 0.9.0 gate input, byte for byte) and, for reference rows,
+        # metadata.status or the first 2,000 chars (D4), except that a head
+        # which is pure prep is cleared ("") when the WHOLE document carries a
+        # terminal marker (V1 panel fix: TERM side whole-document). Rows that came back
+        # already hydrated (shadow) are serialised from the hit as before.
+        loader = getattr(client, "_load_rows", None)
+        loaded = (loader([e["hit"] for e in cand.values()], prep_only=True)
+                  if loader is not None else {})
+        # (iterates .items(), not .values(): `for e in cand.values()` is
+        # reserved for THE verify loop, which the verdict-contract test pins.)
+        for _ident, e in cand.items():
+            h = e["hit"]
+            if "_rid" in h:
+                row = loaded.get((h.get("tier"), h["_rid"]))
+                e["body"] = row["prep"] if row else ""
+            else:
+                e["body"] = json.dumps(h.get("body")).lower()
 
     # N1 (df==0) + N4 (Polish-language eval, 2026-08-18): drop FUNCTION-shaped tokens
     # BEFORE idf / min_df / anchor_cut — at ANY df, not only df==0. N1 alone left
@@ -758,9 +1043,20 @@ def multi_record_search(client, query: str, *, limit: int = 10,
             gates.record(GateCause.ANCHOR_GATE)
             continue
         tier = e["hit"].get("tier")
-        scored.append((e["hit"], cov, _TIER_PRIORITY.get(tier, 0), e["best"]))
+        scored.append((e, cov, _TIER_PRIORITY.get(tier, 0), e["best"]))
     scored.sort(key=lambda x: (-x[1], x[2], x[3]))
-    result = [h for h, _cov, _tp, _best in scored[:limit]]
+    top = [e for e, _cov, _tp, _best in scored[:limit]]
+    hydrate = getattr(client, "_hydrate_hits", None)
+    if hydrate is not None and any("_rid" in e["hit"] for e in top):
+        # D1/D3: bodies are decoded here, once, for the final rows only. The
+        # snippet is centred on the densest match of the tokens this row
+        # matched, rarest first (SNIPPET_TOKENS long).
+        result = hydrate([
+            (e["hit"], sorted(e["strict"], key=lambda t: (-idf.get(t, 0.0), t)))
+            for e in top
+        ])
+    else:
+        result = [e["hit"] for e in top]
 
     # The one exit that can be either outcome. Rows -> OK (stamp() sets it).
     # No rows -> GATED when a gate actually dropped something (with the dominant
@@ -774,6 +1070,17 @@ def multi_record_search(client, query: str, *, limit: int = 10,
     # (`safe_limit` clamps to >= 1) but reachable from any direct SDK call and
     # from `provider.search_multi_record(q, limit=0)`.
     dominant = gates.dominant()
+    ranked_n = 0
+    if (_flags.on("SIBYL_MEMORY_RANKED_FALLBACK") and len(result) < limit
+            and tokens_scored >= _flags.num("SIBYL_MEMORY_RANKED_MIN_TOKENS", 3)):
+        ranked_fn = getattr(client, "_ranked_or_rows", None)
+        if ranked_fn is not None:
+            have = {(h.get("tier"), h.get("key"), h.get("category")) for h in result}
+            gated_rows = len(result)
+            extra = ranked_fn(toks, limit=limit - len(result), tiers=scope_tiers, exclude=have,
+                              exclude_categories=_flags.csv("SIBYL_MEMORY_RANKED_EXCLUDE_CATEGORIES"))
+            ranked_n = len(extra)
+            result = list(result) + extra
     if not scored and dominant is not None:
         return _finish(result, gated_verdict(dominant, gates))
     return _finish(result, no_match_verdict())

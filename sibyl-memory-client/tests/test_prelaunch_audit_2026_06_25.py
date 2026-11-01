@@ -605,6 +605,15 @@ def test_core6_multi_record_uses_count_not_full_scan(tmp_path: Path) -> None:
 
     c.list_entities = spy_list  # type: ignore[assignment]
     c.search = spy_search       # type: ignore[assignment]
+    # 2.D (2026-10-22): stage 1 recalls through `_recall_token` (ids-only twin
+    # of `search`); count it too so the fan-out bound stays meaningful.
+    orig_recall = c._recall_token
+
+    def spy_recall(q, *args, **kwargs):
+        search_calls.append(q)
+        return orig_recall(q, *args, **kwargs)
+
+    c._recall_token = spy_recall  # type: ignore[assignment]
 
     # A query with MANY significant tokens: fan-out must be capped.
     many = " ".join(f"tok{i}word" for i in range(60)) + " alpha0 beta gamma"

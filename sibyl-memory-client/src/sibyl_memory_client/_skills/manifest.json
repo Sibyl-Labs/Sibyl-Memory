@@ -4,12 +4,12 @@
       "sha256": "e86549b5c48762c5a4d68f95721d325f880bb6436f00b321e284211d90ca82aa"
     },
     "SAVE.md": {
-      "sha256": "fdae3328de7a3e17c5b1424387ce47723f417cabaf8e8f9df20a4765fa778598"
+      "sha256": "81d5eec55123e139ef0660db776d5ea9d9aed0b2f4652d48c5f9684d41d3c4f2"
     }
   },
   "upstream": {
     "DEBLOAT.md": "github.com/Sibyl-Labs/debloat SKILL.md v1.0.0 @ f0bf26d",
     "SAVE.md": "github.com/Sibyl-Labs/sibyl-save SKILL.md v1.0.0 @ 499a3fe"
   },
-  "version": "1.1.0"
+  "version": "1.2.0"
 }

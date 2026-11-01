@@ -393,3 +393,68 @@ CREATE INDEX IF NOT EXISTS tenant_adoptions_account
 
 INSERT OR IGNORE INTO sibyl_memory_schema_version (version, description)
 VALUES (5, 'sibyl-memory-client v5 (0.9.0). Adds tenant_adoptions: the local audit of moving pre-sign-in DEFAULT_TENANT rows into the signed-in account tenant (_adopt.py), written in the same transaction as the move. Additive; no existing table changes.');
+
+
+-- ============================================================================
+-- Schema v6 (spec tiered-retrieval 2.B) - memory_links: typed edges across tiers
+-- ============================================================================
+-- Edges between nodes addressed by BUSINESS KEYS (entity: category + name;
+-- reference: doc_key; state: document_key), so they survive archive_entity and
+-- re-creation, which id foreign keys with ON DELETE CASCADE would not. The
+-- category columns are NOT NULL: entity endpoints always carry a non-empty
+-- category and reference/state endpoints store '' (SQLite UNIQUE treats NULLs
+-- as distinct, so a NULL would defeat the uniqueness of reference/state edges);
+-- the CHECKs enforce (tier = 'entity') = (category <> '').
+-- These statements are ALSO the Python constant _links.V6_DDL (a test asserts
+-- the two are identical). A fresh store gets them here; a pre-v6 store gets
+-- them from Storage._ensure_schema in ONE transaction with the one-time copy of
+-- entity_relations rows, so the table's existence is the crash-atomic "copied"
+-- marker. from_entity_id / to_entity_id stamp entity endpoints with the row id
+-- the edge was written against (NULL for reference/state, or unknown); a key now
+-- held by another id reads stale (_links.STALE_SIDE_SQL). Stores created before
+-- the stamp get these columns by ALTER on open (_links.apply_identity_columns).
+-- entity_relations stays in place, unwritten (frozen), until R4. Nothing gates on
+-- the version-6 row below (another release may claim the same number).
+CREATE TABLE IF NOT EXISTS memory_links (
+  id            TEXT PRIMARY KEY,
+  tenant_id     TEXT NOT NULL,
+  from_tier     TEXT NOT NULL CHECK (from_tier IN ('entity','reference','state')),
+  from_category TEXT NOT NULL,
+  from_key      TEXT NOT NULL,
+  to_tier       TEXT NOT NULL CHECK (to_tier IN ('entity','reference','state')),
+  to_category   TEXT NOT NULL,
+  to_key        TEXT NOT NULL,
+  relation_type TEXT NOT NULL,
+  metadata      TEXT CHECK (metadata IS NULL OR json_valid(metadata)),
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  from_entity_id TEXT,
+  to_entity_id   TEXT,
+  updated_at    TEXT,
+  CHECK ((from_tier = 'entity') = (from_category <> '')),
+  CHECK ((to_tier = 'entity') = (to_category <> '')),
+  UNIQUE (tenant_id, from_tier, from_category, from_key, to_tier, to_category, to_key, relation_type)
+);
+
+CREATE INDEX IF NOT EXISTS memory_links_from
+  ON memory_links (tenant_id, from_tier, from_category, from_key, relation_type);
+
+CREATE INDEX IF NOT EXISTS memory_links_to
+  ON memory_links (tenant_id, to_tier, to_category, to_key, relation_type);
+
+CREATE INDEX IF NOT EXISTS memory_links_created
+  ON memory_links (tenant_id, created_at, id);
+
+INSERT OR IGNORE INTO sibyl_memory_schema_version (version, description)
+VALUES (6, 'sibyl-memory-client v6. Adds memory_links: typed, directed edges between entity / reference / state nodes keyed by business keys (link, unlink, neighbors, links_of, links= on set_entity and set_reference). Pre-v6 entity_relations rows are copied once, in the same transaction that creates the table; entity_relations stays, unwritten, until it is dropped in a later major release. Additive.');
+
+-- ============================================================================
+-- Stage-0 exact-name index (spec tiered-retrieval 2.B DDL / 2.C)
+-- ============================================================================
+-- multi_record_search's stage 0 resolves a query that IS an entity name with a
+-- parameterised `lower(name) = ?` equality (no MATCH syntax). This expression
+-- index makes that one probe, not a tenant scan. Idempotent and applied on
+-- every open like the rest of this file, so existing stores get it on their
+-- next open (one index build, no data change). Not part of _links.V6_DDL: it
+-- belongs to search, not to the memory_links migration transaction.
+CREATE INDEX IF NOT EXISTS entities_tenant_lname
+  ON entities (tenant_id, lower(name));

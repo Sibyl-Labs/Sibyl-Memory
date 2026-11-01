@@ -115,6 +115,8 @@ LOCK_FILENAME = "entitlement.lock"
 WRITE_OPS = frozenset({
     "set_entity", "set_state", "write_event", "set_reference", "delete_entity",
     "archive_entity", "learn", "accept_skill_proposal", "reject_skill_proposal",
+    "delete_reference",
+    "link", "unlink",
 })
 
 _B64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
