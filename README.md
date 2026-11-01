@@ -36,7 +36,7 @@ Five PyPI packages, one schema family, one architecture.
 
 `sibyl-memory-client` is a local-first agentic memory SDK. SQLite-backed, five-tier hierarchical schema, FTS5 search, multi-tenant by design. No vector database. No embedding model. No external retrieval service. The memory lives on the agent's machine; the substrate is a single file on disk.
 
-> **Privacy disclosure.** Your memory content never leaves the machine. The plugin talks to `api.sibyllabs.org` for these things only: activation (`sibyl init`); a daily account check-in that renews this computer's access (account id, this computer's sign-in token, plugin version, OS family; no memory content); a size check when a free account nears its cap (account id, sign-in token, the database's byte size and the proposed delta); and, unless you opt out with `SIBYL_MEMORY_TELEMETRY=0`, an aggregate count of memory operations. The size check and the count also carry this computer's signed access token (account id, tier, cap, device hash, account flags; no personal data). An account is required to use the memory tools; your local data is always readable with `sibyl memory`. Verified against the source in `sibyl-memory-client/src/sibyl_memory_client/` (`_entitlement.py`, `_capcheck.py`, `_heartbeat.py`).
+> **Privacy disclosure.** Your memory content never leaves the machine. The plugin talks to `api.sibyllabs.org` for these things only: activation (`sibyl init`); a daily account check-in that renews this computer's access (account id, this computer's sign-in token, plugin version, OS family; no memory content); a size check when a free account nears its cap (account id, sign-in token, the database's byte size and the proposed delta); and an aggregate count of memory operations (the MCP server and CLI send it unless you opt out with `SIBYL_MEMORY_TELEMETRY=0`; Hermes, since 0.6.0, only if you opt in with `SIBYL_MEMORY_TELEMETRY=1`). The size check and the count also carry this computer's signed access token (account id, tier, cap, device hash, account flags; no personal data). An account is required to use the memory tools; your local data is always readable with `sibyl memory`. Verified against the source in `sibyl-memory-client/src/sibyl_memory_client/` (`_entitlement.py`, `_capcheck.py`, `_heartbeat.py`).
 
 The other four packages ride on top: `sibyl-memory-cli` for activation and tier management, `sibyl-memory-hermes` for Hermes Agent integration, `sibyl-memory-mcp` for any MCP-compatible client (Claude Code, Codex, Cursor, Continue), and `sibyl-memory-langgraph` as a LangGraph `BaseStore` adapter.
 
@@ -98,9 +98,12 @@ For MCP (Claude Code, Codex, Cursor, Continue, ...):
 
 ```bash
 pip install sibyl-memory-mcp sibyl-memory-cli
-sibyl setup claude-code    # or: sibyl setup codex
-# other MCP clients: register a server named sibyl-memory with command sibyl-memory-mcp
+sibyl setup claude-code    # or: sibyl setup codex | cursor | grokbot
+sibyl doctor               # end-to-end check: start, list tools, save, recall, delete a test memory
+# other MCP clients: sibyl setup --print-config prints a ready mcpServers block
 ```
+
+The Hermes plugin-catalog package lives in `sibyl-memory-hermes/hermes-catalog/`; the catalog listing is pending.
 
 Full documentation at [docs.sibyllabs.org/memory](https://docs.sibyllabs.org/memory/).
 
@@ -191,6 +194,7 @@ once.
 | Automatic debloat | no | yes: `propose` by default; a file is trimmed by itself only after you run `sibyl debloat auto <file>` (that file at its path, never the same name elsewhere) |
 | Automatic save by active time: once early (after 5 memory writes or a compaction), then about every 60 minutes of active work, only when there is something to save, at most 8 a session and 12 a day (`sibyl autosave every <30-240>` or `sibyl autosave off`). Claude Code: the Stop hook asks your agent to run the save procedure headless (a scripted `claude -p` run is never asked); Cursor, Codex and other MCP hosts: a `notice` on the next tool result; Hermes: a note in the next prefetch. A session capsule (counts only) at compaction and session end. Each automatic save is one extra model turn that reads and writes memory | no | yes |
 | Skill proposals: Sibyl finds repeated work in your journal (locally, no network), names up to 3 at a session start at most once a day, and creates nothing without a yes (`/sibyl-save curate`, or `sibyl skills proposals accept <id>`, which writes the skill for Claude Code, Codex and Hermes) | no (`/sibyl-save` still offers skills when you run it) | yes |
+| Skill signals (0.10): Sibyl also notices a tool sequence your agent repeats (in Claude Code the whole workflow, for example `Read -> Edit -> Bash`; in Codex, Cursor and Hermes the memory tools only) and an entity rewritten again and again, and proposes a skill for it the same way. It keeps one small local file, `~/.sibyl-memory/signals.json`: tool and MCP server names in plain text, argument names and entity names only as hashes, never a value, never a prompt or a file path; nothing leaves your computer. `sibyl skills signals` shows its size, `clear` deletes it, `off` stops it. In Claude Code a proposal from the workflow appears at the next session start at the earliest | no (nothing is recorded) | yes |
 
 The procedures are vendored, with attribution, from the public MIT repos
 [sibyl-save](https://github.com/Sibyl-Labs/sibyl-save) and

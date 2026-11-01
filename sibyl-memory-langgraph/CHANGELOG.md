@@ -4,6 +4,12 @@ All notable changes to `sibyl-memory-langgraph` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## Unreleased (paid tier R2, 2026-09-29)
+
+### Unchanged
+- No code change and no publish in the 0.10 family: a `SibylStore` records no skill signals.
+  README: one sentence on where the signals are recorded.
+
 ## [0.3.0] - Unreleased
 
 Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.3).
