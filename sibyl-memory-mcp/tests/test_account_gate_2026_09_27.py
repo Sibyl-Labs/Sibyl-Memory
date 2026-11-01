@@ -30,6 +30,16 @@ TOOLS = {
     "memory_set_state": {"key": "k", "body": {"x": 1}},
     "memory_get_state": {"key": "k"},
     "memory_record_event": {"kind": "decision", "body": {"x": 1}},
+    "memory_set_reference": {"key": "doc/k", "body": "text"},
+    "memory_get_reference": {"key": "doc/k"},
+    "memory_list_references": {},
+    "memory_delete_reference": {"key": "doc/k"},
+    # v6 relations (spec tiered-retrieval 2.B): gated like every memory tool.
+    "memory_link": {"from_node": {"tier": "entity", "category": "c", "key": "n"},
+                    "to_node": {"tier": "state", "key": "k"}, "relation": "about"},
+    "memory_unlink": {"from_node": {"tier": "entity", "category": "c", "key": "n"},
+                      "to_node": {"tier": "state", "key": "k"}},
+    "memory_neighbors": {"node": {"tier": "entity", "category": "c", "key": "n"}},
 }
 
 

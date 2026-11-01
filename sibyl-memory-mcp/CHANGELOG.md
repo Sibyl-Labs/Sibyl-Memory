@@ -4,6 +4,197 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.4.0] - 2026-10-31
+
+One release: the paid tier R2 line, the shipped 0.9.0 family fixes it was built beside, the graph line (tiered retrieval and relations) and the release merge items below.
+
+### Release summary
+- New tools: `memory_link`, `memory_unlink`, `memory_neighbors`, `memory_get_reference`,
+  `memory_list_references`, `memory_delete_reference`; `links=` on `memory_remember`,
+  `scope=` / `with_links=` on `memory_search`. Read results stay inline in Claude Code.
+- `memory_recall` shows a record's owning hubs and siblings.
+- Pro: every memory tool records a skill signal (name and an argument-shape hash only).
+
+### Release merge (2026-10-28)
+- `memory_recall` adds `hubs`, `siblings` and `siblings_omitted` for an entity that hub entities link
+  to with `source_of` (`neighborhood_note` instead when the neighborhood read fails; the recall never
+  fails for it). On by default; `SIBYL_MEMORY_RECALL_HUBS=0` turns it off; tuning
+  `SIBYL_MEMORY_RECALL_SMALL_HUB_MAX` / `SIBYL_MEMORY_RECALL_SIBLING_CAP` (60). Anyone who already
+  has `source_of` edges sees the recall payload gain these keys.
+- The seven graph tools carry the R2 skill-signal wrapper too (`@_recorded`), so every memory tool
+  records; the tool schemas the host sees are unchanged (fixture test against the graph merge).
+- The experimental tool-text variant from the bench line (`SIBYL_MEMORY_TOOLTEXT_V2`) is not shipped.
+- Usage count keeps the opt-out default (`SIBYL_MEMORY_TELEMETRY=0`); Hermes turned its own off.
+- Requires `sibyl-memory-client>=0.10.0`, `sibyl-memory-hermes>=0.6.0`.
+- Tests: `test_recall_hubs_2026_10_28.py` (8), `test_telemetry_default_2026_10_28.py` (2).
+
+### Paid tier R2: skill signals (built 2026-09-29)
+
+Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-client 0.10.0.
+
+### Added
+- Skill signals: every memory tool the server handles is one tool event (name and the 12-hex
+  fingerprint of its sorted top-level argument names; never a value), on the success and the
+  error path, through a `_recorded` wrapper that keeps the tool signature the host sees. Pro only
+  (the cached client's verified entitlement); no client, no record. Entity writes are recorded
+  by the client as hashes. The session is the process's lifecycle session. The server sees only
+  its own tools: on Codex, Cursor and other MCP hosts the sequence signal covers the memory tools.
+
+### Tests
+- `tests/test_signals_capture_2026_09_29.py` (6): all eight tools record a name and a 12-hex
+  shape; the error path records; free, signed out and recording off record nothing; canaries
+  (values, entity name, query, keys) never on disk; the listed tool schemas are unchanged.
+
+### Fixed (R2 check fixes, 2026-09-30)
+- R2F-2: in Claude Code with the sibyl Stop hook wired (`_save_is_hooked()`), the server records
+  no tool event: the hook's transcript slice already holds these calls and is the record of truth
+  there, so each memory tool was counted twice. Other hosts, and Claude Code without the hook,
+  record as before. Entity writes (the client's, as hashes) are unaffected.
+- R2F-N4 (README): the signals file keeps tool and MCP server names in plain text.
+- Tests: +3 in `test_signals_capture_2026_09_29.py` (Claude Code with the hook: no tool event;
+  Claude Code without it and another host: all eight recorded). 136 passed.
+
+### Tiered retrieval and relations (graph line, built 2026-10-22)
+
+### Fixed - read results stay inline in Claude Code (output budget, 2026-10-22)
+- V1 search hits (1,500-char body prefix + 600-char snippet + title + links) made
+  `memory_search` ~95,000 wire chars / ~24,000 est. tokens at limit=30 on a 2-20 KB-body
+  store. Claude Code saves an unannotated MCP result over 50,000 chars, or over
+  `MAX_MCP_OUTPUT_TOKENS` (default 25,000 tokens), to a file instead of inlining it
+  (code.claude.com/docs/en/mcp, "MCP output limits and warnings"); agents without a
+  file-read tool saw nothing.
+- The read tools (`memory_recall`, `memory_search`, `memory_list`, `memory_neighbors`,
+  `memory_get_reference`, `memory_list_references`) declare
+  `_meta["anthropic/maxResultSizeChars"] = 200000` in tools/list; Claude Code then uses that
+  value instead of the 50,000-char line "regardless of what MAX_MCP_OUTPUT_TOKENS is set to".
+- Every read result is held, on its WIRE text (FastMCP's indent=2 JSON, fence and a notice
+  reserve included), to an ESTIMATED token budget (`ceil(ascii/4) + non-ASCII chars`;
+  default 22,000; `SIBYL_MEMORY_MCP_OUTPUT_TOKENS`, clamped 1,000-125,000) and a hard char
+  cap: 190,000 when the session's client is Claude Code, else 45,000 (fallback for hosts
+  that do not honour the annotation); `SIBYL_MEMORY_MCP_OUTPUT_BUDGET` (chars, clamped
+  4,000-500,000) overrides it. Replaces the 200,000 hits-only budget.
+- `memory_search` degrades in order, only when the result does not fit: hits with a
+  `snippet` shorten their body prefix (500, 150) then omit it (`body_omitted: true`; `chars`
+  stays); snippets shorten to 250 chars re-centred on the first match marker; link
+  summaries drop `sample` (`sample_omitted: true`, counts stay); only then trailing hits go.
+  The verdict gains `degraded` (steps taken) and, on a drop, `truncated: n` and a `hint`.
+- `memory_list`: bodies shortened (500, 150), never omitted, then trailing rows dropped
+  (`degraded` / `truncated` / `hint` at the top level). `memory_neighbors` and
+  `memory_list_references` page to the same budget (cursor resumes after the last row
+  shown). `memory_get_reference` cuts a page that would not fit (`page_capped: true`).
+- Measured (Claude Code session, limit 50, 120 entities + 120 docs): English 158,638 chars /
+  39,697 est. tokens -> 84,020 / 21,005, all 50 hits; JSON-heavy 42,287 -> 20,812 tokens;
+  CJK 78,200 -> 12,143 tokens, all 50 hits. Search p50 unchanged within noise.
+
+### Changed - Edge identity (V1 panel theme A, 2026-10-22)
+- `memory_remember` returns `inherited_links: n` when it CREATED the entity and n edges
+  were already keyed to its name (written for an earlier, forgotten entity of that
+  name); those edges read `stale: true` until re-linked or unlinked.
+- `memory_link` returns `changed` (an existing edge's metadata updated or its endpoints
+  re-stamped; an identical re-link is a no-op).
+
+### Fixed - V1 panel, graph read side (2026-10-22)
+- `memory_neighbors` returns the queried node with `exists` / `archived`, plus a `note`
+  when it does not exist (exact, case-sensitive names) or is archived; edges carry
+  `stale` (true when the edge was written for an earlier entity of that name; never for a
+  dangling or archived end); `degree` counts a self-loop once.
+- `memory_remember` / `memory_set_reference` report `links: {created, updated, unchanged}` (was the
+  number of specs passed).
+- `memory_search` never fails on a damaged links index: hits come back with
+  `links: null` and `verdict.decoration_note`; the verdict also carries `links_ms`.
+  Hit `links.sample` is one edge per relation (largest first, at most five) and `hub: true`
+  marks a node above 500 edges in one direction.
+
+### Fixed - V1 panel (PANEL-SYNTHESIS B, D, E, G; 2026-10-22)
+- **Release train.** `version = "0.4.0"`, requires `sibyl-memory-client>=0.10.0` and
+  `sibyl-memory-hermes>=0.6.0`. With the old floor a partial upgrade (new server, old
+  client) died at import (`count_tiers`; YARROW mcpskew). Floor-compat tests import the
+  server and the Hermes provider against the floor client tree, and show the 0.9.0
+  client (git 708bd89) cannot serve this server.
+- `memory_search`: `verdict.name_matches` is recomputed when the output budget drops
+  rows, like `returned` and `tiers_hit`.
+- `memory_delete_reference(key, force=False)`: `skill/` and `debloat/` keys are refused
+  without `force=true` (VALIDATION_ERROR naming the owning feature; the account gate
+  still answers first). Returns `edges_removed`, and `proposals_superseded` when an
+  accepted skill proposal pointed at the document.
+- `chars` means the stored length on every reference tool: `memory_get_reference`
+  now reports the stored length as `chars` and the fence-scrubbed length as
+  `surfaced_chars`; `offset` / `next_offset` stay in surfaced coordinates.
+- Argument-validation errors name the parameters at fault: `missing`, `unknown`,
+  `invalid` (names only, identifier-shaped, at most 10 each; values are never echoed,
+  SEC-14 unchanged). `memory_link(from=..., to=...)` now says `from_node` / `to_node`.
+- Tool text: `memory_forget` says links are kept and reconnect `stale` on re-create;
+  `memory_set_reference` asks for `metadata.status`. README: upgrade-together note,
+  delete row.
+- Tests: `test_v1_panel_fixes_2026_10_22.py` (13); reference-tool tests updated for
+  `surfaced_chars` and `edges_removed`.
+
+### Changed - Agent guidance (tiered-retrieval spec section 3, 2026-10-22)
+- `memory_remember`'s description says which tier: an entity is a card (under about 1 KB)
+  for a thing you will name again, a long text is a reference document, hubs keep
+  membership in links written with the node. The module docstring's `memory_search` line
+  mentions name-first results, `scope` and the hit fields.
+- README: "Tools exposed" lists all 15 tools plus how agents should use them (write a card,
+  link the documents, read top-down); "8 tools" -> 15 throughout.
+
+### Added - Tier-aware `memory_search` (tiered-retrieval spec 2.C, 2026-10-22)
+- `memory_search(query, limit=10, tiers=None, scope="all", with_links=True)`.
+  `scope="graph"` runs the gated engine over entities + state only (the "find
+  the hub" call); `scope` with `tiers` -> `VALIDATION_ERROR` (tiers is the raw,
+  gate-free path). Unknown scope -> `VALIDATION_ERROR`.
+- A query that is an entity's name (or `category:name`) returns that entity
+  first, `match: "name"`; up to 3 `name_partial` rows follow.
+- Hits carry `match`, `chars`, `title` and (default) `links` (degree, counts by
+  relation, up to five sample edges; null on journal hits), one batch query for
+  all hits. The raw `tiers=` path gets `chars`/`title`/`links` too (additive; no
+  stage 0, gates unchanged). Link samples pass the same fence scrub as bodies.
+- Verdict gains `tiers_hit`, `name_matches`, `recall_depth`, `scope`;
+  `tiers_hit` is recomputed when the output budget drops rows.
+- The tool description teaches top-down reading (resolve name with
+  `scope="graph"` -> `memory_neighbors` -> `memory_get_reference`).
+- Tests: `test_tier_search_tool_2026_10_22.py` (8).
+
+### Added - Reference tier tools (tiered-retrieval spec 2.A, 2026-10-22)
+- Four tools (8 -> 12): `memory_set_reference(key, body, metadata)` -> `{ok, key, chars}`;
+  `memory_get_reference(key, offset=0, max_chars=20000)` -> fenced `{ok, key, body, offset,
+  chars, next_offset, metadata, updated_at}`, `max_chars` clamped to 1,000-50,000, unknown key
+  `{ok: false, code: NOT_FOUND}`; `memory_list_references(prefix, limit=50, cursor)` -> fenced
+  `{ok, count, items, next_cursor}` (limit max 200, literal case-sensitive prefix, opaque cursor);
+  `memory_delete_reference(key)` -> `{ok, key, deleted}`, a hard delete (`memory_forget` stays
+  entity-only).
+- Injection handling: the read tool scrubs fence markers out of the WHOLE body before paging, so
+  a marker can never straddle a page edge; `offset`/`chars`/`next_offset` count characters of
+  that surfaced text. Metadata is scrubbed and capped at 4 KB on reads. The list tool holds the
+  total output budget and, when the budget drops rows, sets `next_cursor` right after the last
+  row returned so nothing is skipped.
+- `memory_set_reference` rejects metadata over 4 KB and numeric/boolean/null bodies
+  (`VALIDATION_ERROR`; a document is text, dict/list are stored as canonical JSON). The account
+  gate answers before any argument check on every new tool; reads stay allowed under the
+  computer-limit read-only policy and the two writes are refused there.
+
+### Added - Relations tools (tiered-retrieval spec 2.B)
+- `memory_link(from_node, to_node, relation, metadata=None)` -> `{ok, id, created}`;
+  `memory_unlink(from_node, to_node, relation=None)` -> `{ok, removed}`;
+  `memory_neighbors(node, relation, direction, tier, category, limit, cursor, preview)` ->
+  fenced `{ok, node, edges, count, degree, next_cursor}`. Parameters are `from_node` /
+  `to_node` because `from` is not a legal Python parameter name. NodeRefs are JSON objects;
+  a JSON string or a bare `{category, name}` entity is accepted. Results are fence-scrubbed
+  (MH-1) and held to the total output budget (MH-2); when the budget drops edges,
+  `next_cursor` resumes right after the last returned edge. All three are gated like every
+  memory tool. With the reference tools the server lists 15 tools (module docstring updated).
+- `memory_remember(..., links=None)`: the entity and its outgoing edges in one transaction
+  (strict endpoints; `NOT_FOUND` writes nothing).
+- `memory_set_reference(..., links=None)`: the document and its outgoing edges in one
+  transaction, same coercion (`_coerce_links`) and limits (at most 1,000 edges, strict
+  endpoints) as `memory_remember`; a bad edge rolls back the document write too. The result
+  carries `links` (edge count) when edges were given.
+
+### Changed - search hit shape (tiered-retrieval spec 2.D, 2026-10-22)
+- `memory_search` hits carry `chars` (the full body length), so an agent can
+  tell whether the 1,500-char body is the whole thing.
+- The hit `snippet` (now a 40-token match-centred window from the client) has
+  its own 600-char cap.
+
 ## [0.3.0] - Unreleased
 
 Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.2).
