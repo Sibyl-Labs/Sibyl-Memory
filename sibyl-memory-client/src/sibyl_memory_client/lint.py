@@ -28,6 +28,11 @@ Severity levels: `critical` | `warning` | `info`
 | db-soft-cap            | warning  | DB size exceeds 80% of the soft cap (10 MB)  |
 | fts-rowcount-mismatch  | warning  | FTS5 index count differs from entities count |
 | flagged-actors-fresh   | info     | recent flagged_actors entries (≤ N days)     |
+| dangling-link          | warning  | edge endpoint missing (info when archived)   |
+| hub-degree             | warning  | node with > 500 out- or in-edges (v6)        |
+| links-index-missing    | critical | memory_links endpoint index absent (v6)      |
+| reference-orphan       | info     | reference docs with no in-edges (one summary;|
+|                        |          | only once the tenant uses edges at all)      |
 
 The check list is intentionally conservative for v0.2.0: easy to extend.
 """
@@ -210,7 +215,7 @@ class Linter:
             for tname in (
                 "entities", "state_documents", "journal_events",
                 "reference_documents", "archived_entities", "flagged_actors",
-                "skill_proposals", "learning_runs",
+                "skill_proposals", "learning_runs", "memory_links",
             ):
                 try:
                     row = conn.execute(
@@ -375,6 +380,12 @@ class Linter:
             except Exception:
                 pass
 
+            # ── v6 relations (spec tiered-retrieval 2.B)
+            try:
+                findings.extend(self._lint_links(conn))
+            except Exception:
+                pass  # memory_links absent: a pre-v6 store opened without migration
+
         completed_at = _utc_now_iso()
 
         return LintReport(
@@ -387,6 +398,95 @@ class Linter:
             started_at=started_at,
             completed_at=completed_at,
         )
+
+    # ------------------------------------------------------------------
+    # Internal. v6 relation checks
+    # ------------------------------------------------------------------
+    def _lint_links(self, conn: Any) -> list[Finding]:
+        from ._links import HUB_DEGREE_WARN
+        out: list[Finding] = []
+        tid = self._tenant_id
+        # links-index-missing: both endpoint indexes are created with the
+        # table; without them neighbors()/links_of() (pinned by INDEXED BY)
+        # fail and search hits come back without edge summaries.
+        have = {r[1] for r in conn.execute("PRAGMA index_list(memory_links)").fetchall()}
+        lost = [i for i in ("memory_links_from", "memory_links_to") if i not in have]
+        if lost:
+            out.append(Finding(
+                check="links-index-missing", severity="critical",
+                message=f"memory_links index missing: {', '.join(lost)}",
+                recovery=("Reopen the store with the current client (CREATE INDEX IF NOT "
+                          "EXISTS runs on open) or recreate the index from schema.sql."),
+                detail={"missing": lost},
+            ))
+        total = conn.execute("SELECT COUNT(*) FROM memory_links WHERE tenant_id = ?",
+                             (tid,)).fetchone()[0]
+        if not total:
+            return out
+        # hub-degree: edges per node in EACH direction (a hub that is only
+        # pointed at, e.g. 5,000 member_of in-edges, is a hub too).
+        for direction, side in (("out", "from"), ("in", "to")):
+            for r in conn.execute(
+                    f"SELECT {side}_tier, {side}_category, {side}_key, COUNT(*) AS n "
+                    f"FROM memory_links WHERE tenant_id = ? "
+                    f"GROUP BY {side}_tier, {side}_category, {side}_key "
+                    "HAVING n > ? ORDER BY n DESC LIMIT 25", (tid, HUB_DEGREE_WARN)).fetchall():
+                label = f"{r[1]}/{r[2]}" if r[0] == "entity" else r[2]
+                out.append(Finding(
+                    check="hub-degree", severity="warning",
+                    message=f"{r[0]} {label} has {r[3]} {direction}-edges (> {HUB_DEGREE_WARN})",
+                    recovery=("Split the hub (e.g. by year or sub-project) or move rarely walked "
+                              "members under a sub-hub; neighbors() paginates either way."),
+                    detail={"tier": r[0], "category": r[1] or None, "key": r[2],
+                            "direction": direction, f"{direction}_degree": int(r[3])},
+                ))
+        # dangling-link: an endpoint with no row in its tier (archived = info)
+        endpoint_missing = """
+            SELECT l.id, '{side}' AS side, l.{side}_tier, l.{side}_category, l.{side}_key,
+                   EXISTS (SELECT 1 FROM archived_entities a WHERE a.tenant_id = l.tenant_id
+                           AND l.{side}_tier = 'entity' AND a.category = l.{side}_category
+                           AND a.name = l.{side}_key) AS archived
+              FROM memory_links l
+             WHERE l.tenant_id = ? AND NOT (
+               (l.{side}_tier = 'entity' AND EXISTS (SELECT 1 FROM entities e
+                  WHERE e.tenant_id = l.tenant_id AND e.category = l.{side}_category
+                  AND e.name = l.{side}_key))
+               OR (l.{side}_tier = 'reference' AND EXISTS (SELECT 1 FROM reference_documents d
+                  WHERE d.tenant_id = l.tenant_id AND d.doc_key = l.{side}_key))
+               OR (l.{side}_tier = 'state' AND EXISTS (SELECT 1 FROM state_documents d
+                  WHERE d.tenant_id = l.tenant_id AND d.document_key = l.{side}_key)))
+        """
+        dangling = []
+        for side in ("from", "to"):
+            dangling += conn.execute(endpoint_missing.format(side=side) + " LIMIT 50",
+                                     (tid,)).fetchall()
+        for r in dangling[:50]:
+            label = f"{r[3]}/{r[4]}" if r[2] == "entity" else r[4]
+            archived = bool(r[5])
+            out.append(Finding(
+                check="dangling-link",
+                severity="info" if archived else "warning",
+                message=(f"edge {r[0][:12]}… {r[1]}-endpoint {r[2]} {label} "
+                         + ("is archived" if archived else "does not exist")),
+                recovery=("Re-create the node to restore the edge, or unlink it."
+                          if archived else "Unlink the edge, or write the missing node."),
+                detail={"edge_id": r[0], "side": r[1], "tier": r[2],
+                        "category": r[3] or None, "key": r[4], "archived": archived},
+            ))
+        # reference-orphan: reference docs with no in-edges (one summary)
+        orphans = conn.execute(
+            "SELECT d.doc_key FROM reference_documents d WHERE d.tenant_id = ? AND NOT EXISTS ("
+            "SELECT 1 FROM memory_links l WHERE l.tenant_id = d.tenant_id AND l.to_tier = 'reference' "
+            "AND l.to_key = d.doc_key) ORDER BY d.doc_key", (tid,)).fetchall()
+        if orphans:
+            sample = [r[0] for r in orphans[:10]]
+            out.append(Finding(
+                check="reference-orphan", severity="info",
+                message=f"{len(orphans)} reference document(s) have no in-edges (no hub leads to them)",
+                recovery="Link each document from the entity it belongs to (relation source_of).",
+                detail={"count": len(orphans), "sample": sample},
+            ))
+        return out
 
     # ------------------------------------------------------------------
     # Internal. JSON validity probe

@@ -67,6 +67,9 @@ __all__ = [
     "stamp",
     "store_is_empty",
     "refine_zero",
+    "count_tiers",
+    "HIT_TIERS",
+    "NEAR_FLOOR_BAND",
 ]
 
 # --- bounds -----------------------------------------------------------------
@@ -106,6 +109,10 @@ class VerdictCode(str, Enum):
     #: genuinely matched nothing (or carried no significant tokens to match
     #: with). The honest miss.
     NO_MATCH = "no_match"
+    #: Flag SIBYL_MEMORY_RANKED_FALLBACK=1 (default off): no row cleared the
+    #: gates and the result was filled with ranked OR candidates. Accompanies a
+    #: NON-empty result, so it is not a zero cause.
+    RANKED_FALLBACK = "ranked_fallback"
 
 
 class GateCause(str, Enum):
@@ -160,6 +167,7 @@ _RECOVERY = {
     VerdictCode.GATED: RECOVERY_BROADEN_QUERY,
     VerdictCode.EMPTY_STORE: RECOVERY_WRITE_FIRST,
     VerdictCode.NO_MATCH: RECOVERY_BROADEN_QUERY,
+    VerdictCode.RANKED_FALLBACK: RECOVERY_NONE,
 }
 
 
@@ -204,7 +212,11 @@ class GateCounters:
     best_pre_gate_coverage: float | None = None
 
     def record(self, gate: GateCause) -> None:
-        setattr(self, gate.value, getattr(self, gate.value) + 1)
+        # `_value_` is the plain attribute behind `.value` (the property costs
+        # an enum descriptor call; this runs once per gated candidate, tens of
+        # thousands of times per query at 100k rows).
+        name = gate._value_
+        setattr(self, name, getattr(self, name) + 1)
 
     def observe_coverage(self, cov: float) -> None:
         if self.best_pre_gate_coverage is None or cov > self.best_pre_gate_coverage:
@@ -265,6 +277,29 @@ class Verdict:
     returned: int = 0
     #: Function-shaped tokens excluded from scoring (N1 at df==0, N4 at any df).
     dropped_function: list[str] = field(default_factory=list)
+    #: 2.C (additive): returned rows per tier. Filled by ``stamp()`` from the
+    #: rows themselves, on every surface, so it always describes the result.
+    tiers_hit: dict[str, int] = field(default_factory=dict)
+    #: 2.C (additive): returned rows that stage 0 resolved by NAME (``match``
+    #: "name" or "name_partial"). ``None`` = not measured (no stage 0 on this
+    #: surface: the raw ``search()`` / ``search_entities()`` primitives).
+    name_matches: int | None = None
+    #: 2.C (additive): the per-token recall depth K stage 1 used (2.D D1).
+    #: ``None`` = not measured (no stage 1 ran).
+    recall_depth: int | None = None
+    #: 2.C (additive): the search scope the gated engine ran over ("all" or
+    #: "graph" = entity + state). ``None`` = not a scoped surface.
+    scope: str | None = None
+    #: 2.C (additive): wall time in ms of the hit edge summary (links_of) when
+    #: links were requested and computed. ``None`` = no links decoration ran.
+    links_ms: float | None = None
+    #: Additive: why hit decoration (titles / links) is missing, e.g. a damaged
+    #: memory_links index. Decoration never fails a search; this says it was
+    #: skipped. ``None`` = decoration complete.
+    decoration_note: str | None = None
+    #: Flag SIBYL_MEMORY_RANKED_FALLBACK=1: ranked candidates appended by the long-query fallback.
+    #: ``None`` = the fallback did not run; the key is then absent from as_dict().
+    ranked_appended: int | None = None
 
     # -- constructors are the module-level helpers below; use those. --
 
@@ -289,7 +324,7 @@ class Verdict:
         Key order is fixed so a diff of two envelopes reads cleanly. Every
         surface emits THIS shape; none of them builds its own.
         """
-        return {
+        d = {
             "code": self.code.value,
             "tokens": _clean_tokens(self.tokens),
             "gate": self.gate.value if self.gate is not None else None,
@@ -303,10 +338,19 @@ class Verdict:
             "dropped_function": _clean_tokens(self.dropped_function),
             "candidates": self.candidates,
             "returned": self.returned,
-            "abstained": self.abstained,
-            "recovery": self.recovery,
-            "explain": self.explain(),
+            "tiers_hit": dict(self.tiers_hit),
+            "name_matches": self.name_matches,
+            "recall_depth": self.recall_depth,
+            "scope": self.scope,
+            "links_ms": self.links_ms,
+            "decoration_note": self.decoration_note,
         }
+        if self.ranked_appended is not None:
+            d["ranked_appended"] = self.ranked_appended
+        d["abstained"] = self.abstained
+        d["recovery"] = self.recovery
+        d["explain"] = self.explain()
+        return d
 
 
 # --- constructors ------------------------------------------------------------
@@ -346,6 +390,15 @@ def explain(v: Verdict) -> str:
         return f"{v.returned} row(s) matched."
     if v.code is VerdictCode.ABSTAINED_ON:
         tok = v.tokens[0][:MAX_TOKEN_CHARS] if v.tokens else "?"
+        if v.scope not in (None, "all"):
+            # 2.C: under scope="graph" the corpus is the entity + state tiers,
+            # so "appears nowhere in this store" would be false.
+            return (
+                f"Nothing was returned because the word {tok!r} appears nowhere in the "
+                f"entity or state tiers (scope={v.scope!r}), and an unsupported content "
+                f"word blocks the whole query. Drop {tok!r} and ask again, or search "
+                f"again with scope='all' to include documents and the journal."
+            )
         return (
             f"Nothing was returned because the word {tok!r} appears nowhere in this "
             f"store, and an unsupported content word blocks the whole query "
@@ -364,6 +417,13 @@ def explain(v: Verdict) -> str:
         best = v.gates.best_pre_gate_coverage
         near = (f" The best candidate reached {best:.2f} coverage."
                 if best is not None else "")
+        # 2.C: a near miss says how deep stage 1 looked, so "the best row
+        # reached 0.41 against the 0.45 floor at depth 2,100" is actionable.
+        from .multi_record import COVERAGE_THRESHOLD
+        if (best is not None and v.recall_depth is not None
+                and COVERAGE_THRESHOLD - best <= NEAR_FLOOR_BAND):
+            near = (f" The best row reached {best:.2f} against the "
+                    f"{COVERAGE_THRESHOLD:.2f} floor at depth {v.recall_depth:,}.")
         return (
             f"{v.candidates if v.candidates is not None else 'Some'} candidate row(s) "
             f"were found and then dropped by the "
@@ -380,7 +440,33 @@ def explain(v: Verdict) -> str:
         return ("Nothing was returned: the query ran with every gate armed and "
                 "matched no rows. A genuine miss, not a blocked query — try "
                 "different or broader wording.")
+    if v.code is VerdictCode.RANKED_FALLBACK:
+        best = v.gates.best_pre_gate_coverage
+        c = f"{best:.2f}" if best is not None else "n/a"
+        return (f"no row cleared the relevance gates; {v.ranked_appended or 0} ranked "
+                f"candidates were returned instead (best pre-gate coverage {c})")
     return "No cause recorded."  # pragma: no cover - unreachable while the enum is closed
+
+
+#: A gated zero whose best coverage is within this of the floor is a near miss;
+#: explain() then names the recall depth (2.C).
+NEAR_FLOOR_BAND = 0.1
+
+#: The tiers ``tiers_hit`` always reports, zero or not.
+HIT_TIERS = ("entity", "state", "reference", "journal")
+
+
+def count_tiers(rows) -> dict[str, int]:
+    """Rows per tier for ``Verdict.tiers_hit``. A row without a ``tier`` tag is
+    an entity row (``search_entities`` returns entity rows untagged)."""
+    out = {t: 0 for t in HIT_TIERS}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        t = r.get("tier") or "entity"
+        if t in out:
+            out[t] += 1
+    return out
 
 
 # --- the carrier -------------------------------------------------------------
@@ -428,6 +514,7 @@ def stamp(rows, verdict: Verdict) -> SearchResults:
     """
     rows = list(rows)
     verdict.returned = len(rows)
+    verdict.tiers_hit = count_tiers(rows)
     if rows:
         # A non-empty result is OK by definition; a cause is only meaningful for
         # a zero. This keeps callers from having to reason about "gated but also

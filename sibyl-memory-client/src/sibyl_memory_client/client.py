@@ -10,6 +10,7 @@ re-learning the model.
 from __future__ import annotations
 
 import functools
+import re
 import logging
 import sqlite3
 import threading
@@ -17,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import _links
 from . import tiers as _tiers  # shared tier module (search code uses a `tiers` parameter)
 from .exceptions import NotFoundError, StorageError, TenantError, ValidationError
 from .storage import Storage, db_size_bytes, dumps, loads, new_id, _utc_now_iso
@@ -36,6 +38,103 @@ _log = logging.getLogger(__name__)
 # case. MAX_LIMIT is generous (well above any legitimate page) so it never
 # truncates real use; it only stops pathological values.
 MAX_LIMIT = 10_000
+
+
+# ----------------------------------------------------------------------
+# FTS ranking + snippet constants (2.D scale fixes, 2026-10-22)
+# ----------------------------------------------------------------------
+# D2 NAME WEIGHTING. Every FTS query used to `ORDER BY rank`, i.e. bm25 with
+# equal column weights over (name, category, body), so an entity whose NAME is
+# the query lost to long bodies that merely mention it. Measured on a 70k-row
+# store (memory-graph-g1.db, 2026-10-22), rank of the named hub in the top-50
+# for two-token name queries, weight 1 -> 8: `sales enablement` 26 -> 1,
+# `owen phillips` 4 -> 1, `observability platform` 26 -> 10, `aurelia systems`
+# 2 -> 2. At 20.0 `maya patel` vanished from the top-50 because 103 shard rows
+# also carry the name in `name`: a column weight cannot tell "the entity named
+# X" from "entities whose name contains X", so 8.0 is the ceiling, and exact-
+# name lookup is its own (later) stage, never a bigger weight. Rows whose name
+# does not contain the term score exactly as before (bm25 weights only scale
+# the matching column's term frequency). Reference / state keys get 4.0.
+# Query-time only: no schema change, no index rebuild.
+NAME_WEIGHT = 8.0
+KEY_WEIGHT = 4.0
+
+# D3 MATCH-CENTRED SNIPPET. 40 tokens (from 12) so a hit shows the passage that
+# matched instead of a fragment; the MCP/Hermes surfaces cap it at 600 chars.
+SNIPPET_TOKENS = 40
+
+# The shadow's recall envelope in multi_record stage 1 (2.D): unchanged from
+# 0.9.0's fixed per-token depth, independent of the scaled strict depth K.
+_SHADOW_RECALL_LIMIT = 200
+
+
+def _entity_rank_cfg() -> str:
+    # Float-formatted module constants, never caller input: safe to inline.
+    return f"bm25({float(NAME_WEIGHT)!r}, 1.0, 1.0)"
+
+
+# Stage-0 name resolution (2.C). Exact matches returned for one query, the
+# phrase-on-name partials added after them, and the longest query (in words)
+# that still runs the partial phrase (a question is not a name).
+NAME_EXACT_MAX = 5
+NAME_PARTIAL_MAX = 3
+NAME_PARTIAL_MAX_TOKENS = 8
+# The stage-0 equality probe (index entities_tenant_lname). CORE-3: tenant clause.
+_NAME_EXACT_SQL = ("SELECT rowid AS rid, name, category, updated_at FROM entities "
+                   "WHERE tenant_id = ? AND lower(name) = ?")
+# Rows read for one exact name before ordering newest-first (names are unique
+# per category, so this bounds the categories that share one name).
+_NAME_EXACT_SCAN = 200
+# Sample edges per hit in the links summary (2.C hit shape).
+HIT_LINK_SAMPLE = 5
+# `<category>:<name>`: an identifier-shaped prefix (no spaces) before the colon.
+_NAME_PREFIX_RE = re.compile(r"^\s*([\w.\-/]{1,128})\s*:\s*(\S.*)$", re.DOTALL)
+
+
+def _ascii_fold(text: str) -> str:
+    """Python-side twin of sqlite's built-in ``lower()``: ASCII A-Z only, so
+    ``lower(name) = ?`` compares like with like and can use the index."""
+    return text.translate(_ASCII_LOWER)
+
+
+_ASCII_LOWER = {c: c + 32 for c in range(ord("A"), ord("Z") + 1)}
+
+
+def _body_chars(body: Any) -> int | None:
+    """Full surfaced length of a hit body (the MCP tool's ``chars``)."""
+    if body is None:
+        return None
+    if isinstance(body, str):
+        return len(body)
+    import json as _json
+    return len(_json.dumps(body, ensure_ascii=False, default=str))
+
+
+def _meta_title(raw: Any) -> str | None:
+    """``metadata.title`` of a reference row when it is a non-empty string."""
+    if not raw:
+        return None
+    try:
+        meta = loads(raw)
+    except (TypeError, ValueError):
+        return None
+    t = meta.get("title") if isinstance(meta, dict) else None
+    return t if isinstance(t, str) and t.strip() else None
+
+
+def _hit_node(h: dict[str, Any]) -> tuple[str, str, str] | None:
+    """A search hit as a memory_links node key, or None (journal / malformed)."""
+    tier, key = h.get("tier"), h.get("key")
+    if tier not in ("entity", "reference", "state") or not isinstance(key, str):
+        return None
+    if tier == "entity":
+        cat = h.get("category")
+        return ("entity", cat, key) if isinstance(cat, str) and cat else None
+    return (tier, "", key)
+
+
+def _keyed_rank_cfg() -> str:
+    return f"bm25({float(KEY_WEIGHT)!r}, 1.0)"
 
 
 def _clamp_limit(limit: Any) -> int:
@@ -266,6 +365,36 @@ def _fts_query(
             except sqlite3.DatabaseError:
                 return []
         return []
+
+
+# Cross-tier tie-break for equal rank / equal coverage (spec 2.C, R3): the
+# curated tiers (entity, state) first, then reference documents, then the
+# journal. multi_record._TIER_PRIORITY holds the same values (a test pins it).
+_TIER_RANK = {"entity": 0, "state": 0, "reference": 1, "journal": 2}
+
+
+def _load_sql(prep_only: bool) -> dict[str, str]:
+    """Batch-load SQL per tier for ``MemoryClient._load_rows`` (one ``{}``
+    placeholder for the id list). Module level so the planner test can
+    EXPLAIN exactly these statements."""
+    return {
+        # CORE-3: tenant clause on every load, even by rowid / id.
+        # `+tenant_id` (unary plus) keeps the clause as a row filter but
+        # stops the planner from driving the lookup through a tenant_id
+        # index: with no ANALYZE stats SQLite picked entities_updated_at
+        # (tenant_id=?) and scanned the whole tenant once per 500-id chunk
+        # (18 ms per chunk at 100k rows vs 0.9 ms by primary key).
+        "entity": "SELECT rowid AS rid, body, updated_at AS ts FROM entities "
+                  "WHERE +tenant_id = ? AND rowid IN ({})",
+        "state": "SELECT rowid AS rid, body, updated_at AS ts FROM state_documents "
+                 "WHERE +tenant_id = ? AND rowid IN ({})",
+        "reference": ("SELECT rowid AS rid, " +
+                      ("substr(body, 1, 2000)" if prep_only else "body") +
+                      " AS body, metadata, updated_at AS ts "
+                      "FROM reference_documents WHERE +tenant_id = ? AND rowid IN ({})"),
+        "journal": "SELECT id AS rid, ts, evaluated, acted, forward, extra "
+                   "FROM journal_events WHERE +tenant_id = ? AND id IN ({})",
+    }
 
 
 # ----------------------------------------------------------------------
@@ -638,6 +767,80 @@ def _check_json(payload: Any, field: str = "body") -> str:
     return encoded
 
 
+def _check_str_body(body: str, field: str = "body") -> None:
+    """The 1 MiB per-value bound for a free-text str value (REFERENCE tier),
+    measured in UTF-8 bytes like ``_check_json``. A str that cannot be encoded
+    (a lone surrogate) is rejected here with a typed error instead of failing
+    inside SQLite."""
+    try:
+        size = len(body.encode("utf-8"))
+    except UnicodeEncodeError as e:
+        raise ValidationError(
+            f"{field} is not valid UTF-8 text: {e.reason}",
+            recovery=f"Remove unpaired surrogate characters from {field}.",
+        ) from e
+    if size > _MAX_BODY_BYTES:
+        raise ValidationError(
+            f"{field} is too large ({size // 1024} KB; max 1 MiB "
+            f"({_MAX_BODY_BYTES // 1024} KB) per value).",
+            recovery=(
+                "Split the document across several reference keys (for example "
+                "<key>/part-1, <key>/part-2), or store a trimmed version."
+            ),
+        )
+
+
+def _page_text(key: str, text: str, offset: int, max_chars: int,
+               metadata: Any, updated_at: Any) -> dict[str, Any]:
+    """One page of a reference body in code points (shared by the SDK's
+    read_reference and the MCP tool, which pages the fence-scrubbed text)."""
+    total = len(text)
+    if offset >= total:
+        piece, nxt = "", None
+    else:
+        end = min(offset + max_chars, total)
+        piece, nxt = text[offset:end], (end if end < total else None)
+    return {"key": key, "body": piece, "offset": offset, "chars": total,
+            "next_offset": nxt, "metadata": metadata, "updated_at": updated_at}
+
+
+def _prefix_successor(prefix: str) -> str | None:
+    """Smallest string greater than every string that starts with ``prefix``
+    (BINARY collation = UTF-8 byte order = code-point order). None when no
+    such bound exists (the prefix is all U+10FFFF). Skips the surrogate block,
+    which cannot be stored as UTF-8."""
+    chars = list(prefix)
+    while chars:
+        cp = ord(chars[-1]) + 1
+        if 0xD800 <= cp <= 0xDFFF:
+            cp = 0xE000
+        if cp <= 0x10FFFF:
+            chars[-1] = chr(cp)
+            return "".join(chars)
+        chars.pop()
+    return None
+
+
+def _encode_ref_cursor(doc_key: str) -> str:
+    import base64
+    return base64.urlsafe_b64encode(doc_key.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_ref_cursor(cursor: Any) -> str:
+    import base64
+    import binascii
+    bad = ValidationError("cursor is not a valid list_references cursor",
+                          recovery="Pass next_cursor from the previous page unchanged, or omit it.")
+    if (not isinstance(cursor, str) or not cursor or len(cursor) > 4096
+            or re.fullmatch(r"[A-Za-z0-9_-]+", cursor) is None):
+        raise bad
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        return raw.decode("utf-8")
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        raise bad from None
+
+
 def _require_container(body: Any, field: str = "body") -> None:
     """Enforce the structured-body contract for entity + state writes.
 
@@ -681,9 +884,24 @@ def _track_op(kind: str):
                 except Exception:
                     pass
             result = fn(self, *args, **kwargs)
-            if kind in _LIFECYCLE_WRITE_KINDS:
+            if kind in _LIFECYCLE_WRITE_KINDS and not _is_noop_write(kind, result):
                 _note_lifecycle_write(self, kind, args, kwargs)
             return result
+        return wrapper
+    return deco
+
+
+def _gate_only(kind: str):
+    """The account gate of ``_track_op`` without the usage heartbeat.
+
+    For internal read primitives that only ever run as part of an already
+    tracked operation (multi_record's final hydration, 2.D): they must not be a
+    way around the gate, and they must not double-count usage."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            self._entitlement_gate.require(kind)
+            return fn(self, *args, **kwargs)
         return wrapper
     return deco
 
@@ -699,8 +917,21 @@ def _track_op(kind: str):
 _LIFECYCLE_WRITE_KINDS = frozenset({
     "set_entity", "set_state", "write_event", "set_reference", "delete_entity",
     "archive_entity", "learn", "accept_skill_proposal", "reject_skill_proposal",
+    "delete_reference",
+    "link", "unlink",
 })
 _SAVE_MARKER_KEY = "sibyl_save:last_save"
+
+
+def _is_noop_write(kind: str, result: Any) -> bool:
+    """A write that changed nothing is not counted toward the save trigger: an
+    identical re-link (neither created nor changed) or an unlink that removed
+    no edge."""
+    if kind == "link" and isinstance(result, dict):
+        return not result.get("created") and not result.get("changed")
+    if kind == "unlink":
+        return result == 0
+    return False
 
 
 def _note_lifecycle_write(client: Any, kind: str, args: tuple, kwargs: dict) -> None:
@@ -717,6 +948,21 @@ def _note_lifecycle_write(client: Any, kind: str, args: tuple, kwargs: dict) -> 
                 _lc.note_save(tid, home=home)
     except Exception:
         pass
+    if kind in _SIGNAL_WRITE_KINDS:
+        # R2 (spec 1.2): the correction-loop evidence. Pro only (the recorder
+        # checks the verified entitlement), outside ``suppressed()`` only; the
+        # category and name are hashed with the tenant, never stored.
+        try:
+            from .lifecycle import signals as _sg
+            category = args[0] if args else kwargs.get("category")
+            name = args[1] if len(args) > 1 else kwargs.get("name")
+            _sg.note_entity_write(home, kind, category, name, getattr(client, "_tenant_id", "") or "",
+                                  client=client)
+        except Exception:
+            pass
+
+
+_SIGNAL_WRITE_KINDS = frozenset({"set_entity", "delete_entity", "archive_entity"})
 
 
 # Notice throttle (spec 3.2): one notice text at most once per process per 24 h,
@@ -737,6 +983,21 @@ def _consume_notice(notice: str | None) -> str | None:
             return None
         _NOTICE_SHOWN[notice] = now
     return notice
+
+
+def entity_ref(category: str, name: str) -> dict[str, Any]:
+    """NodeRef for an entity (v6 relations)."""
+    return {"tier": "entity", "category": category, "key": name}
+
+
+def reference_ref(key: str) -> dict[str, Any]:
+    """NodeRef for a reference document (v6 relations)."""
+    return {"tier": "reference", "category": None, "key": key}
+
+
+def state_ref(key: str) -> dict[str, Any]:
+    """NodeRef for a state document (v6 relations)."""
+    return {"tier": "state", "category": None, "key": key}
 
 
 class MemoryClient:
@@ -761,6 +1022,7 @@ class MemoryClient:
         credentials_signature: str | None = None,
         credentials_path: str | Path | None = None,
         entitlement_gate: Any = None,
+        telemetry: bool | None = None,
     ) -> None:
         self._storage = storage
         # CORE-8: validate the tenant_id at construction too (set_tenant guards
@@ -843,12 +1105,19 @@ class MemoryClient:
         # (no content, no PII beyond account_id), debounced + fire-and-forget,
         # so an active account's request count finally reflects real use.
         # No-op without an account_id; opt out with SIBYL_MEMORY_TELEMETRY=0.
+        # 0.10.0: ``telemetry=False`` turns it off for this client whatever the
+        # environment says (the Hermes provider passes it unless the person
+        # opted in); None or True follow the environment rule above.
         try:
-            from ._heartbeat import HeartbeatReporter
-            self._heartbeat = HeartbeatReporter(
-                account_id, session_token,
-                entitlement_fn=lambda: self._entitlement_gate.token,
-            )
+            if telemetry is False:
+                from ._heartbeat import _NullHeartbeat
+                self._heartbeat = _NullHeartbeat()
+            else:
+                from ._heartbeat import HeartbeatReporter
+                self._heartbeat = HeartbeatReporter(
+                    account_id, session_token,
+                    entitlement_fn=lambda: self._entitlement_gate.token,
+                )
         except Exception:
             from ._heartbeat import _NullHeartbeat
             self._heartbeat = _NullHeartbeat()
@@ -869,6 +1138,7 @@ class MemoryClient:
         credentials_signature: str | None = None,
         credentials_path: str | Path | None = None,
         entitlement_gate: Any = None,
+        telemetry: bool | None = None,
     ) -> "MemoryClient":
         """Open a local SQLite-backed MemoryClient.
 
@@ -889,6 +1159,9 @@ class MemoryClient:
         ``credentials_path`` names the credentials.json to gate on (default
         ``~/.sibyl-memory/credentials.json``); ``entitlement_gate`` injects a
         gate object (tests: ``sibyl_memory_client.testing.NullEntitlementGate``).
+
+        ``telemetry`` (0.10.0): False sends no usage count from this client;
+        None (default) or True follow ``SIBYL_MEMORY_TELEMETRY`` (on unless "0").
         """
         storage = Storage(path)
         return cls(
@@ -901,6 +1174,7 @@ class MemoryClient:
             credentials_signature=credentials_signature,
             credentials_path=credentials_path,
             entitlement_gate=entitlement_gate,
+            telemetry=telemetry,
         )
 
     # ------------------------------------------------------------------
@@ -1149,12 +1423,25 @@ class MemoryClient:
         body: dict[str, Any] | list[Any],
         *,
         status: str | None = None,
+        links: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Insert or update an entity.
 
+        ``links`` (v6, spec tiered-retrieval 2.B): optional ``[{"to": NodeRef,
+        "relation": str, "metadata"?: dict}]``. The entity is the source of every
+        edge; the row and its edges are written in ONE transaction and every
+        target must already exist in this tenant (strict), else NotFoundError
+        and nothing is written. Adds or upserts the listed edges only; existing
+        edges not listed are kept. Edge bytes count toward the free-tier cap.
+
         UNIQUE (tenant_id, category, name) is enforced at the DB level. On
         conflict the existing row is updated (body + status + updated_at).
-        Returns the resulting entity row as a dict.
+        Returns the resulting entity row as a dict. On INSERT (a new row) it
+        also carries ``inherited_links``: how many edges were already keyed to
+        this (category, name) before the call, i.e. edges written for an
+        earlier, archived or deleted entity of the same name. They attach by
+        name and read ``stale: true`` until re-linked (link() re-stamps) or
+        unlinked.
 
         Subject to the 5 MB free-tier cap when tier='free'. Raises
         CapExceededError if the write would push the local DB past the cap
@@ -1168,13 +1455,17 @@ class MemoryClient:
         validate_identifier(name, field_name="name")
         _require_container(body)
         body_json = _check_json(body)
-        # Cap gate: rough byte estimate (FTS5 + indexes add overhead)
-        self._cap_gate.check(proposed_delta_bytes=len(body_json) + len(name) + len(category) + 200)
+        src_node = ("entity", category, name)
+        link_specs = _links.norm_link_specs(links)
+        # Cap gate: rough byte estimate (FTS5 + indexes add overhead); edges count.
+        self._cap_gate.check(proposed_delta_bytes=len(body_json) + len(name) + len(category) + 200
+                             + _links.spec_bytes(link_specs, src_node))
         with self._storage.transaction() as conn:
             existing = conn.execute(
                 "SELECT id FROM entities WHERE tenant_id = ? AND category = ? AND name = ?",
                 (self._tenant_id, category, name),
             ).fetchone()
+            inherited: int | None = None
             if existing is None:
                 ent_id = new_id()
                 conn.execute(
@@ -1182,6 +1473,11 @@ class MemoryClient:
                     "VALUES (?, ?, ?, ?, ?, ?)",
                     (ent_id, self._tenant_id, category, name, status, body_json),
                 )
+                # Identity stamp: edges already keyed to this (category, name)
+                # were written for an earlier row (archived or deleted out of
+                # band). They attach by name but read as stale until re-linked
+                # or unlinked. Counted before this call's own links= are written.
+                inherited = _links.count_touching(conn, self._tenant_id, src_node)
             else:
                 ent_id = existing["id"]
                 conn.execute(
@@ -1190,9 +1486,17 @@ class MemoryClient:
                     "WHERE id = ?",
                     (status, body_json, ent_id),
                 )
+            written = (_links.write_specs(conn, self._tenant_id, src_node, link_specs)
+                       if link_specs else None)
             # CAP-2: absolute-footprint recheck inside the same transaction.
             self._verify_committed_size(conn)
-        return self.get_entity(category, name)
+        ent = self.get_entity(category, name)
+        if inherited is not None:
+            ent["inherited_links"] = inherited
+        if written is not None:
+            # Additive, only when links= was given: what the edges did.
+            ent["links"] = _links.write_summary(written)
+        return ent
 
     @_track_op("recall")
     def get_entity(self, category: str, name: str) -> dict[str, Any]:
@@ -1231,12 +1535,17 @@ class MemoryClient:
 
     @_track_op("delete_entity")
     def delete_entity(self, category: str, name: str) -> bool:
+        """Hard-delete an entity. Every edge touching it (either direction) is
+        deleted in the same transaction (v6). Use archive_entity to keep them."""
         with self._storage.transaction() as conn:
             cur = conn.execute(
                 "DELETE FROM entities WHERE tenant_id = ? AND category = ? AND name = ?",
                 (self._tenant_id, category, name),
             )
-        return cur.rowcount > 0
+            deleted = cur.rowcount > 0
+            if deleted:
+                self._cascade_node_links(conn, "entity", category, name)
+        return deleted
 
     # ------------------------------------------------------------------
     # State documents (HOT tier)
@@ -1357,8 +1666,14 @@ class MemoryClient:
         body: str | dict[str, Any] | list[Any],
         *,
         metadata: dict[str, Any] | None = None,
+        links: list[dict[str, Any]] | None = None,
     ) -> None:
         """Insert or update a REFERENCE-tier document.
+
+        ``links`` (v6, spec tiered-retrieval 2.B): optional ``[{"to": NodeRef,
+        "relation": str, "metadata"?: dict}]`` with this document as the source;
+        written in the same transaction as the document, strict on target
+        existence (NotFoundError rolls the document write back too).
 
         v0.4.0: ``key`` is validated as an identifier (non-empty string, no
         control characters, length <= 1024). Raises ValidationError on
@@ -1379,8 +1694,16 @@ class MemoryClient:
             raise ValidationError(
                 f"body must be a str or a JSON-serializable dict/list, got {type(body).__name__}"
             )
+        else:
+            # Tiered-retrieval 2.A (2026-10-22): the str branch used to skip
+            # _check_json, so a paid caller could write one unbounded string.
+            # Same 1 MiB per-value bound as every other value, in UTF-8 bytes.
+            _check_str_body(body)
         meta_json = _check_json(metadata, "metadata") if metadata is not None else None
-        delta = len(body) + len(key) + (len(meta_json) if meta_json else 0) + 200
+        src_node = ("reference", "", key)
+        link_specs = _links.norm_link_specs(links)
+        delta = (len(body) + len(key) + (len(meta_json) if meta_json else 0) + 200
+                 + _links.spec_bytes(link_specs, src_node))
         self._cap_gate.check(proposed_delta_bytes=delta)
         with self._storage.transaction() as conn:
             conn.execute(
@@ -1389,8 +1712,13 @@ class MemoryClient:
                 "metadata = excluded.metadata, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
                 (self._tenant_id, key, body, meta_json),
             )
+            written = self._write_node_links(conn, src_node, link_specs) if link_specs else None
             # CAP-2: absolute-footprint recheck inside the same transaction.
             self._verify_committed_size(conn)
+        # Additive (was None): the key and, when links= was given, what the
+        # edges did ({created, updated, unchanged}); None without links=.
+        return {"key": key,
+                "links": _links.write_summary(written) if written is not None else None}
 
     @_track_op("get_reference")
     def get_reference(self, key: str) -> dict[str, Any] | None:
@@ -1402,6 +1730,272 @@ class MemoryClient:
         if row is None:
             return None
         return {"body": row["body"], "metadata": loads(row["metadata"]), "updated_at": row["updated_at"]}
+
+    @_track_op("read_reference")
+    def read_reference(
+        self,
+        key: str,
+        *,
+        offset: int = 0,
+        max_chars: int = 20_000,
+    ) -> dict[str, Any] | None:
+        """Paged read of a REFERENCE-tier document (tiered retrieval 2.A).
+
+        ``offset`` and ``max_chars`` count Python str characters (code points),
+        so a page never splits a multi-byte character. Returns None for an
+        unknown key, else ``{key, body: <slice>, offset, chars: <total>,
+        next_offset: int | None, metadata, updated_at}``. ``offset >= chars``
+        is not an error: it returns an empty body with ``next_offset`` None.
+        Raises ValidationError on a negative/non-int ``offset`` or a
+        ``max_chars`` below 1 (the SDK is strict; the MCP tool clamps)."""
+        validate_identifier(key, field_name="key")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValidationError("offset must be an int >= 0",
+                                  recovery="Pass 0 or the next_offset from the previous page.")
+        if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars < 1:
+            raise ValidationError("max_chars must be an int >= 1",
+                                  recovery="Pass a page size such as 20000.")
+        with self._storage.connection() as conn:
+            row = conn.execute(
+                "SELECT body, metadata, updated_at FROM reference_documents "
+                "WHERE tenant_id = ? AND doc_key = ?",
+                (self._tenant_id, key),
+            ).fetchone()
+        if row is None:
+            return None
+        return _page_text(key, row["body"] or "", offset, max_chars,
+                          loads(row["metadata"]), row["updated_at"])
+
+    @_track_op("list_references")
+    def list_references(
+        self,
+        *,
+        prefix: str | None = None,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """List REFERENCE-tier documents in ``doc_key`` order (tiered
+        retrieval 2.A). Returns ``{items: [{key, chars, metadata,
+        updated_at}], next_cursor}``; bodies are never loaded (``chars`` is
+        the body length in characters).
+
+        ``prefix`` is an exact, case-sensitive, literal prefix (``%`` and
+        ``_`` are plain characters): it is the half-open key range
+        ``[prefix, successor(prefix))``, which seeks the ``(tenant_id,
+        doc_key)`` primary key. ``cursor`` is the opaque ``next_cursor`` of
+        the previous page (keyset on doc_key); pass it with the same
+        ``prefix``."""
+        limit = _clamp_limit(limit)
+        if limit < 1:
+            limit = 1
+        sql = ("SELECT doc_key, length(body) AS chars, metadata, updated_at "
+               "FROM reference_documents WHERE tenant_id = ?")
+        params: list[Any] = [self._tenant_id]
+        if prefix is not None:
+            if not isinstance(prefix, str):
+                raise ValidationError("prefix must be a string",
+                                      recovery="Pass a key prefix such as 'doc/'.")
+            if prefix:
+                sql += " AND doc_key >= ?"
+                params.append(prefix)
+                upper = _prefix_successor(prefix)
+                if upper is not None:
+                    sql += " AND doc_key < ?"
+                    params.append(upper)
+        if cursor is not None:
+            sql += " AND doc_key > ?"
+            params.append(_decode_ref_cursor(cursor))
+        sql += " ORDER BY doc_key LIMIT ?"
+        params.append(limit + 1)
+        with self._storage.connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        more = len(rows) > limit
+        rows = rows[:limit]
+        items = [
+            {"key": r["doc_key"], "chars": r["chars"] or 0,
+             "metadata": loads(r["metadata"]), "updated_at": r["updated_at"]}
+            for r in rows
+        ]
+        next_cursor = _encode_ref_cursor(rows[-1]["doc_key"]) if more and rows else None
+        return {"items": items, "next_cursor": next_cursor}
+
+    @_track_op("delete_reference")
+    def delete_reference(self, key: str) -> bool:
+        """Hard-delete a REFERENCE-tier document (like ``delete_entity``; there
+        is no archive for references). Returns True when a row was removed,
+        False when the key did not exist in this tenant. Tenant scoped by the
+        ``(tenant_id, doc_key)`` primary key; the FTS index follows through
+        the existing delete trigger. In the same transaction: every edge
+        touching the document (either direction) is deleted (v6), as in
+        delete_entity, and an accepted skill proposal whose
+        ``accepted_doc_key`` is this key is marked ``superseded`` (its
+        ``accepted_doc_key`` cleared, the key kept in ``review_note``), so no
+        proposal points at a document that no longer exists. Use
+        ``delete_reference_details`` for the counts."""
+        return self._delete_reference(key)["deleted"]
+
+    @_track_op("delete_reference")
+    def delete_reference_details(self, key: str) -> dict[str, Any]:
+        """``delete_reference`` with the counts: ``{"deleted": bool,
+        "edges_removed": int, "proposals_superseded": int}``."""
+        return self._delete_reference(key)
+
+    def _delete_reference(self, key: str) -> dict[str, Any]:
+        validate_identifier(key, field_name="key")
+        edges = proposals = 0
+        with self._storage.transaction() as conn:
+            cur = conn.execute(
+                "DELETE FROM reference_documents WHERE tenant_id = ? AND doc_key = ?",
+                (self._tenant_id, key),
+            )
+            deleted = cur.rowcount > 0
+            if deleted:
+                edges = self._cascade_node_links(conn, "reference", "", key)
+                # V1 panel fix (LARCH 5): an accepted proposal must not keep
+                # pointing at a document that is gone. CORE-3: tenant clause.
+                proposals = conn.execute(
+                    "UPDATE skill_proposals SET status = 'superseded', "
+                    "accepted_doc_key = NULL, "
+                    "review_note = trim(coalesce(review_note, '') || ' [document ' || ? "
+                    "|| ' deleted ' || strftime('%Y-%m-%dT%H:%M:%fZ', 'now') || ']') "
+                    "WHERE tenant_id = ? AND status = 'accepted' AND accepted_doc_key = ?",
+                    (key, self._tenant_id, key),
+                ).rowcount or 0
+        return {"deleted": deleted, "edges_removed": int(edges or 0),
+                "proposals_superseded": int(proposals)}
+
+    # ------------------------------------------------------------------
+    # Relations (v6, spec tiered-retrieval 2.B): a node graph across tiers
+    # ------------------------------------------------------------------
+    # Nodes are NodeRef dicts: {"tier": "entity", "category": c, "key": name},
+    # {"tier": "reference", "key": doc_key}, {"tier": "state", "key": key}.
+    # Build them with entity_ref / reference_ref / state_ref. CORE-3: every
+    # statement in _links carries this client's tenant; endpoint existence is
+    # checked inside it, so naming another tenant's key cannot create an edge.
+
+    def _cascade_node_links(self, conn: sqlite3.Connection, tier: str, category: str | None,
+                            key: str) -> int:
+        """Hard-delete cascade: delete every edge touching the node, in the
+        caller's open transaction. delete_entity and delete_reference call it.
+        Never call it from archive_entity."""
+        return _links.cascade_node(conn, self._tenant_id, (tier, category or "", key))
+
+    def _write_node_links(self, conn: sqlite3.Connection, src: tuple[str, str, str],
+                          specs: list) -> list[dict[str, Any]]:
+        """MERGE POINT (links= on a node write): stage the edges of an already
+        staged node in the caller's open transaction (strict endpoints)."""
+        return _links.write_specs(conn, self._tenant_id, src, specs)
+
+    @_track_op("link")
+    def link(self, src: dict[str, Any], dst: dict[str, Any], relation: str, *,
+             metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Create (or upsert the metadata of) a typed edge ``src --relation--> dst``.
+
+        Idempotent on (src, dst, relation). Both endpoints MUST exist in this
+        tenant (entities: the active table; reference/state: their tables), else
+        NotFoundError naming the missing side. ``relation`` is case-folded and
+        at most 64 chars; ``metadata`` is an object of at most 4 KB (None keeps
+        any existing metadata). Self-loops are allowed. Edge bytes count toward
+        the free-tier cap. Both entity endpoints are (re-)stamped with their
+        live row ids, which clears ``stale``. Returns ``{"id", "created",
+        "changed"}``; ``changed`` is True only when an existing edge's metadata
+        or stamps differed (an identical re-link is a no-op and is not counted
+        as a write)."""
+        s = _links.norm_node(src, side="from")
+        d = _links.norm_node(dst, side="to")
+        rel = _links.norm_relation(relation)
+        meta = _links.norm_metadata(metadata)
+        self._cap_gate.check(proposed_delta_bytes=_links.edge_bytes(s, d, rel, meta))
+        with self._storage.transaction() as conn:
+            _links.require_exists(conn, self._tenant_id, s, "source (from)")
+            _links.require_exists(conn, self._tenant_id, d, "target (to)")
+            res = _links.upsert_edge(conn, self._tenant_id, s, d, rel, meta)
+            self._verify_committed_size(conn)
+        return res
+
+    @_track_op("unlink")
+    def unlink(self, src: dict[str, Any], dst: dict[str, Any], relation: str | None = None) -> int:
+        """Remove the edge(s) from ``src`` to ``dst``: one relation, or every
+        relation between the two when ``relation`` is None. Endpoints need not
+        exist (an archived endpoint's edges can be removed). Returns rows removed."""
+        s = _links.norm_node(src, side="from")
+        d = _links.norm_node(dst, side="to")
+        rel = _links.norm_relation(relation) if relation is not None else None
+        with self._storage.transaction() as conn:
+            return _links.delete_edges(conn, self._tenant_id, s, d, rel)
+
+    @_track_op("neighbors")
+    def neighbors(self, node: dict[str, Any], *, relation: str | list[str] | None = None,
+                  direction: str = "both", tier: str | None = None,
+                  category: str | None = None, limit: int = 50, cursor: str | None = None,
+                  preview: bool = False) -> dict[str, Any]:
+        """The edges of ``node``, paginated.
+
+        Filters: ``relation`` (one or a list), ``direction`` (out | in | both),
+        ``tier`` / ``category`` of the OTHER endpoint. Keyset pagination on
+        (created_at, id); ``limit`` clamped to [1, 200]; pass ``next_cursor``
+        back as ``cursor``. A self-loop is listed once (as "out") under "both".
+        Each edge's ``node`` is a NodeRef plus ``exists`` / ``status`` /
+        ``updated_at``; an archived entity endpoint keeps ``tier: "entity"``
+        (so the ref stays reusable) with ``exists: false, archived: true,
+        status: "archived", archived_at``. ``preview=True`` adds up to 200 chars
+        of the other node's body. Returns ``{"node", "edges", "degree":
+        {"out", "in"}, "next_cursor"}``. ``node`` is the queried node with its
+        own ``exists`` / ``archived`` / ``status`` (a mistyped name has
+        ``exists: false, archived: false``). ``degree`` counts a self-loop
+        once, as out. On a store whose edges carry endpoint identity stamps,
+        each edge has ``stale`` (an entity endpoint's stamp differs from the
+        live entity of that name)."""
+        n = _links.norm_node(node)
+        if direction not in _links.DIRECTIONS:
+            raise ValidationError("direction must be one of out, in, both")
+        if tier is not None and tier not in _links.TIERS:
+            raise ValidationError("tier must be one of entity, reference, state")
+        if category is not None:
+            validate_identifier(category, field_name="category")
+        rels = _links._norm_relations(relation)
+        try:
+            lim = int(limit)
+        except (TypeError, ValueError) as e:
+            raise ValidationError("limit must be an integer") from e
+        lim = min(max(lim, 1), _links.NEIGHBORS_LIMIT_MAX)
+        cur = _links.decode_cursor(cursor)
+        with self._storage.connection() as conn:
+            return _links.neighbors(conn, self._tenant_id, n, relations=rels,
+                                    direction=direction, tier=tier, category=category,
+                                    limit=lim, cursor=cur, preview=bool(preview))
+
+    @_track_op("links_of")
+    def links_of(self, nodes: list[dict[str, Any]], *, per_node: int = 5) -> dict[tuple, dict]:
+        """Batch edge summary for up to 200 nodes (search-hit decoration, 2.C):
+        ``{(tier, category_or_None, key): {"degree": {"out", "in"}, "by_relation":
+        {rel: n}, "sample": [{"relation", "direction", "node"}][:per_node],
+        "hub"?: True}}``. One sample edge per (direction, relation), largest
+        group first; index-only, O(degree), a constant number of statements
+        whatever the number of nodes. Self-loops count once, as out."""
+        if not isinstance(nodes, (list, tuple)):
+            raise ValidationError("nodes must be a list of NodeRef objects")
+        if len(nodes) > _links.LINKS_OF_MAX_NODES:
+            raise ValidationError(f"links_of takes at most {_links.LINKS_OF_MAX_NODES} nodes")
+        normed = [_links.norm_node(x, side=f"nodes[{i}]") for i, x in enumerate(nodes)]
+        try:
+            per = int(per_node)
+        except (TypeError, ValueError) as e:
+            raise ValidationError("per_node must be an integer") from e
+        per = min(max(per, 0), _links.LINKS_OF_PER_NODE_MAX)
+        with self._storage.connection() as conn:
+            raw = _links.links_of(conn, self._tenant_id, normed, per)
+        return {(t, c if t == "entity" else None, k): v for (t, c, k), v in raw.items()}
+
+    @_track_op("links_of")
+    def doc_neighborhood(self, category: str, name: str, *, small_hub_max: int = 60,
+                         sibling_cap: int = 60) -> dict[str, Any] | None:
+        """The owning hubs and small-hub siblings of one
+        document entity (``_links.doc_neighborhood``); None when it has no
+        source_of owner."""
+        with self._storage.connection() as conn:
+            return _links.doc_neighborhood(conn, self._tenant_id, ("entity", category, name),
+                                           small_hub_max=small_hub_max, sibling_cap=sibling_cap)
 
     # ------------------------------------------------------------------
     # Archive
@@ -1616,6 +2210,8 @@ class MemoryClient:
                 "FROM entities_fts f "
                 "JOIN entities e ON e.rowid = f.rowid "
                 "WHERE entities_fts MATCH ? AND f.tenant_id = ?" + cat_clause + " "
+                # D2: name-weighted bm25 (NAME_WEIGHT), query-time rank config.
+                "AND rank MATCH '" + _entity_rank_cfg() + "' "
                 "ORDER BY rank LIMIT ?",
                 params,
                 "entities_fts",
@@ -1931,11 +2527,12 @@ class MemoryClient:
                     conn,
                     "SELECT 'entity' AS tier, e.name AS key, e.category, e.body, "
                     "       e.updated_at AS ts, "
-                    "       snippet(entities_fts, 2, '[', ']', '...', 12) AS snip, "
+                    "       snippet(entities_fts, 2, '[', ']', '...', " + str(int(SNIPPET_TOKENS)) + ") AS snip, "
                     "       rank "
                     "FROM entities_fts f JOIN entities e ON e.rowid = f.rowid "
                     # CORE-3 lock: tenant boundary — do not remove.
                     "WHERE entities_fts MATCH ? AND f.tenant_id = ? "
+                    "AND rank MATCH '" + _entity_rank_cfg() + "' "  # D2 column weights
                     "ORDER BY rank LIMIT ?",
                     (match_q, self._tenant_id, limit),
                     "entities_fts",
@@ -1951,12 +2548,13 @@ class MemoryClient:
                     conn,
                     "SELECT 'state' AS tier, s.document_key AS key, s.body, "
                     "       s.updated_at AS ts, "
-                    "       snippet(state_documents_fts, 1, '[', ']', '...', 12) AS snip, "
+                    "       snippet(state_documents_fts, 1, '[', ']', '...', " + str(int(SNIPPET_TOKENS)) + ") AS snip, "
                     "       rank "
                     "FROM state_documents_fts f JOIN state_documents s "
                     "  ON s.rowid = f.rowid "
                     # CORE-3 lock: tenant boundary — do not remove.
                     "WHERE state_documents_fts MATCH ? AND f.tenant_id = ? "
+                    "AND rank MATCH '" + _keyed_rank_cfg() + "' "  # D2 column weights
                     "ORDER BY rank LIMIT ?",
                     (match_q, self._tenant_id, limit),
                     "state_documents_fts",
@@ -1971,12 +2569,13 @@ class MemoryClient:
                     conn,
                     "SELECT 'reference' AS tier, d.doc_key AS key, d.body, "
                     "       d.updated_at AS ts, "
-                    "       snippet(reference_documents_fts, 1, '[', ']', '...', 12) AS snip, "
+                    "       snippet(reference_documents_fts, 1, '[', ']', '...', " + str(int(SNIPPET_TOKENS)) + ") AS snip, "
                     "       rank "
                     "FROM reference_documents_fts f JOIN reference_documents d "
                     "  ON d.rowid = f.rowid "
                     # CORE-3 lock: tenant boundary — do not remove.
                     "WHERE reference_documents_fts MATCH ? AND f.tenant_id = ? "
+                    "AND rank MATCH '" + _keyed_rank_cfg() + "' "  # D2 column weights
                     "ORDER BY rank LIMIT ?",
                     (match_q, self._tenant_id, limit),
                     "reference_documents_fts",
@@ -2004,7 +2603,7 @@ class MemoryClient:
                     conn,
                     "SELECT 'journal' AS tier, j.id AS key, j.ts, "
                     "       j.evaluated, j.acted, j.forward, j.extra, "
-                    "       snippet(journal_events_fts, 1, '[', ']', '...', 12) AS snip, "
+                    "       snippet(journal_events_fts, 1, '[', ']', '...', " + str(int(SNIPPET_TOKENS)) + ") AS snip, "
                     "       f.rank AS rank "
                     "FROM journal_events_fts f JOIN journal_events j "
                     "  ON j.id = f.event_id "
@@ -2027,8 +2626,10 @@ class MemoryClient:
         # Sort by rank (lower = better in FTS5), with a tier tiebreaker: at
         # comparable rank the content tiers (entity/state/reference) sort before
         # the contentless journal tier, whose BM25 scores are not on the same
-        # scale (cross-tier rank comparability, tester report).
-        _tier_rank = {"entity": 0, "state": 0, "reference": 0, "journal": 1}
+        # scale (cross-tier rank comparability, tester report). 2.C (R3): the
+        # curated tiers also sort before reference documents, which sort before
+        # the journal (_TIER_RANK, same values as multi_record._TIER_PRIORITY).
+        _tier_rank = _TIER_RANK
         # v0.4.10: proximity re-rank. For multi-word (non-prefix) queries, bucket
         # each hit by how tightly it matches (contiguous phrase > tight window >
         # scattered) and sort by (bucket, rank, tier). This demotes short
@@ -2056,6 +2657,632 @@ class MemoryClient:
         else:
             hits.sort(key=lambda h: (h["rank"], _tier_rank.get(h["tier"], 0)))
         return hits[:limit]
+
+    # ------------------------------------------------------------------
+    # Stage-1 recall primitives for multi_record_search (2.D, 2026-10-22)
+    # ------------------------------------------------------------------
+    # Why these exist: multi_record_search used to call ``search(t, limit=200)``
+    # once per query token, which JSON-decoded and snippeted every hit body only
+    # to read (tier, key, category, rank) from it, and which capped df at 200.
+    # At 42k rows that cap made IDF identical for every common token and pushed
+    # gold rows out of coverage (spec 1.4). The fix: the same four SELECTs minus
+    # body/snippet (ids only), the true per-tier COUNT for df, and bodies loaded
+    # once for the final rows. Every statement keeps the CORE-3 tenant clause and
+    # the same ``_fts_query`` containment as ``_search_strict``.
+
+    def _strict_id_rows(self, conn: sqlite3.Connection, match_q: str,
+                        allowed: set[str], limit: int
+                        ) -> tuple[list[dict[str, Any]], dict[str, bool]]:
+        """``_search_strict``'s four SELECTs minus body and snippet.
+
+        Same LIMITs (journal at ``max(1, limit // 4)``), same rank config, same
+        concatenation order (entity, state, reference, journal) so the stable
+        sort in ``_candidate_ids`` breaks ties exactly as ``_search_strict``
+        does for a single-token query. Returns the rows and, per tier, whether
+        the tier's LIMIT bound (only those tiers need a COUNT for true df)."""
+        rows: list[dict[str, Any]] = []
+        saturated: dict[str, bool] = {}
+        if "entity" in allowed:
+            got = _fts_query(
+                conn,
+                "SELECT f.rowid AS rid, e.name AS key, e.category, rank "
+                "FROM entities_fts f JOIN entities e ON e.rowid = f.rowid "
+                # CORE-3 lock: tenant boundary — do not remove.
+                "WHERE entities_fts MATCH ? AND f.tenant_id = ? "
+                "AND rank MATCH '" + _entity_rank_cfg() + "' "
+                "ORDER BY rank LIMIT ?",
+                (match_q, self._tenant_id, limit),
+                "entities_fts",
+            )
+            saturated["entity"] = len(got) >= limit
+            rows += [{"tier": "entity", "key": r["key"], "category": r["category"],
+                      "rank": r["rank"], "_rid": r["rid"]} for r in got]
+        if "state" in allowed:
+            got = _fts_query(
+                conn,
+                "SELECT f.rowid AS rid, s.document_key AS key, rank "
+                "FROM state_documents_fts f JOIN state_documents s "
+                "  ON s.rowid = f.rowid "
+                # CORE-3 lock: tenant boundary — do not remove.
+                "WHERE state_documents_fts MATCH ? AND f.tenant_id = ? "
+                "AND rank MATCH '" + _keyed_rank_cfg() + "' "
+                "ORDER BY rank LIMIT ?",
+                (match_q, self._tenant_id, limit),
+                "state_documents_fts",
+            )
+            saturated["state"] = len(got) >= limit
+            rows += [{"tier": "state", "key": r["key"], "category": None,
+                      "rank": r["rank"], "_rid": r["rid"]} for r in got]
+        if "reference" in allowed:
+            got = _fts_query(
+                conn,
+                "SELECT f.rowid AS rid, d.doc_key AS key, rank "
+                "FROM reference_documents_fts f JOIN reference_documents d "
+                "  ON d.rowid = f.rowid "
+                # CORE-3 lock: tenant boundary — do not remove.
+                "WHERE reference_documents_fts MATCH ? AND f.tenant_id = ? "
+                "AND rank MATCH '" + _keyed_rank_cfg() + "' "
+                "ORDER BY rank LIMIT ?",
+                (match_q, self._tenant_id, limit),
+                "reference_documents_fts",
+            )
+            saturated["reference"] = len(got) >= limit
+            rows += [{"tier": "reference", "key": r["key"], "category": None,
+                      "rank": r["rank"], "_rid": r["rid"]} for r in got]
+        if "journal" in allowed:
+            journal_limit = max(1, limit // 4) if limit > 0 else 0
+            got = _fts_query(
+                conn,
+                "SELECT j.id AS key, f.rank AS rank "
+                "FROM journal_events_fts f JOIN journal_events j "
+                "  ON j.id = f.event_id "
+                # CORE-3 lock: tenant boundary — do not remove.
+                "WHERE journal_events_fts MATCH ? AND f.tenant_id = ? "
+                "ORDER BY f.rank LIMIT ?",
+                (match_q, self._tenant_id, journal_limit),
+                "journal_events_fts",
+            )
+            saturated["journal"] = len(got) >= journal_limit
+            rows += [{"tier": "journal", "key": r["key"], "category": None,
+                      "rank": r["rank"], "_rid": r["key"]} for r in got]
+        return rows, saturated
+
+    def _tier_count(self, conn: sqlite3.Connection, tier: str, match_q: str) -> int:
+        """True document frequency of ``match_q`` in one tier (D1).
+
+        ``count(*)`` with MATCH + tenant: an FTS5 index walk, no row decode
+        (measured 16 ms for 15 tokens at 70k rows, df up to 38k)."""
+        table = {"entity": "entities_fts", "state": "state_documents_fts",
+                 "reference": "reference_documents_fts",
+                 "journal": "journal_events_fts"}[tier]
+        got = _fts_query(
+            conn,
+            # CORE-3 lock: tenant boundary — do not remove.
+            f"SELECT count(*) AS n FROM {table} f "
+            f"WHERE {table} MATCH ? AND f.tenant_id = ?",
+            (match_q, self._tenant_id),
+            table,
+        )
+        return int(got[0]["n"]) if got else 0
+
+    def _candidate_ids(self, query: str, *, limit: int,
+                       tiers: tuple[str, ...] | None = None
+                       ) -> tuple[list[dict[str, Any]], int]:
+        """Ids-only strict head for ONE token, plus its true strict df.
+
+        Returns ``(rows, strict_df)``: ``rows`` is exactly the (tier, key,
+        category, rank) sequence ``_search_strict(query, limit=limit)`` returns
+        for a single-token query, with no body and no snippet; ``strict_df`` is
+        the summed per-tier COUNT (a tier is only COUNTed when its LIMIT bound;
+        otherwise its count is the rows it returned)."""
+        limit = _clamp_limit(limit)
+        match_q = _sanitize_fts5_query(query)
+        if not match_q or not limit:
+            return [], 0
+        allowed = set(tiers) if tiers else {"entity", "state", "reference", "journal"}
+        with self._storage.connection() as conn:
+            rows, saturated = self._strict_id_rows(conn, match_q, allowed, limit)
+            df = 0
+            for tier in ("entity", "state", "reference", "journal"):
+                if tier not in saturated:
+                    continue
+                if saturated[tier]:
+                    df += self._tier_count(conn, tier, match_q)
+                else:
+                    df += sum(1 for r in rows if r["tier"] == tier)
+        _tier_rank = _TIER_RANK   # the same tie-break as _search_strict
+        rows.sort(key=lambda h: (h["rank"], _tier_rank.get(h["tier"], 0)))
+        return rows[:limit], df
+
+    @_track_op("search")  # one tracked search per token, exactly as 0.9.0
+    def _recall_token(self, token: str, *, limit: int,
+                      tiers: tuple[str, ...] | None = None
+                      ) -> tuple[list[dict[str, Any]], int]:
+        """Stage-1 recall for one multi_record token: ``(candidates, df)``.
+
+        Mirrors ``_search_rows(token, limit=limit)`` row for row: the ids-only
+        strict head, then the same guarded shadow append (non-empty head, not an
+        unshortened single token) or, on an empty head, the same shadow
+        fallback. Strict rows carry ``_rid`` and no body (hydrated later, for
+        the final rows only); shadow rows come back hydrated from shadow.py and
+        pass through unchanged.
+
+        df is TRUE df: the strict COUNT plus the shadow rows actually appended
+        (the append is what makes df truthful for inflected forms; see
+        ``_search_rows``). Wherever no per-token cap binds this equals the old
+        ``len(search(token, limit=200))`` exactly.
+
+        A token the proximity re-ranker would treat as multi-word (two or more
+        match tokens) needs bodies to order its head and may take the relaxed
+        ladder, so it goes through ``_search_rows`` unchanged (df = rows).
+
+        ``tiers`` (2.C ``scope="graph"``) restricts every step, head, df COUNT
+        and shadow alike, to those tiers; None is all four, as before."""
+        if len(_match_tokens(token)) >= 2:
+            hits = self._search_rows(token, limit=limit, tiers=tiers)
+            return hits, len(hits)
+        head, strict_df = self._candidate_ids(token, limit=limit, tiers=tiers)
+        # The shadow keeps its 0.9.0 envelope at every depth: it is consulted
+        # only below 200 strict rows and returns at most 200 in total. Scaling
+        # it with K would decode bodies in stage 1 (shadow rows come back
+        # shaped), which D1 forbids: measured on a 22k-row store, letting the
+        # append run at K=1,108 cost 1.5 s of a 1.9 s query. A token with
+        # >= 200 strict rows never reached the shadow in 0.9.0 either.
+        shadow_limit = min(limit, _SHADOW_RECALL_LIMIT)
+        if head:
+            if _unshortened_single_token(token) or len(head) >= shadow_limit:
+                return head, strict_df
+            out = self._append_shadow(head, token, limit=shadow_limit, tiers=tiers,
+                                      decisive_only=True)
+            return out, strict_df + (len(out) - len(head))
+        fb = self._shadow_fallback(token, limit=shadow_limit, tiers=tiers,
+                                   normalize=True)
+        return fb, len(fb)
+
+    @_gate_only("search")
+    def _ranked_or_rows(self, tokens: list[str], *, limit: int,
+                        tiers: tuple[str, ...] | None, exclude: set[tuple],
+                        exclude_categories: frozenset[str]) -> list[dict[str, Any]]:
+        """One ranked OR pass over entities_fts (and reference_documents_fts when
+        the scope includes it). tokens are multi_record significant tokens
+        (\\w+ only), each quoted as its own phrase. Returns client.search()-shaped
+        hits with match="ranked", best first, skipping `exclude` identities.
+
+        Used only when SIBYL_MEMORY_RANKED_FALLBACK=1 (default off)."""
+        limit = int(limit)
+        toks = [t for t in tokens if t][:24]
+        if limit <= 0 or not toks:
+            return []
+        match_q = " OR ".join('"' + t.replace('"', '""') + '"' for t in toks)
+        fetch = limit + len(exclude) + 50
+        hits: list[dict[str, Any]] = []
+        with self._storage.connection() as conn:
+            if tiers is None or "entity" in tiers:
+                cat_sql, cat_args = "", ()
+                if exclude_categories:
+                    cats = sorted(exclude_categories)
+                    cat_sql = "AND e.category NOT IN (" + ",".join("?" for _ in cats) + ") "
+                    cat_args = tuple(cats)
+                for r in _fts_query(
+                    conn,
+                    "SELECT 'entity' AS tier, e.name AS key, e.category, e.body, "
+                    "       e.updated_at AS ts, "
+                    "       snippet(entities_fts, 2, '[', ']', '...', " + str(int(SNIPPET_TOKENS)) + ") AS snip, "
+                    "       rank "
+                    "FROM entities_fts f JOIN entities e ON e.rowid = f.rowid "
+                    # CORE-3 lock: tenant boundary — do not remove.
+                    "WHERE entities_fts MATCH ? AND f.tenant_id = ? "
+                    "AND rank MATCH '" + _entity_rank_cfg() + "' "  # D2 column weights
+                    + cat_sql +
+                    "ORDER BY rank LIMIT ?",
+                    (match_q, self._tenant_id) + cat_args + (fetch,),
+                    "entities_fts",
+                ):
+                    hits.append({
+                        "tier": "entity", "key": r["key"],
+                        "category": r["category"],
+                        "body": loads(r["body"]), "snippet": r["snip"],
+                        "rank": r["rank"], "ts": r["ts"],
+                    })
+            if tiers is None or "reference" in tiers:
+                for r in _fts_query(
+                    conn,
+                    "SELECT 'reference' AS tier, d.doc_key AS key, d.body, "
+                    "       d.updated_at AS ts, "
+                    "       snippet(reference_documents_fts, 1, '[', ']', '...', " + str(int(SNIPPET_TOKENS)) + ") AS snip, "
+                    "       rank "
+                    "FROM reference_documents_fts f JOIN reference_documents d "
+                    "  ON d.rowid = f.rowid "
+                    # CORE-3 lock: tenant boundary — do not remove.
+                    "WHERE reference_documents_fts MATCH ? AND f.tenant_id = ? "
+                    "AND rank MATCH '" + _keyed_rank_cfg() + "' "  # D2 column weights
+                    "ORDER BY rank LIMIT ?",
+                    (match_q, self._tenant_id, fetch),
+                    "reference_documents_fts",
+                ):
+                    hits.append({
+                        "tier": "reference", "key": r["key"], "category": None,
+                        "body": r["body"], "snippet": r["snip"],
+                        "rank": r["rank"], "ts": r["ts"],
+                    })
+        hits.sort(key=lambda h: h["rank"])
+        out: list[dict[str, Any]] = []
+        for h in hits:
+            if (h["tier"], h["key"], h["category"]) in exclude:
+                continue
+            h["match"] = "ranked"
+            out.append(h)
+            if len(out) >= limit:
+                break
+        return out
+
+    @_gate_only("search")
+    def _load_rows(self, cands: list[dict[str, Any]], *, prep_only: bool = False
+                   ) -> dict[tuple[str, Any], dict[str, Any]]:
+        """Batch-load stored rows for ids-only candidates, keyed (tier, _rid).
+
+        ``prep_only=False``: ``{"body", "ts"}`` in ``_search_strict``'s hit
+        shape (entity/state bodies JSON-decoded, reference raw, journal the
+        four-field dict). ``prep_only=True``: ``{"prep"}``, the lowercased text
+        the terminal/prep gate reads. For entity/state/journal that is
+        ``json.dumps(<decoded body>).lower()``, byte-identical to the 0.9.0
+        gate input. For reference rows (D4) it is ``metadata.status`` when
+        present, else the first 2,000 chars of the body: long documents mention
+        "draft" or "proposed" almost always, so the whole text is no PREP
+        signal. The TERM side is whole-document (V1 panel fix): a head that is
+        pure prep is replaced by ``""`` (not pure prep) when the full body
+        matches ``_TERM_RE`` (pre-screened by ``_term_candidates``, then the
+        regex, lookbehind included, on the full serialised body).
+        """
+        import json as _json
+        by_tier: dict[str, list] = {}
+        for h in cands:
+            if "_rid" in h:
+                by_tier.setdefault(h["tier"], []).append(h["_rid"])
+        out: dict[tuple[str, Any], dict[str, Any]] = {}
+        sql = _load_sql(prep_only)
+        late_term: list[Any] = []   # reference rids whose head is pure prep
+        with self._storage.connection() as conn:
+            for tier, ids in by_tier.items():
+                if prep_only:
+                    ids = self._prep_candidates(conn, tier, ids)
+                for i in range(0, len(ids), 500):
+                    chunk = ids[i:i + 500]
+                    q = sql[tier].format(",".join("?" * len(chunk)))
+                    for r in conn.execute(q, (self._tenant_id, *chunk)).fetchall():
+                        if tier == "journal":
+                            body: Any = {
+                                "evaluated": loads(r["evaluated"]),
+                                "acted": loads(r["acted"]),
+                                "forward": loads(r["forward"]),
+                                "extra": loads(r["extra"]),
+                            }
+                        elif tier == "reference":
+                            body = r["body"]
+                        else:
+                            body = loads(r["body"])
+                        if not prep_only:
+                            out[(tier, r["rid"])] = {"body": body, "ts": r["ts"]}
+                            continue
+                        src = body
+                        if tier == "reference":
+                            try:
+                                meta = loads(r["metadata"]) if r["metadata"] else None
+                            except (TypeError, ValueError):
+                                meta = None
+                            if isinstance(meta, dict) and meta.get("status") not in (None, ""):
+                                src = meta["status"]
+                        prep = _json.dumps(src).lower()
+                        out[(tier, r["rid"])] = {"prep": prep}
+                        if tier == "reference" and src is body:
+                            from .multi_record import _pure_prep
+                            if _pure_prep(prep):
+                                late_term.append(r["rid"])
+            if late_term:
+                self._clear_late_terminal(conn, late_term, out)
+        return out
+
+    def _clear_late_terminal(self, conn: sqlite3.Connection, rids: list[Any],
+                             out: dict[tuple[str, Any], dict[str, Any]]) -> None:
+        """TERM side of the prep gate, whole-document (V1 panel fix, NOCTURNE
+        EXP4): for reference rows whose head is pure prep, read the full body
+        of those the FTS pre-screen says COULD hold a terminal marker, and
+        clear the gate input (``""``, not pure prep) when ``_TERM_RE`` (its
+        ``not `` lookbehind included) matches the whole serialised body."""
+        import json as _json
+        from .multi_record import _term_anywhere
+        cand = self._term_candidates(conn, rids)
+        ids = [i for i in rids if i in cand]
+        for i in range(0, len(ids), 50):
+            chunk = ids[i:i + 50]
+            for r in conn.execute(
+                    "SELECT rowid AS rid, body FROM reference_documents "
+                    # CORE-3: tenant clause on every load (see _load_rows).
+                    "WHERE +tenant_id = ? AND rowid IN ({})".format(",".join("?" * len(chunk))),
+                    (self._tenant_id, *chunk)):
+                if _term_anywhere(_json.dumps(r["body"]).lower()):
+                    out[("reference", r["rid"])] = {"prep": ""}
+
+    def _term_candidates(self, conn: Any, rids: list[Any]) -> set[Any]:
+        """The subset of reference ``rids`` whose body COULD match ``_TERM_RE``
+        anywhere: one rowid-only FTS query (``multi_record._TERM_FTS_QUERY``, a
+        superset). Any FTS error returns every rid (the exact, slower path)."""
+        from .multi_record import _TERM_FTS_QUERY
+        try:
+            marked = {r[0] for r in conn.execute(
+                "SELECT f.rowid FROM reference_documents_fts f "
+                "WHERE reference_documents_fts MATCH ? "
+                # CORE-3 lock: tenant boundary — do not remove.
+                "AND f.tenant_id = ?",
+                (f"body : ({_TERM_FTS_QUERY})", self._tenant_id))}
+        except sqlite3.Error:
+            return set(rids)
+        return {i for i in rids if i in marked}
+
+    def _prep_candidates(self, conn: sqlite3.Connection, tier: str,
+                         ids: list[Any]) -> list[Any]:
+        """The subset of ``ids`` whose prep text COULD match ``_PREP_RE``.
+
+        A superset by construction (see ``multi_record._PREP_FTS_QUERY``): one
+        rowid-only FTS query for the rows carrying a prep marker token, plus,
+        for reference rows, every row whose metadata may hold ``status``. The
+        rest would serialise to text the prep regex cannot match, so the gate
+        reads "" for them, exactly its answer on the full text. Any FTS error
+        returns ``ids`` unchanged (the exact, slower path)."""
+        from .multi_record import _PREP_FTS_QUERY
+        table, col, key = {
+            "entity": ("entities_fts", "body", "rowid"),
+            "state": ("state_documents_fts", "body", "rowid"),
+            "reference": ("reference_documents_fts", "body", "rowid"),
+            "journal": ("journal_events_fts", "payload", "event_id"),
+        }[tier]
+        try:
+            marked = {r[0] for r in conn.execute(
+                f"SELECT f.{key} FROM {table} f WHERE {table} MATCH ? "
+                # CORE-3 lock: tenant boundary — do not remove.
+                "AND f.tenant_id = ?",
+                (f"{col} : ({_PREP_FTS_QUERY})", self._tenant_id))}
+            if tier == "reference":
+                for i in range(0, len(ids), 500):
+                    chunk = ids[i:i + 500]
+                    marked.update(r[0] for r in conn.execute(
+                        "SELECT rowid FROM reference_documents "
+                        # CORE-3: tenant clause on every load (see _load_rows).
+                        "WHERE +tenant_id = ? AND rowid IN ({}) "
+                        "AND metadata IS NOT NULL AND (instr(metadata, 'status') > 0 "
+                        "OR instr(metadata, '\\u') > 0)".format(",".join("?" * len(chunk))),
+                        (self._tenant_id, *chunk)))
+        except sqlite3.Error:
+            return ids
+        return [i for i in ids if i in marked]
+
+    def _snippet_for(self, conn: sqlite3.Connection, tier: str, rid: Any,
+                     terms: list[str]) -> str | None:
+        """A SNIPPET_TOKENS-token snippet of one row, centred on the densest
+        match of ``terms`` (an OR of the query tokens this row matched)."""
+        phrases = [p for p in (_sanitize_fts5_query(t) for t in terms) if p]
+        if not phrases:
+            return None
+        match_q = " OR ".join(phrases)
+        n = str(int(SNIPPET_TOKENS))
+        if tier == "journal":
+            table = "journal_events_fts"
+            sql = ("SELECT snippet(journal_events_fts, 1, '[', ']', '...', " + n + ") AS s "
+                   "FROM journal_events_fts f WHERE journal_events_fts MATCH ? "
+                   # CORE-3 lock: tenant boundary — do not remove.
+                   "AND f.tenant_id = ? AND f.event_id = ?")
+        else:
+            table, col = {"entity": ("entities_fts", 2),
+                          "state": ("state_documents_fts", 1),
+                          "reference": ("reference_documents_fts", 1)}[tier]
+            sql = (f"SELECT snippet({table}, {col}, '[', ']', '...', " + n + ") AS s "
+                   f"FROM {table} f WHERE {table} MATCH ? "
+                   # CORE-3 lock: tenant boundary — do not remove.
+                   "AND f.tenant_id = ? AND f.rowid = ?")
+        try:
+            got = _fts_query(conn, sql, (match_q, self._tenant_id, rid), table)
+        except Exception:
+            return None
+        return got[0]["s"] if got else None
+
+    @_gate_only("search")
+    def _hydrate_hits(self, items: list[tuple[dict[str, Any], list[str]]]
+                      ) -> list[dict[str, Any]]:
+        """Turn final ids-only candidates into ``_search_strict``-shaped hits.
+
+        ``items`` is ``[(candidate, snippet_terms)]`` in final order. Rows that
+        already carry a body (shadow rows, multi-word-token fallback rows) pass
+        through untouched. A row deleted between recall and hydration is dropped:
+        it no longer exists, and returning it would invent it."""
+        loaded = self._load_rows([h for h, _ in items])
+        out: list[dict[str, Any]] = []
+        with self._storage.connection() as conn:
+            for h, terms in items:
+                if "_rid" not in h:
+                    out.append(h)
+                    continue
+                row = loaded.get((h["tier"], h["_rid"]))
+                if row is None:
+                    continue
+                out.append({
+                    "tier": h["tier"], "key": h["key"], "category": h["category"],
+                    "body": row["body"],
+                    "snippet": self._snippet_for(conn, h["tier"], h["_rid"], terms),
+                    "rank": h["rank"], "ts": row["ts"],
+                })
+        return out
+
+    # ------------------------------------------------------------------
+    # Tier-aware search primitives (spec tiered-retrieval 2.C, R3)
+    # ------------------------------------------------------------------
+    @_gate_only("search")
+    def _name_matches(self, query: str) -> list[dict[str, Any]]:
+        """Stage 0 of multi_record_search: the entities this query NAMES.
+
+        Ids-only candidates (``_rid``, no body), best first, each tagged
+        ``match``:
+
+        * ``"name"``: ``lower(name)`` equals the ASCII-folded query (index
+          ``entities_tenant_lname``), or, for ``<category>:<name>``, the name
+          after the prefix within that category. Up to NAME_EXACT_MAX rows,
+          newest first.
+        * ``"name_partial"``: up to NAME_PARTIAL_MAX further rows whose NAME
+          column holds the query as a phrase (``name : "<query>"``), ordered by
+          the name-weighted bm25 (NAME_WEIGHT). Only for queries of at most
+          NAME_PARTIAL_MAX_TOKENS words: a question is not a name.
+
+        Exact or phrase-on-name only: body text never qualifies a row here, so
+        this is not a way around the verify gates for body text. The partial
+        phrase is skipped for a single-token query shorter than 4 chars (the
+        exact probe still runs: "IBM" is a name); everything is skipped for a
+        query longer than an identifier. sqlite's ``lower()`` folds ASCII only, so a
+        non-ASCII name matches case-sensitively in its non-ASCII letters. The
+        shard case (one parent card and many rows whose names contain the
+        parent's name) resolves to the parent: its name is the exact one.
+        CORE-3: every statement carries this client's tenant; the equality is
+        parameterised and the phrase goes through FTS5 string quoting."""
+        q = (query or "").strip()
+        if not q or len(q) > _IDENT_MAX_LENGTH:
+            return []
+        # V1 panel fix (NOCTURNE): the exact probe runs for every length (IBM,
+        # AWS, Bob are names); only the partial phrase keeps the 4-char guard,
+        # where a short token would phrase-match half the store's names.
+        name_q, cat_q = q, None
+        m = _NAME_PREFIX_RE.match(q)
+        exact: list[dict[str, Any]] = []
+        with self._storage.connection() as conn:
+            def _exact(name: str, category: str | None) -> list[sqlite3.Row]:
+                # No ORDER BY in SQL: with one, SQLite (no ANALYZE stats)
+                # drove the probe through entities_updated_at (tenant_id) and
+                # scanned the whole tenant (57 ms at 100k rows) instead of the
+                # one-key lookup on entities_tenant_lname. The few rows that
+                # share a name are ordered here instead.
+                sql = _NAME_EXACT_SQL
+                args: list[Any] = [self._tenant_id, _ascii_fold(name)]
+                if category is not None:
+                    sql += " AND lower(category) = ?"
+                    args.append(_ascii_fold(category))
+                sql += " LIMIT ?"
+                args.append(_NAME_EXACT_SCAN)
+                got = conn.execute(sql, args).fetchall()
+                got.sort(key=lambda r: r["category"])                           # tie: category
+                got.sort(key=lambda r: r["updated_at"] or "", reverse=True)    # newest first
+                return got[:NAME_EXACT_MAX]
+
+            rows = _exact(q, None)
+            if not rows and m:
+                # `person:maya patel` -> `maya patel` in category `person`. The
+                # whole query is tried first: names may themselves contain ':'.
+                cat_q, name_q = m.group(1).strip(), m.group(2).strip()
+                rows = _exact(name_q, cat_q)
+            elif rows:
+                m = None   # the whole query is the name; no prefix reading
+            if m is None:
+                name_q, cat_q = q, None
+            exact = [{"tier": "entity", "key": r["name"], "category": r["category"],
+                      "rank": 0.0, "_rid": r["rid"], "match": "name"} for r in rows]
+            seen = {h["_rid"] for h in exact}
+            partial: list[dict[str, Any]] = []
+            short = len(name_q.split()) == 1 and len(name_q) < 4
+            if not short and 0 < len(_match_tokens(name_q)) <= NAME_PARTIAL_MAX_TOKENS:
+                phrase = 'name : "' + name_q.replace('"', '""') + '"'
+                cat_clause = " AND lower(e.category) = ?" if cat_q is not None else ""
+                args2: list[Any] = [phrase, self._tenant_id]
+                if cat_q is not None:
+                    args2.append(_ascii_fold(cat_q))
+                args2.append(len(exact) + NAME_PARTIAL_MAX)
+                got = _fts_query(
+                    conn,
+                    "SELECT f.rowid AS rid, e.name AS key, e.category, rank "
+                    "FROM entities_fts f JOIN entities e ON e.rowid = f.rowid "
+                    # CORE-3 lock: tenant boundary — do not remove.
+                    "WHERE entities_fts MATCH ? AND f.tenant_id = ?" + cat_clause + " "
+                    "AND rank MATCH '" + _entity_rank_cfg() + "' "
+                    "ORDER BY rank LIMIT ?",
+                    tuple(args2),
+                    "entities_fts",
+                )
+                ranks = {r["rid"]: r["rank"] for r in got}
+                for h in exact:
+                    h["rank"] = ranks.get(h["_rid"], 0.0)
+                for r in got:
+                    if r["rid"] in seen or len(partial) >= NAME_PARTIAL_MAX:
+                        continue
+                    seen.add(r["rid"])
+                    partial.append({"tier": "entity", "key": r["key"],
+                                    "category": r["category"], "rank": r["rank"],
+                                    "_rid": r["rid"], "match": "name_partial"})
+        return exact + partial
+
+    @_gate_only("search")
+    def _decorate_hits(self, hits: list[dict[str, Any]], *,
+                       with_links: bool = False,
+                       info: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Add the 2.C hit fields to final, hydrated hits (new dicts; order kept).
+
+        ``chars``: length of the full stored body as surfaced (reference: the
+        document string; other tiers: its JSON rendering), so an agent can tell
+        whether the 1,500-char body is the whole thing. ``title``:
+        ``metadata.title`` for reference hits (one keyed batch read), None
+        otherwise. ``links`` (only when ``with_links``): the node's edge summary
+        ``{"degree", "by_relation", "sample"[:5]}`` from ONE batch statement
+        over memory_links for all hits (``_links.links_of``); journal hits are
+        not graph nodes and get ``None``. Never called by the raw ``search()``
+        primitive, which stays link-free.
+
+        Decoration never fails a search (panel theme F): a sqlite3.Error /
+        StorageError while reading titles or edges (a missing memory_links
+        index, a damaged table) leaves ``title`` / ``links`` None on every hit
+        and records why in ``info["note"]``. ``info`` (optional, filled in
+        place) also gets ``links_ms``, the wall time of the edge summary."""
+        out = [dict(h) for h in hits]
+        if not out:
+            return out
+        ref_keys = list(dict.fromkeys(
+            h["key"] for h in out if h.get("tier") == "reference" and h.get("key")))
+        titles: dict[str, str | None] = {}
+        links: dict[tuple, dict[str, Any]] | None = {}
+        notes: list[str] = []
+        with self._storage.connection() as conn:
+            try:
+                for i in range(0, len(ref_keys), 500):
+                    chunk = ref_keys[i:i + 500]
+                    for r in conn.execute(
+                            "SELECT doc_key, metadata FROM reference_documents "
+                            # CORE-3: tenant clause on every load.
+                            "WHERE tenant_id = ? AND doc_key IN ({})".format(
+                                ",".join("?" * len(chunk))),
+                            (self._tenant_id, *chunk)).fetchall():
+                        titles[r["doc_key"]] = _meta_title(r["metadata"])
+            except (sqlite3.Error, StorageError) as e:
+                titles = {}
+                notes.append(f"titles unavailable ({type(e).__name__})")
+            if with_links:
+                nodes = list(dict.fromkeys(
+                    n for n in (_hit_node(h) for h in out) if n is not None))
+                if nodes:
+                    t0 = time.perf_counter()
+                    try:
+                        links = _links.links_of(conn, self._tenant_id,
+                                                nodes[:_links.LINKS_OF_MAX_NODES],
+                                                HIT_LINK_SAMPLE)
+                    except (sqlite3.Error, StorageError) as e:
+                        links = None
+                        notes.append(f"links unavailable ({type(e).__name__}); "
+                                     "hits returned without edge summaries")
+                    if info is not None:
+                        info["links_ms"] = round((time.perf_counter() - t0) * 1000, 3)
+        if info is not None and notes:
+            info["note"] = "; ".join(notes)
+        for h in out:
+            if "chars" not in h:
+                h["chars"] = _body_chars(h.get("body"))
+            h["title"] = titles.get(h.get("key")) if h.get("tier") == "reference" else None
+            if with_links:
+                node = _hit_node(h)
+                h["links"] = (links.get(node) if node is not None and links is not None
+                              else None)
+        return out
 
     # ------------------------------------------------------------------
     # Helpers

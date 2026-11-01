@@ -174,13 +174,15 @@ def test_short_garbage_query_does_not_fanout(tmp_path):
     c = MemoryClient.local(tmp_path / "fan.db", tenant_id="fan")
     c.set_entity("ops", "inwentaryzacja", {"text": "inwentaryzacja magazynu zaplanowana na piatek"})
     calls = {"n": 0}
-    real = c.search
+    # 2.D (2026-10-22): stage 1's per-token primitive is `_recall_token` (the
+    # ids-only twin of `search`); the fan-out bound is asserted on it.
+    real = c._recall_token
     def _counting(q, **kw):
         calls["n"] += 1
         return real(q, **kw)
-    c.search = _counting
+    c._recall_token = _counting
     # 24 unique 4-char ASCII-alpha nonsense tokens; none is a lexicon function word
     garbage = [a + b + c2 + d
                for a in "zwq" for b in "xkv" for c2 in "pmt" for d in "gh"][:24]
     assert multi_record_search(c, " ".join(garbage), limit=10) == []
-    assert calls["n"] == 1, f"expected 1 client.search() call (early abort), got {calls['n']}"
+    assert calls["n"] == 1, f"expected 1 per-token recall call (early abort), got {calls['n']}"

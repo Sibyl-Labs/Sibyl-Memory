@@ -552,6 +552,9 @@ GATED = [
     ("read_events", (), {}),
     ("set_reference", ("k", "body"), {}),
     ("get_reference", ("k",), {}),
+    ("read_reference", ("k",), {}),
+    ("list_references", (), {}),
+    ("delete_reference", ("k",), {}),
     ("archive_entity", ("c", "n"), {}),
     ("search", ("anything",), {}),
     ("search_entities", ("anything",), {}),
@@ -561,6 +564,11 @@ GATED = [
     ("list_skill_proposals", (), {}),
     ("accept_skill_proposal", ("p",), {}),
     ("reject_skill_proposal", ("p",), {}),
+    # v6 relations (spec tiered-retrieval 2.B)
+    ("link", ({"tier": "state", "key": "a"}, {"tier": "state", "key": "b"}, "r"), {}),
+    ("unlink", ({"tier": "state", "key": "a"}, {"tier": "state", "key": "b"}), {}),
+    ("neighbors", ({"tier": "state", "key": "a"},), {}),
+    ("links_of", ([{"tier": "state", "key": "a"}],), {}),
 ]
 
 

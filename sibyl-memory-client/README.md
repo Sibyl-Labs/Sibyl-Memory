@@ -10,6 +10,14 @@ pip install sibyl-memory-client
 
 Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through WSL2. Native Windows is not supported.
 
+**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.0, hermes 0.6.0, cli 0.6.0), and each one requires the client of its own release. Upgrade them together, never one alone:
+
+```bash
+sibyl update --apply
+# or, without the CLI:
+pip install -U sibyl-memory-client sibyl-memory-mcp sibyl-memory-hermes sibyl-memory-cli
+```
+
 ## Quickstart
 
 Sign in once (an account is required since 0.9.0; see below):
@@ -61,9 +69,28 @@ Most agent-memory products store everything on someone else's servers, treat eve
 | What you're working on right now | HOT state | `set_state(key, body)` / `get_state(key)` |
 | Things the agent knows about | WARM entities | `set_entity(kind, name, body)` / `get_entity` |
 | What happened, in time order | COLD journal | `write_event(...)` / `read_events(...)` |
-| Documents you look up by name | REFERENCE | `set_reference(key, body)` / `get_reference` |
+| Documents you look up by name | REFERENCE | `set_reference(key, body, metadata=, links=)` / `read_reference` (paged) / `list_references` |
+| Facts that join two nodes | LINKS | `link(src, dst, relation)` / `neighbors(node)` / `links=` on `set_entity` and `set_reference` |
 | Frozen things, kept but out of the way | ARCHIVE | `archive_entity(kind, name)` |
-| Search across everything | FTS5 | `search_entities(query)` |
+| Search across everything | FTS5 | `multi_record_search(client, query, scope=, with_links=)` (gated) / `search(query)` (raw) |
+
+### Write a card, link the documents, read top-down
+
+An **entity** is a thing you will name again; its body is a card under about
+1 KB (name, aliases, kind, status, one-line summary). Anything you would read in
+full (a transcript, spec, thread, long analysis) is a **reference** document,
+keyed `kind/slug` with `metadata.title`. A **link** joins two nodes
+(`person --works_at--> company`, `hub --source_of--> doc`, `doc --about--> project`)
+and is written with the node, in the same call. Hubs keep membership in links,
+not in their body.
+
+Reading goes top-down. `multi_record_search` resolves a query that IS an entity
+name first (`match: "name"`; `category:name` works too); `scope="graph"` searches
+entities + state only. Each hit carries `match`, `chars`, `title` and, with
+`with_links=True`, a `links` summary (degree, counts by relation, five sample
+edges). Then `neighbors(node, tier="reference")` walks to the documents and
+`read_reference(key, offset=...)` pages through one. At equal relevance entity
+and state rows rank ahead of documents, which rank ahead of the journal.
 
 ### Forgetting vs deleting
 
@@ -81,6 +108,15 @@ removes the row outright. Use archive to declutter, delete to truly forget.
 - Memory linter (paid-tier): a health check on the local database.
 - Tier gating: free-tier callers get clear errors pointing at the upgrade page; paid-tier callers get full access.
 - Uniform millisecond timestamp precision across all tiers (v0.4.3).
+
+### Retrieval options (0.10.0, environment variables read at call time)
+
+| Var | Default | Effect |
+|-----|---------|--------|
+| `SIBYL_MEMORY_RECALL_HUBS` | on | `0` turns off the `hubs` / `siblings` keys on `memory_recall` (they appear only for an entity that a hub links to with `source_of`) |
+| `SIBYL_MEMORY_RECALL_SMALL_HUB_MAX` / `SIBYL_MEMORY_RECALL_SIBLING_CAP` | 60 / 60 | Largest hub whose other records are listed as siblings; most sibling rows in one result |
+| `SIBYL_MEMORY_RANKED_FALLBACK` | off | `1`: a search of 3+ significant words that comes back short is filled with ranked candidates (`match: "ranked"`, verdict `ranked_appended`). Tuning: `SIBYL_MEMORY_RANKED_MIN_TOKENS` (3), `SIBYL_MEMORY_RANKED_EXCLUDE_CATEGORIES` (comma list) |
+| `SIBYL_MEMORY_HOP_OWNERS` | off | `1`: a document's `links` summary lists its owning hubs first (with `doc_count`) plus `owners_total` |
 
 ## Account required (0.9.0)
 
@@ -131,6 +167,7 @@ once.
 | Automatic debloat | no | yes: `propose` by default; a file is trimmed by itself only after you run `sibyl debloat auto <file>` (that file at its path, never the same name elsewhere) |
 | Automatic save by active time: once early (after 5 memory writes or a compaction), then about every 60 minutes of active work, only when there is something to save, at most 8 a session and 12 a day (`sibyl autosave every <30-240>` or `sibyl autosave off`). Claude Code: the Stop hook asks your agent to run the save procedure headless (a scripted `claude -p` run is never asked); Cursor, Codex and other MCP hosts: a `notice` on the next tool result; Hermes: a note in the next prefetch. A session capsule (counts only) at compaction and session end. Each automatic save is one extra model turn that reads and writes memory | no | yes |
 | Skill proposals: Sibyl finds repeated work in your journal (locally, no network), names up to 3 at a session start at most once a day, and creates nothing without a yes (`/sibyl-save curate`, or `sibyl skills proposals accept <id>`, which writes the skill for Claude Code, Codex and Hermes) | no (`/sibyl-save` still offers skills when you run it) | yes |
+| Skill signals (0.10): Sibyl also notices a tool sequence your agent repeats (in Claude Code the whole workflow, for example `Read -> Edit -> Bash`; in Codex, Cursor and Hermes the memory tools only) and an entity rewritten again and again, and proposes a skill for it the same way. It keeps one small local file, `~/.sibyl-memory/signals.json`: tool and MCP server names in plain text, argument names and entity names only as hashes, never a value, never a prompt or a file path; nothing leaves your computer. `sibyl skills signals` shows its size, `clear` deletes it, `off` stops it. In Claude Code a proposal from the workflow appears at the next session start at the earliest | no (nothing is recorded) | yes |
 
 The procedures are vendored, with attribution, from the public MIT repos
 [sibyl-save](https://github.com/Sibyl-Labs/sibyl-save) and

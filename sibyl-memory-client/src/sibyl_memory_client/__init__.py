@@ -43,7 +43,7 @@ from ._capcheck import (
     TierCacheEntry,
     TierVerificationError,
 )
-from .client import DEFAULT_TENANT, MemoryClient
+from .client import DEFAULT_TENANT, MemoryClient, entity_ref, reference_ref, state_ref
 from .exceptions import (
     ConflictError,
     EntitlementError,
@@ -94,6 +94,9 @@ except PackageNotFoundError:  # pragma: no cover - source-tree dev only
 __all__ = [
     # core
     "MemoryClient",
+    "entity_ref",
+    "reference_ref",
+    "state_ref",
     "Storage",
     "DEFAULT_TENANT",
     # exceptions

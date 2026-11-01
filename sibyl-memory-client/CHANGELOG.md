@@ -4,6 +4,539 @@ All notable changes to `sibyl-memory-client` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.10.0] - 2026-10-31
+
+One release: the paid tier R2 line, the shipped 0.9.0 family fixes it was built beside, the graph line (tiered retrieval and relations) and the release merge items below.
+
+### Release summary
+- Typed links between entities, reference documents and state (`link`, `unlink`, `neighbors`,
+  `links_of`; schema v6 `memory_links`). Existing `entity_relations` rows are copied once, on first
+  open, in one transaction; nothing existing is rewritten, and a 0.9.0 client still opens the store.
+- Reference documents: paged read, list and delete. Tier-aware search with a token output budget.
+- `doc_neighborhood`: a document's owning hubs and small-hub siblings (used by MCP `memory_recall`).
+- Pro: skill signals (tool names and hashes only, local) feed workflow proposals.
+- `MemoryClient(telemetry=False)` turns the usage count off for one client.
+
+### Release merge (2026-10-28)
+- Recall neighborhood (from the hopfix line): `MemoryClient.doc_neighborhood`, `_links.owners_of`,
+  `hub_members`, `doc_neighborhood`; `output_budget` drops `owners_total` in its counts-only stage.
+- Two retrieval flags, both default OFF (they reproduce the agent-bench harness configuration):
+  `SIBYL_MEMORY_RANKED_FALLBACK=1` (a short multi-record result is filled with ranked candidates,
+  `match: "ranked"`, verdict `ranked_appended`, code `ranked_fallback` when no gated row existed;
+  tuning `SIBYL_MEMORY_RANKED_MIN_TOKENS`, `SIBYL_MEMORY_RANKED_EXCLUDE_CATEGORIES`) and
+  `SIBYL_MEMORY_HOP_OWNERS=1` (a document's link sample lists its owning hubs first, `owners_total`).
+  Unset, the verdict envelope keeps its 19 keys. Documented in the README.
+- `telemetry: bool | None = None` on `MemoryClient.__init__` and `MemoryClient.local`: False selects
+  the null heartbeat; None or True follow `SIBYL_MEMORY_TELEMETRY` (on unless "0").
+- Known limit, large stores: `count_touching` scans a tenant's edges per entity insert (felt near
+  111k edges) and the search shadow triggers scan at about 680k rows. Not fixed in this release.
+- Tests: `test_hopfix_neighborhood_2026_10_28.py` (8), `test_hopfix_flags_2026_10_28.py` (8),
+  `test_upgrade_0_9_0_store_2026_10_28.py` (4: the 0.9.0 fixture and a store the 0.9.0 client
+  creates; base tables hashed before and after, second open a no-op, the 0.9.0 client reads and
+  searches the upgraded file, a crash inside the copy rolls back), `test_telemetry_param_2026_10_28.py` (5).
+
+### Paid tier R2: skill signals (built 2026-09-29)
+
+Spec plugin-paid-tier-r2-spec-2026-09-29 section 1 (skill signals). Follow-up release to 0.9.0;
+minor, no break. BYOK drafting (spec section 2) is not in this release (operator 2026-09-29):
+proposals stay fully local with the deterministic draft.
+
+### Changed (tier convention, 2026-10-05; carried from 0.9.0)
+- The shared `tiers` module (free / pro / elite, legacy labels as input aliases, an unrecognised
+  label is Free with reason `tier_unknown`) is carried from 0.9.0 / 0.5.0 unchanged (cherry-picked
+  onto this line; no conflict in the client). See the 0.9.0 entry. Suite 866 + 11 skipped ->
+  903 + 11 skipped.
+
+### Added
+- `lifecycle.signals`: the Pro skill-signal recorder and its file `~/.sibyl-memory/signals.json`
+  (0600, atomic, symlink-refusing, read bounded at 64 KB, a damaged file is empty, written under
+  `lifecycle.lock`). Tool events keep the tool name (64 characters of `[A-Za-z0-9_.:-]`) and
+  `arg_shape`, the first 12 hex of sha256 over the sorted TOP-LEVEL argument key names; never a
+  value, a nested key, a key name in plain text, a result, a path or a prompt. Entity writes
+  (`set_entity`, `delete_entity`, `archive_entity`) keep only `sha256(tenant:category:name)[:16]`.
+  N-grams of 3 to 5 tool calls with day buckets, per-session counts and recent timestamps.
+  Bounds on every write and load: 200 n-grams (lowest count, then oldest, evicted), 14-day
+  drop under 3 hits, 30-day drop for everything and 30 days after a proposal, 7 day buckets,
+  200 entity keys of 32 writes, 7-day write retention, 64 KB file cap.
+- Recording is armed only on a verified paid entitlement (`automation_allowed`); free and locked
+  devices create no buffer and no file. `lifecycle.json` `skills.signals` turns it off;
+  `skills.signals_since` is a floor moved by `on` and `clear`, so a running process can never
+  write back what was cleared and a transcript is never read back over the time it was off.
+- `SignalBuffer` (one per home and process): cheap `note_tool` / `note_entity_write`, flushed at
+  most every 30 s or 20 events and at exit. `record_transcript` / `read_slice`: the Claude Code
+  Stop hook's incremental transcript slice (stored byte offset and a hash of the path in the
+  session's `lifecycle.json` entry, at most 4 MiB per call, complete lines only, offset reset on
+  a changed or truncated transcript, sidechain entries skipped).
+- The client's write path (`_note_lifecycle_write`, only for clients a plugin surface enabled)
+  records entity writes; writes inside `suppressed()` (capsules, trims, the Hermes journal, the
+  learner) are not recorded.
+- Learner: `Learner.run(signals=)` runs two new detectors, also when the journal has nothing new.
+  `tool_sequence`: 3 times in one session, or 5 times in 7 days across 2 sessions; all-identical
+  names and memory-read-only sequences excluded; the longest gram wins over a contained gram seen
+  no more often, and the windows of one loop are one pattern; confidence 0.60 + 0.05 per hit
+  over 3, +0.05 across sessions, cap 0.85; slug `seq-<t1>-<t2>-<t3>` (`mcp__x__y` -> `x-y`), plus
+  4 hex of the shapes when two sequences share names but not shapes. `correction_loop`: 3
+  rewrites of one entity in one session spanning at least 10 minutes, or a delete/archive then a
+  write within 24 h; confidence 0.65, 0.75 across sessions; slug `fix-<category>-<name>` when the
+  hash resolves against the entities in `memory.db` at run time (one bounded SELECT), else
+  `fix-<hash8>` and "an entity that has since been removed". Synthetic evidence (`event_id` null,
+  timestamp, one-line snippet); the local-deterministic summarizer has a body for each kind.
+  `LearningRunReport.signal_keys`.
+- `proposals.KINDS` gains `tool_sequence` and `correction_loop` (mute works for both);
+  `is_relevant` waives the two-sessions span rule for `tool_sequence` and (R2F-N1)
+  `correction_loop`; `run_learner` loads the snapshot (nothing when recording is off) and marks
+  the tool sequences that became a proposal.
+- `testing.REAL_HOME_WATCHED` includes `signals.json`.
+
+### Tests
+- `tests/test_signals_2026_09_29.py` (29): canaries in argument values and key names, entity
+  names and search queries never on disk; free, locked, SDK and suppressed writes record nothing;
+  off, on and clear; every bound; damaged, oversize, planted and symlinked files; 0600; two
+  processes flushing under the lock; the import-graph source guard (no network module imports
+  the signals module, the module imports no network library, importing the client does not load
+  it).
+- `tests/test_learning_signals_2026_09_29.py` (18): both detectors' thresholds, exclusions,
+  longest gram and loop rules, slugs, confidence, resolved and removed naming, summarizer bodies,
+  `Learner.run(signals=)`, muted kinds, blocked slugs and the 30-day cool-off, the span waiver,
+  the pending line, a valid SKILL.md and reference copy, `run_learner` marking proposals, and
+  a canary entity named only in `memory.db`.
+
+### Changed (R2 check fixes, 2026-09-30)
+- R2F-N1: `correction_loop` joins the span-rule waiver. Its detector fires at 10 minutes in one
+  session; `is_relevant` still demanded 30, so loops between 10 and 30 minutes were detected and
+  then never named. The detector's own thresholds are the gate; confidence, evidence count,
+  recency, the anchor and muting still apply.
+- R2F-N2: `signals.json` no longer carries an `entity_proposed` map (it was written by
+  `mark_proposed` and never read; the learner's slug rules already stop a re-proposal).
+  `mark_proposed(home, ngram_keys, *, now)` takes no entity keys. A file that still has the key
+  loads normally and the next write drops it.
+- R2F-N4 (README): the signals file keeps tool and MCP server names in plain text.
+- Tests: +2 (`test_learning_signals` N1 case; `test_signals` old-file load), the span-waiver and
+  `mark_proposed` tests updated. 866 passed, 11 skipped.
+
+### Tiered retrieval and relations (graph line, built 2026-10-22)
+
+### Added - `output_budget` (2026-10-22)
+- `sibyl_memory_client.output_budget`: `shape_hits(hits, fits, snippet_only=True)` (the
+  degrade order shared by the MCP server and the Hermes adapter: snippet-hit body prefix
+  500 -> 150 -> omitted, snippet -> 250 chars around the match, link `sample` -> counts,
+  then trailing hits; the first stage that fits wins, the top hit is always kept),
+  `estimate_tokens` (ceil(ascii/4) + one per non-ASCII char), `within`, `budget_from_env`
+  (chars; default 45,000) and `token_budget_from_env` (default 22,000). SAVE.md (v1.2.0,
+  hash and manifest recomputed): a search result is held to about 22,000 tokens and says
+  what it dropped (`verdict.truncated`).
+
+### Fixed - Edge identity, adoption and the v6 copy (V1 panel theme A + migration should-fix, 2026-10-22)
+- **Endpoint identity stamp.** `memory_links` gains nullable `from_entity_id` /
+  `to_entity_id` (entity endpoints only; reference/state stay NULL) and `updated_at`.
+  `link()` and `links=` stamp both ends with the live row ids; re-asserting an edge
+  re-stamps it. An edge side is **stale** when it carries a stamp and a live entity
+  holds its (category, key) under a different id (archive + re-create, a namesake);
+  a side with no live row is dangling, not stale; a NULL stamp is never stale. Edges
+  still survive archive (operator decision 1). Read-side contract:
+  `_links.STALE_SIDE_SQL` / `_links.stale_sql(alias)` (SQL boolean) and
+  `_links.stale_ids(conn, tenant, ids)` (set of stale ids for a page of edges);
+  neighbors/links_of render it as `stale: true`.
+- `set_entity` on INSERT returns `inherited_links: n`: edges already keyed to the new
+  name (written for an earlier row), counted before the call's own `links=`. Absent on
+  update. MCP `memory_remember` surfaces it when n > 0.
+- `link()` returns `{"id", "created", "changed"}`; `changed` is True only when an
+  existing edge's metadata or stamps differed (`updated_at` bumps only then). An
+  identical re-link, or an `unlink` that removed nothing, is not counted as a
+  lifecycle write. MCP `memory_link` returns `changed`.
+- **Stores already at v6** (earlier V1 builds) get the new columns, plus
+  `tenant_adoptions.links_audit`, by additive `ALTER TABLE` on open, with the stamp
+  backfill, in ONE transaction (crash leaves the store as it was; the next open
+  retries). Backfill: the live id only if that row existed when the edge was written,
+  else the newest archived row of that name archived after the edge, else NULL.
+- **Adoption** no longer moves edges onto a different row that holds the same name.
+  Before memory_links moves, each default-tenant edge side whose endpoint is not a live
+  default row is resolved in order: (1) its stamp names a live row -> re-pointed to
+  that row's current name; (2) unstamped with one audited rename from an earlier
+  adoption into this account (0.9.0 or V1) -> the renamed key (replay); two different
+  audited renames -> held; (3) unstamped, live in the account AND the account holds a
+  `(before sign-in)` twin -> **held** (not moved, recorded); (4) an entity live in the
+  account under another identity (stamped id gone, archived in the default tenant, or
+  no earlier adoption could have moved it) -> **collision**: renamed with the
+  before-sign-in suffix in memory_links and in the archived rows of that name, audited
+  as a rename; (5) otherwise moved as is (dangling sides counted). An entity rename
+  moves only edges stamped with that row (or unstamped). A rename or re-point that
+  would duplicate an existing edge (UNIQUE) **drops the moving copy and audits it**
+  instead of rolling the adoption back on every sign-in. When only held edges remain,
+  adoption returns `nothing_to_move` with `held_links` and writes no audit row.
+- **Audit shape.** `tenant_adoptions.renamed` is again a homogeneous list of key renames
+  (`{table, category?, from, to, reason?}`); edge outcomes go in the new
+  `links_audit` JSON object `{dropped, held, resolved, dangling}` (each dropped/held
+  edge `{id, from, to, relation, metadata, reason}`, reasons `duplicate`,
+  `rename_collision`, `twin`, `ambiguous_rename`). `AdoptionResult` gains
+  `dropped_links`, `held_links`, `resolved_links`, `dangling_links`
+  (`dropped_duplicate_links` kept); `adoption_history()` rows gain `links`.
+- `_links.rename_endpoint(..., entity_id=, dropped=)` rewrites per edge; a test asserts
+  every function in the package that runs `UPDATE entities SET name` /
+  `UPDATE reference_documents SET doc_key` / `UPDATE state_documents SET document_key`
+  also calls `rename_endpoint`.
+- **v5 -> v6 copy** runs in Python through the same `norm_relation` as `link()`
+  (trim + casefold + 64 chars): invalid rows are skipped and counted, never truncated
+  into another relation; orphan, cross-tenant and invalid-endpoint rows are skipped
+  and counted; rows that fold to one edge keep the earliest id/created_at and merge
+  their metadata objects (later key wins); non-object metadata is dropped (edge kept).
+  Each side is stamped with the id the relation named. The receipt
+  (`source_rows, copied, folded, skipped_orphan, skipped_cross_tenant,
+  skipped_bad_endpoint, skipped_bad_relation, metadata_dropped`) is appended to the
+  version-6 row's description and logged at INFO (`sibyl_memory_client.storage`).
+- Tests: `test_link_identity_2026_10_22.py` (stamp/stale/inherited, updated_at/changed,
+  ALTER + atomicity, copy receipt, adoption collision/replay/hold/drop, renamer
+  invariant) and `test_cross_version_2026_10_22.py` (0.9.0 from `git archive 708bd89`
+  and this client against one store: write, 0.9.0 delete + adopt, V1 reopen + adopt;
+  no edge changes identity, the dangling edge is reported).
+
+### `entity_relations` is frozen
+As of schema v6 no client code reads or writes `entity_relations` except the one-time
+copy into `memory_links`, which runs once, in the transaction that creates
+`memory_links`, and never again. Rows any other writer adds afterwards are not copied.
+The table stays, unwritten, for downgrade (see below) and is dropped in a later major
+release only after a re-copy check finds zero uncopied rows.
+
+### Downgrade and version skew (v6 store opened by the 0.9.0 family)
+A v6 store stays readable by client 0.9.0 (and mcp 0.3.0 / hermes 0.5.0 / cli 0.5.0,
+which reach it only through that client): every v6 change is an added table, column or
+index, which 0.9.0 never reads. What each 0.9.0 action does to a v6 store:
+
+| 0.9.0 component, action | Effect on the v6 store |
+|---|---|
+| open (any surface) | none; its schema script is `IF NOT EXISTS`; v6 tables, columns, index kept |
+| search / recall / list | edges and reference tools invisible; results as 0.9.0 |
+| `set_entity` new name | if edges were keyed to that name, they attach by name and read `stale` in V1 |
+| `set_entity` update, `set_state`, `set_reference`, journal | none on edges |
+| `archive_entity` | same as V1: edges kept, endpoint reads archived |
+| `delete_entity` | row deleted, **edges not cascaded**: dangling (lint `dangling-link`, `exists: false`); re-creating the name makes them stale |
+| adoption (`sibyl memory adopt`, auto) | renames entity/doc keys without rewriting edges and leaves `memory_links` under the default tenant; V1's next adoption re-points them by stamp or by replaying the audited renames, holds the ambiguous ones, reports dangling ones |
+| writes in general | the `entities_tenant_lname` index is maintained (write cost only) |
+
+Index size: `entities_tenant_lname` costs about 55 bytes + the name length per entity
+(measured 72 bytes/entity at 17-character names: the 36-character tenant id dominates),
+about 0.7 MB per 10,000 entities, counted toward the free-tier cap.
+
+Full revert to a v5 store (only with no V1 process running; back up the file first):
+
+```sql
+BEGIN IMMEDIATE;
+DROP TABLE IF EXISTS memory_links;
+DROP INDEX IF EXISTS entities_tenant_lname;
+DELETE FROM sibyl_memory_schema_version WHERE version = 6;
+COMMIT;
+-- optional, SQLite >= 3.35: ALTER TABLE tenant_adoptions DROP COLUMN links_audit;
+```
+
+Resurrection caveat: every edge written under V1 is lost, and if any V1 client opens the
+file again it sees a pre-v6 store and re-runs the one-time copy from the frozen
+`entity_relations`: edges that were unlinked or deleted under V1 but came from that table
+come back. Do not revert a store you intend to reopen with V1; downgrade the packages and
+leave the v6 schema in place instead.
+
+### Fixed - V1 panel, graph read side (PANEL-SYNTHESIS themes C, F, 2026-10-22)
+- **`neighbors()` no longer scans the tenant.** Each branch is pinned to its endpoint
+  index (`INDEXED BY memory_links_from` / `memory_links_to`) and the cursor predicate
+  sits inside each branch; before, SQLite drove the union through
+  `memory_links_created` (one node at 45k edges: 155 ms -> 0.6 ms on a loaded box; panel
+  measured 83.8 ms -> 0.24 ms). Plan test with and without a cursor.
+- **`links_of()` (search-hit `links`) is index-only, O(degree).** Operator decision 3:
+  one sample edge per (direction, relation), largest group first, out before in, then
+  relation name (`by_relation` in the same order), replacing the five newest edges and
+  the full-partition window sort (5,000-edge hub: 151 ms -> 8 ms). Counts come from the
+  covering endpoint indexes; one representative row per group is read by rowid. A
+  constant number of statements whatever the number of nodes. `hub: true` when either
+  direction exceeds the lint `hub-degree` threshold (500).
+- **Self-loops count once, as out**, in both `links_of` and `neighbors` `degree`
+  (was counted in both directions), so out + in = distinct edges and the search hit
+  and the walk agree. `direction="in"` still lists a self-loop.
+- **Decoration never fails a search.** A `sqlite3.Error`/`StorageError` while reading
+  titles or edges (e.g. a dropped memory_links index) returns the hits with
+  `links: None` (or `title: None`) and sets `verdict.decoration_note`. The explicit
+  walk (`neighbors`, public `links_of`) still raises on a missing index (Fable consult:
+  no silent hint-less re-run); lint reports it.
+- **`neighbors()` reports the queried node**: `node` carries `exists`, `archived`,
+  `status`, `updated_at`, so a mistyped or wrong-case name is distinguishable from an
+  isolated node.
+- **`stale` on every rendered edge** (`neighbors` edges, `links_of` / search-hit
+  samples), always a bool. V1 merge reconciliation: ONE implementation, the identity
+  contract `_links.STALE_SIDE_SQL` (stamp set AND a live entity at that
+  (category, key) under a different id; dangling and NULL-stamp sides are never
+  stale). `neighbors` applies it to the returned page via `stale_ids`; `links_of`
+  selects it inline on the sampled rows via `stale_column`. No per-connection
+  column cache: the columns are checked per call, so a reader can never lag the
+  open-time identity-column ALTER. Test: neighbors, `links_of` and search hits agree
+  for re-created, archived, dangling and never-stamped endpoints.
+  `stale_ids` probes edges by primary key (`+l.tenant_id`); with the plain tenant clause
+  SQLite scanned `memory_links_created`, 14 ms per `neighbors` call at 42k edges
+  (now 0.6 ms); plan test added.
+- **lint**: `hub-degree` counts in-degree too (`detail.direction`, `in_degree` /
+  `out_degree`); new `links-index-missing` (critical) when an endpoint index is gone.
+
+### Added
+- Verdict fields `links_ms` (wall time of the hit edge summary, None when no links were
+  requested) and `decoration_note` (additive, in `as_dict()`).
+- `set_entity(..., links=...)` adds `links: {created, updated, unchanged}` to the returned row
+  (updated = an existing edge whose metadata or stamps changed, the same `changed` as
+  `link()`; unchanged = an identical re-assert);
+  `set_reference` now returns `{key, links}` (`links` None without `links=`; was None).
+  `_decorate_hits(..., info=)` reports `links_ms` / `note`.
+
+### Fixed - V1 panel, search and reference themes (PANEL-SYNTHESIS B, D, E, G; 2026-10-22)
+- **Release train.** `version = "0.10.0"` (0.9.0 is the published release; the V1
+  MCP server imports `count_tiers`, which 0.9.0 lacks). mcp 0.4.0, hermes 0.6.0 and
+  cli 0.6.0 require `sibyl-memory-client>=0.10.0`. Upgrade the packages together
+  (`sibyl update --apply`); README says so.
+- **Prep gate, TERM side whole-document.** On a terminal query the gate still reads
+  a reference document's PREP markers in the first 2,000 chars, but its TERM markers
+  in the whole document: a head that is pure prep is cleared when the full body
+  matches `_TERM_RE` (its `not ` lookbehind re-checked on the full body). Only rows a
+  rowid-only FTS pre-screen (`_TERM_FTS_QUERY`, a superset: each marker as word and
+  prefix plus the JSON-escape tails) flags have their full body read. "Draft ...
+  approved by the board" with the decision at char 10,000 is kept again, as in 0.9.0
+  (NOCTURNE exp1 EXP4). The full-body check (`_term_anywhere`) finds the marker
+  literals at C speed and runs the anchored regex only there (equivalence pinned).
+  Worst case measured: 102k rows with 2,000 draft-headed 20 KB documents on a
+  terminal query, p50 ~0.55-0.62 s (was ~0.35-0.39 s, which dropped all 2,000 and
+  returned nothing); the standard bench store is unaffected.
+- **Stage 0, short exact names.** The `lower(name) = ?` probe runs for names under 4
+  chars (IBM, AWS, Bob); the `name_partial` phrase keeps the guard.
+- **Exact name vs the negation gate** (operator decision 2). When the whole query is
+  exactly an entity's name (or `<category>:<name>`), the `match: "name"` rows survive
+  `NEGATION_ABSTAIN` ("Not Invented Here" is reachable); partial names, text rows and
+  every other negated query still abstain; `ABSTAINED_ON` is unchanged.
+- **`delete_reference`** marks an accepted skill proposal whose `accepted_doc_key` is
+  the key `superseded` (key cleared, recorded in `review_note`) in the same
+  transaction as the delete. New `delete_reference_details(key)` returns
+  `{deleted, edges_removed, proposals_superseded}`; `delete_reference` still returns
+  a bool.
+- `SAVE.md` (still release v1.2.0, unshipped; hash and manifest recomputed,
+  `_skills/CHANGES.md` item 15): `memory_link(from_node, to_node, ...)`; write hubs,
+  then members, then documents; set `metadata.status` on documents; forget keeps
+  links and a re-created name reconnects them marked `stale`; check whether
+  `memory_neighbors` found the node.
+- Tests: `test_search_fixes_v1_2026_10_22.py` (20 cases); two tier-aware tests updated to
+  the decided behaviour.
+
+### Changed - Agent guidance (tiered-retrieval spec section 3, 2026-10-22)
+- `SAVE.md` release v1.2.0 (skills manifest 1.2.0; DEBLOAT.md unchanged): the interface
+  table lists all 15 MCP tools with their SDK twins; new "Writing: which tier" (entity =
+  a card under about 1 KB, reference = anything read in full with `kind/slug` and
+  `metadata.title`, links written with the node and the recommended relation vocabulary,
+  state, journal; hubs keep membership in links) and "Reading: top-down" (resolve the name
+  with `scope="graph"` and the `match: "name"` hit -> `memory_neighbors` ->
+  `memory_get_reference`; zero-verdict recovery; cite reference keys); tier mapping gains
+  REFERENCE and LINK rows; Phase 1 writes entity cards with their links and long texts as
+  documents. Watermark hash recomputed with the upstream algorithm; `_skills/CHANGES.md`
+  item 14. README: the tier table gains LINKS and the gated search, plus a "write a card,
+  link the documents, read top-down" section.
+
+### Added - Tier-aware search (tiered-retrieval spec 2.C, 2026-10-22)
+- **Stage 0, exact-name resolution.** `multi_record_search` first resolves a query
+  that IS an entity name (`lower(name)` equality, ASCII fold, newest first, up to
+  5) or `<category>:<name>` (prefix constrains the category; the whole query is
+  tried first because names may contain ':'). Those rows lead the result with
+  `match: "name"`. Up to 3 more entities whose NAME column holds the query as a
+  phrase follow (`name : "<query>"`, name-weighted bm25) with `match:
+  "name_partial"`, only for queries of at most 8 words. Skipped for a single
+  token under 4 chars. Body text never qualifies a stage-0 row, and an
+  abstention (ABSTAINED_ON / NEGATION_ABSTAIN) always wins: stage-0 rows are
+  dropped and the abstain verdict is returned unchanged. Stage 0 runs before
+  tokenising, so a name made only of short words or stopwords is still found.
+  The shard case (a parent card plus many rows whose names contain the parent's
+  name) resolves to the parent. sqlite `lower()` folds ASCII only, so non-ASCII
+  letters in a name match case-sensitively. New private primitive
+  `MemoryClient._name_matches` (account-gated, not usage-tracked).
+- Schema: index `entities_tenant_lname ON entities (tenant_id, lower(name))`,
+  `CREATE INDEX IF NOT EXISTS` in schema.sql, applied on every open (existing
+  stores build it once on their next open). Not part of `_links.V6_DDL`.
+- **`scope`** on `multi_record_search`: `"all"` (default) or `"graph"` (entity +
+  state). Under `"graph"`, stage 1 recall, df and the corpus count (IDF, recall
+  depth) all cover entity + state only, so a token that lives only in documents
+  or the journal abstains there; its `explain()` says so ("appears nowhere in the
+  entity or state tiers (scope='graph') ... retry with scope='all'"). Unknown
+  scope -> `ValidationError`. `_recall_token` takes `tiers=`.
+- **Hit fields** on every `multi_record_search` hit: `match` ("name" |
+  "name_partial" | "text"), `chars` (full surfaced body length), `title`
+  (reference `metadata.title`, else None), and with `with_links=True` a `links`
+  summary `{degree: {out, in}, by_relation: {rel: n}, sample: [{relation,
+  direction, node}][:5]}` (None on journal hits). New private
+  `MemoryClient._decorate_hits` (one keyed title read + one links statement for
+  all hits). The raw `search()` / `search_entities()` primitives stay link-free.
+- **Verdict** (additive keys, no new zero cause): `tiers_hit` (returned rows per
+  tier, filled by `stamp()` on every surface), `name_matches` (rows from stage 0;
+  None on the raw primitives), `recall_depth` (K; None when stage 1 did not
+  run), `scope`. `explain()` on a GATED zero within 0.1 of the floor names the
+  depth: "The best row reached 0.41 against the 0.45 floor at depth 2,100."
+  New helpers `verdicts.count_tiers`, `NEAR_FLOOR_BAND`, `HIT_TIERS`.
+
+### Changed - Tier-aware search (2.C)
+- **Tie-break at equal coverage:** `_TIER_PRIORITY` entity 0, state 0,
+  reference 0 -> 1, journal 1 -> 2. Coverage still sorts first. The raw path's
+  rank tie-break (`_search_strict`, `_candidate_ids`) uses the same values via
+  the new module constant `client._TIER_RANK`. On the frozen 3,000-row golden
+  corpus this reorders rows of equal coverage only (row sets identical at full
+  depth); at `limit=10` it can move a reference row below the cut when more than
+  ten rows tie.
+- `_links.links_of` is now ONE statement (window functions: per-node sample
+  numbering, per-(direction, relation) group counts) instead of two; same output.
+  Its two halves are `want CROSS JOIN memory_links INDEXED BY memory_links_from /
+  memory_links_to`: without that, SQLite drove the "in" half through
+  `memory_links_created (tenant_id=?)`, a scan of every edge in the tenant per call
+  (54 ms -> 0.7 ms for 10 nodes at 26k edges; this also affected 2.B's
+  `client.links_of`). A plan test pins the per-node key lookups.
+- The stage-0 equality probe carries no `ORDER BY` (rows are ordered newest-first
+  in Python): with `ORDER BY updated_at` SQLite chose `entities_updated_at` and
+  scanned the tenant (57 ms at 100k rows) instead of the `entities_tenant_lname`
+  lookup. A plan test pins the index.
+- Tests: `test_tier_aware_search_2026_10_22.py` (26). The 0.9.0 golden test
+  compares with the old tie-break patched back in and the new hit/verdict keys
+  stripped (fixture unchanged); `test_tie_break_only_reorders_equal_coverage_rows`
+  proves identical row sets at full depth and that every moved pair is a
+  higher-priority tier moving ahead. The verdict envelope key-set test lists the
+  four new keys.
+
+### Added - Reference tier read surface (tiered-retrieval spec 2.A, 2026-10-22)
+- `read_reference(key, *, offset=0, max_chars=20000)`: paged read of a reference document.
+  Returns `{key, body, offset, chars, next_offset, metadata, updated_at}` or None. Offsets count
+  characters (code points), so a page never splits a character; `offset >= chars` returns an empty
+  body with `next_offset` None. A negative offset or `max_chars < 1` raises `ValidationError`.
+- `list_references(*, prefix=None, limit=100, cursor=None)`: `{items: [{key, chars, metadata,
+  updated_at}], next_cursor}` in key order, bodies never loaded. The cursor is opaque (keyset on
+  the key). The prefix is literal and case-sensitive, implemented as the key range
+  `[prefix, successor(prefix))` on the primary key rather than the spec's `LIKE ... ESCAPE`,
+  because SQLite `LIKE` is ASCII case-insensitive and would list `doc/x` for prefix `Doc/`.
+- `delete_reference(key) -> bool`: hard delete, tenant scoped. It is a write op: listed in
+  `_entitlement.WRITE_OPS`, `lifecycle.state.WRITE_OPS` and the lifecycle write kinds (the
+  equality test covers all three), so it is refused under the computer-limit read-only policy.
+- Every new method carries `_track_op` (account gate first).
+
+### Fixed
+- `set_reference` with a `str` body now enforces the 1 MiB per-value bound (UTF-8 bytes), like
+  dict/list bodies. The `str` branch skipped `_check_json`, so a paid caller could write one
+  unbounded string. A string with an unpaired surrogate is a `ValidationError` instead of a
+  storage error. `get_reference` and `set_reference` signatures are unchanged.
+- Not in this change: the spec's 4 KB reference-metadata bound is enforced on the MCP write tool
+  only; product writers (Pro debloat history) can carry larger metadata, so the SDK bound waits
+  for a measurement.
+
+### Added - Relations (tiered-retrieval spec 2.B)
+- Schema v6: `memory_links`, typed directed edges between entity / reference / state nodes,
+  keyed by business keys (entity `category`+`name`, reference `doc_key`, state `document_key`;
+  `''` category for non-entities, enforced by CHECK). Indexes on both endpoints and on
+  `(tenant_id, created_at, id)` for the keyset cursor. `count_rows('memory_links')` allowed.
+- Migration for existing stores: on the first open of a pre-v6 store, `memory_links` is created
+  and every `entity_relations` row is copied (both ids resolved inside the row's own tenant,
+  `relation_type` case-folded, id and `created_at` kept) in ONE transaction before the schema
+  script runs, so the table's existence is the crash-atomic "copied" marker (an unlinked edge
+  is never resurrected). `entity_relations` stays, unwritten, until R4. Nothing gates on the
+  version-6 row.
+- `MemoryClient.link` / `unlink` / `neighbors` / `links_of` and the `entity_ref` /
+  `reference_ref` / `state_ref` NodeRef helpers. `link` is strict (both endpoints must exist
+  in the caller's tenant, `NotFoundError` names the side), idempotent, upserts metadata
+  (`None` keeps it); relation case-folded, <= 64 chars; edge metadata <= 4 KB. `neighbors`:
+  direction / relation / other-tier / other-category filters, keyset pagination on
+  `(created_at, id)`, limit clamped to [1, 200], optional 200-char preview; a self-loop is
+  listed once (as "out") under "both". `links_of`: batch summary in two statements.
+- `links=` on `set_entity` and `set_reference`: the node and its outgoing edges are written in
+  one `BEGIN IMMEDIATE` transaction; a missing target rolls back the node write too. At most
+  1,000 edges per call. Edge bytes count toward the free-tier cap (pre-write estimate and the
+  CAP-2 in-transaction recheck).
+- `link` and `unlink` are write ops (`WRITE_OPS`, lifecycle counting, refused under
+  `policy_read_only`); `neighbors` and `links_of` are reads. All four carry `_track_op`.
+- Lint: `hub-degree` (warning, > 500 out-edges), `dangling-link` (warning; info when the
+  endpoint is archived), `reference-orphan` (one info summary, only once the tenant has edges).
+  `counts` gains `memory_links`.
+
+### Changed - Relations
+- `delete_entity` deletes every edge touching the entity in the same transaction.
+  `archive_entity` keeps them; `neighbors` reports the archived endpoint with
+  `tier: "entity"` (still a usable NodeRef), `exists: false`, `archived: true`,
+  `status: "archived"`, `archived_at` (spec text said `tier: "archive"`; changed so the ref
+  stays reusable). Re-creating the entity restores its edges.
+- Adoption (`_adopt.py`): a collision rename rewrites both endpoint columns of the moved
+  tenant's edges in the adoption transaction; `memory_links` joins `TENANT_TABLES`. A moved
+  edge identical to one the account already holds (possible when the account's endpoints are
+  archived) is dropped, kept on the account's side, and recorded in the audit row
+  (`AdoptionResult.dropped_duplicate_links`) instead of failing the whole move.
+- `delete_reference` deletes every edge touching the document in the same transaction
+  (`_cascade_node_links(conn, "reference", "", key)`), as `delete_entity` does;
+  `test_delete_reference_cascades_edges` runs unconditionally.
+
+### Changed - search scale fixes (tiered-retrieval spec 2.D, 2026-10-22)
+- **Recall depth scales with the store.** `multi_record_search` now reads
+  `K = clamp(200, ceil(0.05 x rows), 5000)` candidates per query token instead
+  of a fixed 200 (`RECALL_FRACTION`, `RECALL_DEPTH_MAX`, `recall_depth()` in
+  `multi_record`). At 4,000 rows or fewer K is still 200.
+- **True document frequency.** A token's df is now its real per-tier count
+  (`count(*)` with MATCH + tenant), not `min(df, 200)`, so IDF and the anchor
+  band tell common words apart on large stores. Results are identical to 0.9.0
+  wherever no token reached the old cap (200 rows, or 50 journal rows); a
+  frozen 3,000-row golden test asserts this.
+- **Stage 1 reads ids only.** Per-token recall no longer decodes bodies or
+  builds snippets; bodies are loaded once, for the final rows. On a terminal
+  query ("approved", "sent", ...) the prep filter's text is loaded in one batch.
+- **Entity names weigh more.** Entity search ranks with
+  `bm25(entities_fts, 8, 1, 1)` (`NAME_WEIGHT`); reference and state keys with
+  weight 4 (`KEY_WEIGHT`). An entity whose name is the query now outranks long
+  bodies that only mention it. Rows that do not match in the name score as before.
+- **Match-centred snippets.** Hit snippets are 40 tokens (from 12). In
+  `multi_record_search` the snippet is centred on the densest match of the
+  query words that row matched.
+- **Prep filter scope on documents.** On reference documents the
+  draft/proposed filter reads `metadata.status` when set, else the first 2,000
+  characters, not the whole document.
+
+### Fixed (latency, same day)
+- **Batch row loads use the primary key.** The id-list loads behind hydration
+  and the prep filter wrote `tenant_id = ? AND rowid IN (...)`; with no ANALYZE
+  statistics SQLite drove them through a tenant index and scanned the whole
+  tenant once per 500 ids (18 ms per chunk at 100k rows). They now write
+  `+tenant_id = ?`: same filter, primary-key lookup (0.9 ms per chunk).
+- **The prep filter decodes only rows that can match it.** One rowid-only FTS
+  query per tier finds the candidates that carry a prep-marker token (plus
+  reference rows whose metadata may hold `status`); every other candidate gets
+  the empty prep text, which is the regex's own answer for it. The query is a
+  superset of `_PREP_RE` by construction (marker words and prefixes, the
+  "in progress" phrase, `\u00XX` escapes, control-character tails); a property
+  test over adversarial and random bodies in all four tiers pins it, and the
+  results and verdicts are identical with and without the prefilter.
+- Small hot-loop trims (candidate accumulation, gate counters). No result,
+  order or verdict changes: the 3,000-row golden and every suite are unchanged.
+- `scripts/bench_scale_latency.py` reproduces the table below (synthetic
+  stores in a temp dir; `--baseline <git ref>` compares another engine).
+
+  p50 ms, 7 runs, shared 4-core box (q15 = 15 planted tokens, q24 = 24 tokens,
+  term16 = "approved" + q15, abstain = 8 tokens + one unsupported):
+
+  | rows | class   | 0.9.0 | before | after |
+  |------|---------|------:|-------:|------:|
+  | 22k  | q15     |    96 |    102 |    83 |
+  | 22k  | q24     |   224 |    151 |   140 |
+  | 22k  | term16  |   157 |    380 |   103 |
+  | 22k  | abstain |    50 |     51 |    45 |
+  | 52k  | q15     |   111 |    237 |   197 |
+  | 52k  | q24     |   249 |    319 |   291 |
+  | 52k  | term16  |   175 |    896 |   242 |
+  | 52k  | abstain |    61 |    101 |    97 |
+  | 102k | q15     |   183 |    436 |   400 |
+  | 102k | q24     |   357 |    617 |   595 |
+  | 102k | term16  |   254 |  2,411 |   607 |
+  | 102k | abstain |    89 |    205 |   244 |
+
+  Within the spec budget (p50 < 0.6 s at ~55k, < 1.0 s at double) for every
+  class. Above ~50k rows the engine is slower than 0.9.0 by design: each token
+  now ranks up to 5,000 rows instead of 200 (that depth is what finds the
+  planted document 0.9.0 misses), and the FTS rank + tenant check per matched
+  row is the floor.
+
+### Known limits
+- The inflected-word rescue (shadow index) stays bounded at 200 rows per token
+  at every store size; a token with 200 or more direct matches gets none, as in
+  0.9.0.
+- `NAME_WEIGHT` does not lift a hub whose card is several times the store's
+  average row length; exact-name lookup (a later release) covers that case.
+
 ## [0.9.0] - Unreleased
 
 Account-gated release (spec account-gated-plugin-spec-2026-09-27). Minor, not

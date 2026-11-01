@@ -38,7 +38,7 @@ def test_1_install_writes_files_0600_in_0700_dir_and_manifest_matches(tmp_path):
         disk = hashlib.sha256(p.read_bytes()).hexdigest()
         assert man["files"][name]["sha256"] == disk == skills.sha256(name)
         assert man["files"][name]["source"].startswith("sibyl-memory-client ")
-    assert man["version"] == skills.version() == "1.1.0"
+    assert man["version"] == skills.version() == "1.2.0"
     assert _mode(d / "manifest.json") == 0o600
 
 

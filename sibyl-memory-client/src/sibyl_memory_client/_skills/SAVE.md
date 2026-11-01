@@ -4,10 +4,10 @@ description: Session memory sync and skill extraction for the Sibyl Memory Plugi
 ---
 <!-- SIBYL-SKILL-WATERMARK-BEGIN
   origin:  sibyl-labs
-  build:   2026-09-27T00:00:00Z
-  release: v1.1.0
+  build:   2026-10-22T00:00:00Z
+  release: v1.2.0
   file:    SAVE.md
-  hash:    sha256:d1c18bf470af29d703d012b7cb82d9c987eef95dfccbfbf26c67ce281b9aa704
+  hash:    sha256:f539c7011b01b788980da2f2b7337e7193bcd3cca67f879f98e4c045fc27e981
   notice:  Part of the Sibyl Labs open skill collection. MIT licensed (see LICENSE). Free to use, modify, and redistribute with this notice preserved. Built by Sibyl Labs, LLC. Verify or report at sibyl@sibyllabs.org.
 SIBYL-SKILL-WATERMARK-END -->
 
@@ -34,7 +34,7 @@ sibyl setup claude-code    # or: codex | hermes  (wires the memory interface int
 
 This procedure talks to the plugin through one of two surfaces:
 
-- **MCP** (Claude Code, Codex, Cursor, any MCP host): the 8 `memory_*` tools below.
+- **MCP** (Claude Code, Codex, Cursor, any MCP host): the 15 `memory_*` tools below.
 - **Python SDK** (Hermes or any Python agent): `sibyl_memory_client.MemoryClient` / `sibyl_memory_hermes.SibylMemoryProvider`.
 
 ### The plugin interface
@@ -44,13 +44,20 @@ This procedure talks to the plugin through one of two surfaces:
 | Save a fact / entity | `memory_remember(category, name, body)` | `client.set_entity(category, name, body)` |
 | Recall an entity | `memory_recall(category, name)` | `client.get_entity(category, name)` |
 | List entities | `memory_list(category, limit)` | `client.list_entities(category)` |
-| Full-text search | `memory_search(query, limit, tiers)` | `client.search(query)` |
+| Full-text search | `memory_search(query, limit, tiers, scope, with_links)` | `provider.search_multi_record(query, scope=...)` |
 | Set a state doc | `memory_set_state(key, body)` | `client.set_state(key, body)` |
 | Get a state doc | `memory_get_state(key)` | `client.get_state(key)` |
 | Record a journal event | `memory_record_event(kind, body, category, name)` | `client.write_event(...)` |
 | Archive / forget | `memory_forget(category, name, reason)` | `client.archive_entity(category, name, reason)` |
+| Store a document | `memory_set_reference(key, body, metadata, links)` | `client.set_reference(key, body, metadata=..., links=...)` |
+| Read a document (paged) | `memory_get_reference(key, offset, max_chars)` | `client.read_reference(key, offset=...)` |
+| List documents | `memory_list_references(prefix, limit, cursor)` | `client.list_references(prefix=...)` |
+| Delete a document | `memory_delete_reference(key)` (keys under `skill/` and `debloat/` belong to the plugin and need `force=true`; pass it only when the person asked) | `client.delete_reference(key)` |
+| Link two nodes | `memory_link(from_node, to_node, relation, metadata)` | `client.link(src, dst, relation)` |
+| Remove a link | `memory_unlink(from_node, to_node, relation)` | `client.unlink(src, dst, relation)` |
+| Walk a node's links | `memory_neighbors(node, relation, direction, tier, ...)` | `client.neighbors(node, ...)` |
 
-Examples below use the MCP names. On Hermes or a Python agent, use the SDK column (Hermes exposes `sibyl_remember`, `sibyl_recall`, `sibyl_search`, `sibyl_list`).
+Examples below use the MCP names. On Hermes or a Python agent, use the SDK column (Hermes exposes `sibyl_remember`, `sibyl_recall`, `sibyl_search` (with `scope`), `sibyl_list`).
 
 ### Tier mapping
 
@@ -59,7 +66,9 @@ Examples below use the MCP names. On Hermes or a Python agent, use the SDK colum
 | Session pointer / summary / forward items | HOT (state) | `memory_set_state("session", ...)` |
 | Ranked priorities | HOT (state) | `memory_set_state("priorities", ...)` |
 | Session log entry | COLD (journal) | `memory_record_event("session_save", ...)` |
-| Projects / people / products | WARM (entities) | `memory_remember(category, name, body)` |
+| Projects / people / products | WARM (entities) | `memory_remember(category, name, body, links)` |
+| Transcripts, specs, threads, notes, long analyses | REFERENCE | `memory_set_reference("kind/slug", body, {title, date, source}, links)` |
+| A fact that joins two nodes | LINK | `links=` on the write, or `memory_link(from_node, to_node, relation)` |
 | Closed / dead items | ARCHIVE | `memory_forget(category, name, reason)` |
 | This procedure's config + delta marker | HOT (state) | `memory_set_state("sibyl_save:config" / "sibyl_save:last_save", ...)` |
 | Decisions left for the next session (headless) | HOT (state) | `memory_set_state("sibyl_save:pending", ...)` |
@@ -110,6 +119,23 @@ Re-running setup edits it in place.
 
 ## Mode: run
 
+### Writing: which tier
+
+- **Entity** (`memory_remember`): a thing you will name again: a person, company, project, product, ticket, place, decision. The body is a card, not a dump: name, aliases, role or kind, status, a one-line summary, and the few facts you would want in a search hit. Keep it under about 1 KB (if you are pasting, it is a document). Never store a document's text in an entity.
+- **Reference** (`memory_set_reference`): anything you would read in full: a transcript, a spec, an email thread, meeting notes, a file's trimmed history, a long analysis. Key `kind/slug`; `metadata.title` always, `metadata.date` and `metadata.source` when known. Put the title and a one-line "about" at the head of the body so the search snippet is informative. Set `metadata.status` (`draft`, `proposed`, `approved`, `final`, `sent`) whenever the document has one: on a question about a final state ("what was approved"), search reads `metadata.status` first and drops documents whose status is preparatory; without it, it reads the head of the body for draft words and the whole body for a decision.
+- **Link** (`links=` on either write, or `memory_link`): a fact that joins two nodes. Write the edge when you write the node, in the same call. Recommended relations: `works_at`, `member_of`, `owns`, `part_of`, `reports_to`, `source_of` (hub -> document), `mentions` (document -> entity), `about` (document -> entity/project), `supersedes`, `related_to`. Direction reads as a sentence: `person:Maya Patel --works_at--> company:Redwood`; `customer:Tethys --source_of--> reference:doc/fireflies/...`. Both ends must exist first, so write in this order: hubs (companies, projects, customers) first, then their members (people, tickets) with `links=` to the hub, then documents with `links=` to what they are about. `memory_link` takes `from_node` and `to_node` (not `from` / `to`); a wrong or missing argument name comes back as a `VALIDATION_ERROR` that names the parameter. A write with `links=` returns `links: {created, updated, unchanged}`: new edges, existing edges whose metadata changed, and identical re-asserts.
+- **State** (`memory_set_state`): the current working set and directories (`session`, `priorities`, `directory:customers`). Overwritten, never appended.
+- **Journal** (`memory_record_event`): what happened, with the entity it is about. The entity is the noun, the event is the verb.
+- Hubs do not list their members in the body. Membership is links; `memory_neighbors` lists them, paginated, with the edge metadata (date, role, title) you wrote.
+- **Forget keeps links.** `memory_forget` archives the entity and leaves its edges in place (they show the endpoint as archived). Re-creating the same category and name reconnects those edges, but each one written for the earlier entity is marked `stale: true` (the name is the same, the thing may not be: a new intern named like the former CFO); `memory_remember` says how many as `inherited_links` when it creates the entity. An edge whose other end was forgotten and not re-created is not stale: it shows that end as archived. Read `stale` before trusting an edge; keep the ones that still hold (writing one again with `memory_link` confirms it) and `memory_unlink` the rest.
+
+### Reading: top-down
+
+1. **Named thing known**: `memory_recall(category, name)`. If the category is unknown, `memory_search(name, scope="graph")` and take the hit with `match: "name"`. Then `memory_neighbors(node, relation=..., tier=...)` to walk (e.g. `tier="reference"` for the documents under a hub). No edges can mean a misspelled node: the result says whether the node you asked about exists (or is archived), so check that before concluding it has no links. Then `memory_get_reference(key)` for the document, paging with `offset` while `next_offset` is set.
+2. **Nothing named**: `memory_search(question)` with the words the author would have used. Read each hit's `match`, `snippet`, `chars` and `links`. Recall the hub a hit links to before searching again; siblings of a good document are under the same hub. A result is held to about 22,000 tokens: a large `limit` (up to 50) first shortens and drops hit bodies (the `snippet` stays), then link samples, and only then trailing hits (`verdict.truncated`). For full text, read the record (`memory_recall` / `memory_get_reference`).
+3. **A zero is a verdict, not a dead end**: `abstained_on` -> drop the named word and retry, at most twice; `gated` -> use more of the stored wording or one distinctive term; never use `tiers=` to escape an abstention.
+4. Cite documents (reference keys), not hubs.
+
 ### Phase 1: Memory Sync (into the plugin DB)
 
 #### Step 0 - Load config + delta
@@ -149,8 +175,8 @@ In **preview** mode, call nothing that mutates. Report the planned writes (Step 
 1. **Session state** - `memory_set_state("session", { last_session, summary, forward, entities_touched, warnings })`. Forward items are action references only, never balance snapshots or anything that goes stale.
 2. **Journal event** - `memory_record_event("session_save", { evaluated, acted, forward, extra })`. One event per save (append-only by design).
 3. **Priorities** - `memory_set_state(<priorities key>, { updated, cap, items })`, capped. Overflow to a backlog state doc.
-4. **Entities** - for each changed entity, `memory_remember(category, name, body)`. New entities are just new `memory_remember` calls; the plugin indexes them, so there is no separate registry to maintain.
-5. **Closed / dead** - `memory_forget(category, name, reason)`.
+4. **Entities** - for each changed entity, `memory_remember(category, name, body, links)`: a card (see "Writing: which tier"), with the links it gained this session in the same call. New entities are just new `memory_remember` calls; the plugin indexes them, so there is no separate registry to maintain. A long text produced this session (a spec, meeting notes, an analysis) is a document: `memory_set_reference("kind/slug", body, {title, date, source}, links=[{to: <its hub>, relation: "about"}])`, never an entity body.
+5. **Closed / dead** - `memory_forget(category, name, reason)` (archives; links are kept, see "Forget keeps links").
 6. **Additional captures** - apply each configured extra state key / category.
 7. **Delta marker** - `memory_set_state("sibyl_save:last_save", { ts: <now, ISO 8601>, session_id: <this session's id if you know it>, writes_seen: <number of memory writes this save made> })`. Skip in preview. The plugin reads the same marker to know a save happened, so its reminders stop.
 

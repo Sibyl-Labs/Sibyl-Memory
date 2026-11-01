@@ -407,6 +407,10 @@ def test_verdict_envelope_is_json_safe_and_bounded(tmp_path):
         "code", "tokens", "gate", "gate_drops", "best_pre_gate_coverage",
         "tokens_total", "tokens_scored", "dropped_function", "candidates",
         "returned", "abstained", "recovery", "explain",
+        # 2.C (tiered retrieval R3, 2026-10-22): additive keys
+        "tiers_hit", "name_matches", "recall_depth", "scope",
+        # V1 graph fixes (2026-10-22): additive hit-decoration keys
+        "links_ms", "decoration_note",
     }
 
 

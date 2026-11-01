@@ -18,9 +18,11 @@ Shape::
                   "writes_at_start", "nudged", "saved", "ended_at", "capsule_written",
                   "reported", "active_seconds", "last_event_at", "active_at_save",
                   "nudges": [ts], "last_nudge_active", "prompts", "skills_prompted",
-                  "compaction_seen", "seq_floor"}},
+                  "compaction_seen", "seq_floor", "transcript_offset", "transcript_ref",
+                  "transcript_mid"}},
      "autosave": {"enabled", "interval_seconds", "max_per_day", "max_per_session"},
-     "skills": {"last_prompt_at", "muted_kinds": {"<kind>": until}, "unmuted": {"<slug>": ts}},
+     "skills": {"last_prompt_at", "muted_kinds": {"<kind>": until}, "unmuted": {"<slug>": ts},
+                "signals": bool, "signals_since": ts},
      "debloat": {"last_measure_at", "last_plan": {...}, "last_apply": {...}}}
 
 Active time (R1, plan 2.1): every harness event adds ``min(now - last_event_at,
@@ -52,6 +54,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -89,6 +92,8 @@ MAX_MUTES = 50
 WRITE_OPS = frozenset({
     "set_entity", "set_state", "write_event", "set_reference", "delete_entity",
     "archive_entity", "learn", "accept_skill_proposal", "reject_skill_proposal",
+    "delete_reference",
+    "link", "unlink",
 })
 
 
@@ -119,7 +124,12 @@ def default_autosave() -> dict[str, Any]:
 
 
 def default_skills() -> dict[str, Any]:
-    return {"last_prompt_at": None, "muted_kinds": {}, "unmuted": {}}
+    # ``signals`` / ``signals_since`` (R2): the skill-signal recorder's switch
+    # (default on; it only ever records on a verified paid entitlement) and
+    # its floor (events older than it are never written; ``on`` and ``clear``
+    # move it).
+    return {"last_prompt_at": None, "muted_kinds": {}, "unmuted": {}, "signals": True,
+            "signals_since": None}
 
 
 def default_state() -> dict[str, Any]:
@@ -158,6 +168,8 @@ def _clean_skills(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return out
     out["last_prompt_at"] = _num(raw.get("last_prompt_at"))
+    out["signals"] = raw.get("signals") is not False
+    out["signals_since"] = _num(raw.get("signals_since"))
     for k in ("muted_kinds", "unmuted"):
         v = raw.get(k)
         if isinstance(v, dict):
@@ -220,6 +232,12 @@ def _clean(raw: Any) -> dict[str, Any]:
                 "compaction_seen": s.get("compaction_seen") is True,
                 "seq_floor": _int(s.get("seq_floor")),
                 "last_event_kind": str(s.get("last_event_kind") or "")[:16] or None,
+                # R2: the Stop hook's transcript slice (a byte offset and a
+                # hash of the transcript path; never the path itself).
+                "transcript_offset": _int(s.get("transcript_offset")),
+                "transcript_ref": (s["transcript_ref"] if isinstance(s.get("transcript_ref"), str)
+                                   and re.fullmatch(r"[0-9a-f]{16}", s["transcript_ref"]) else None),
+                "transcript_mid": s.get("transcript_mid") is True,
             }
     st["autosave"] = _clean_autosave(raw.get("autosave"))
     st["skills"] = _clean_skills(raw.get("skills"))

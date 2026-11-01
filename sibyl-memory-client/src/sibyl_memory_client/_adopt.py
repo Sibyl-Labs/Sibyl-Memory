@@ -40,6 +40,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from . import _links
 from .storage import Storage, new_id
 
 # Kept in sync with client.DEFAULT_TENANT (imported lazily there to avoid a
@@ -54,7 +55,7 @@ RENAME_SUFFIX = " (before sign-in)"
 TENANT_TABLES = (
     "entities", "entity_relations", "state_documents", "journal_events",
     "revenue_events", "error_events", "reference_documents", "archived_entities",
-    "flagged_actors", "skill_proposals", "learning_runs",
+    "flagged_actors", "skill_proposals", "learning_runs", "memory_links",
 )
 
 # Tables whose tenant_id is a derived copy that no UPDATE trigger maintains.
@@ -83,6 +84,21 @@ class AdoptionResult:
     counts: dict[str, int] = field(default_factory=dict)
     renamed: list[dict[str, str]] = field(default_factory=list)
     reason: str | None = None         # why skipped (auto path)
+    # v6: moved edges identical to an edge the account already held (same fact;
+    # the account's row kept). Recorded in the audit row too.
+    dropped_duplicate_links: list[dict[str, Any]] = field(default_factory=list)
+    # Every dropped moving edge (duplicates + rename collisions), audit shape
+    # {id, from, to, relation, metadata, reason}.
+    dropped_links: list[dict[str, Any]] = field(default_factory=list)
+    # Edges NOT moved (left under DEFAULT_TENANT) because their endpoint is
+    # ambiguous: an unstamped edge whose key has a "(before sign-in)" twin in
+    # the account, or two different audited renames. Same audit shape.
+    held_links: list[dict[str, Any]] = field(default_factory=list)
+    # Edge sides re-pointed before the move: {id, side, from, to, how} with how
+    # stamp | replay | collision.
+    resolved_links: list[dict[str, Any]] = field(default_factory=list)
+    # Moved edges with a side that exists in neither tenant (reported, kept).
+    dangling_links: int = 0
 
     @property
     def moved(self) -> int:
@@ -157,9 +173,13 @@ def _free_name(taken: Callable[[str], bool], base: str) -> str:
     return cand
 
 
-def _resolve_conflicts(conn: sqlite3.Connection, target: str) -> list[dict[str, str]]:
+def _resolve_conflicts(conn: sqlite3.Connection, target: str,
+                       dropped: list | None = None) -> list[dict[str, str]]:
     """Rename every DEFAULT_TENANT row whose business key already exists under
-    ``target``. The target's row is never touched."""
+    ``target``. The target's row is never touched. Edges follow the rename
+    (rename_endpoint, same function); an entity rename moves only the edges
+    stamped with THAT row (or unstamped); an edge that would duplicate an
+    existing one is dropped into ``dropped`` instead of failing."""
     renamed: list[dict[str, str]] = []
 
     def _both(sql: str, *args: Any) -> bool:
@@ -176,6 +196,10 @@ def _resolve_conflicts(conn: sqlite3.Connection, target: str) -> list[dict[str, 
             "SELECT 1 FROM entities WHERE category = ? AND name = ? AND tenant_id IN (?, ?)",
             cat, c, DEFAULT_TENANT, target), r[2])
         conn.execute("UPDATE entities SET name = ? WHERE id = ?", (new, r[0]))
+        # v6: edges are keyed by business key; rewrite BOTH endpoint columns of
+        # the moved tenant's edges in this same transaction.
+        _links.rename_endpoint(conn, DEFAULT_TENANT, "entity", cat, r[2], new,
+                               entity_id=r[0], dropped=dropped)
         renamed.append({"table": "entities", "category": cat, "from": r[2], "to": new})
 
     for table, col in (("state_documents", "document_key"), ("reference_documents", "doc_key")):
@@ -188,6 +212,10 @@ def _resolve_conflicts(conn: sqlite3.Connection, target: str) -> list[dict[str, 
                 c, DEFAULT_TENANT, target), key)
             conn.execute(f"UPDATE {table} SET {col} = ? WHERE tenant_id = ? AND {col} = ?",
                          (new, DEFAULT_TENANT, key))
+            _links.rename_endpoint(
+                conn, DEFAULT_TENANT,
+                "reference" if table == "reference_documents" else "state", "", key, new,
+                dropped=dropped)
             renamed.append({"table": table, "from": key, "to": new})
             if table == "reference_documents":
                 # An accepted skill proposal points at its reference doc by key.
@@ -198,9 +226,201 @@ def _resolve_conflicts(conn: sqlite3.Connection, target: str) -> list[dict[str, 
     return renamed
 
 
+# ----------------------------------------------------------------------
+# Edges whose DEFAULT-side endpoint is not live in DEFAULT (panel theme A)
+# ----------------------------------------------------------------------
+# Business-keyed edges attach to whatever later holds the key. Before moving
+# memory_links, every DEFAULT edge side whose endpoint is NOT a live DEFAULT
+# row (archived, deleted, or already moved by an earlier adoption, possibly a
+# 0.9.0 one that never rewrote edges) is resolved, in this order (Fable
+# consult Q3):
+#   1. stamp: the side's entity id is a live row (either tenant) -> point the
+#      side at that row's current name;
+#   2. replay: unstamped side with an audited rename from an earlier adoption
+#      into this target -> the renamed key (two different audited targets for
+#      one key: HOLD, ambiguous);
+#   3. hold: unstamped side, live in the target, and the target also holds a
+#      "<key> (before sign-in ...)" twin -> not moved, recorded;
+#   4. collision: an entity side live in the target under ANOTHER identity
+#      (stamped id gone; archived in DEFAULT; or no earlier adoption could have
+#      moved it there) -> renamed with the before-sign-in suffix in memory_links
+#      and in the archived rows of that name, audited as a rename;
+#   5. otherwise the side moves as is (dangling sides are counted).
+# A rewrite that would duplicate an existing edge drops the moving copy
+# (audited), never rolling the adoption back.
+
+_DOC_TABLES = {"reference": ("reference_documents", "doc_key"),
+               "state": ("state_documents", "document_key")}
+_TABLE_TIER = {"entities": "entity", "reference_documents": "reference",
+               "state_documents": "state"}
+
+
+def _live(conn: sqlite3.Connection, tenant: str, tier: str, cat: str, key: str) -> bool:
+    if tier == "entity":
+        sql, args = ("SELECT 1 FROM entities WHERE tenant_id = ? AND category = ? AND name = ?",
+                     (tenant, cat, key))
+    else:
+        table, col = _DOC_TABLES[tier]
+        sql, args = f"SELECT 1 FROM {table} WHERE tenant_id = ? AND {col} = ?", (tenant, key)
+    return conn.execute(sql, args).fetchone() is not None
+
+
+def _has_twin(conn: sqlite3.Connection, tenant: str, tier: str, cat: str, key: str) -> bool:
+    prefix = key + RENAME_SUFFIX[:-1]   # "<key> (before sign-in" (also matches " 2)")
+    if tier == "entity":
+        sql, args = ("SELECT 1 FROM entities WHERE tenant_id = ? AND category = ? "
+                     "AND substr(name, 1, ?) = ? LIMIT 1", (tenant, cat, len(prefix), prefix))
+    else:
+        table, col = _DOC_TABLES[tier]
+        sql = f"SELECT 1 FROM {table} WHERE tenant_id = ? AND substr({col}, 1, ?) = ? LIMIT 1"
+        args = (tenant, len(prefix), prefix)
+    return conn.execute(sql, args).fetchone() is not None
+
+
+def _prior_renames(conn: sqlite3.Connection, target: str) -> tuple[dict[tuple, set], bool]:
+    """Audited renames of earlier adoptions into ``target`` (0.9.0 or V1), keyed
+    (tier, category, from) -> {to}; and whether any earlier adoption moved
+    rows into ``target`` at all."""
+    out: dict[tuple, set] = {}
+    moved_before = False
+    for kind, raw in conn.execute(
+            "SELECT kind, renamed FROM tenant_adoptions WHERE from_tenant = ? AND to_tenant = ?",
+            (DEFAULT_TENANT, target)):
+        if kind != "seen":
+            moved_before = True
+        try:
+            entries = json.loads(raw) if raw else []
+        except ValueError:
+            continue
+        for e in entries if isinstance(entries, list) else []:
+            if not isinstance(e, dict):
+                continue
+            tier = _TABLE_TIER.get(e.get("table"))
+            src, dst = e.get("from"), e.get("to")
+            if tier and isinstance(src, str) and isinstance(dst, str):
+                cat = e.get("category", "") if tier == "entity" else ""
+                out.setdefault((tier, cat or "", src), set()).add(dst)
+    return out, moved_before
+
+
+def _key_taken(conn: sqlite3.Connection, target: str, tier: str, cat: str, key: str) -> bool:
+    tenants = (DEFAULT_TENANT, target)
+    if tier == "entity":
+        for table in ("entities", "archived_entities"):
+            if conn.execute(f"SELECT 1 FROM {table} WHERE tenant_id IN (?, ?) AND category = ? "
+                            f"AND name = ? LIMIT 1", (*tenants, cat, key)).fetchone():
+                return True
+    else:
+        table, col = _DOC_TABLES[tier]
+        if conn.execute(f"SELECT 1 FROM {table} WHERE tenant_id IN (?, ?) AND {col} = ? LIMIT 1",
+                        (*tenants, key)).fetchone():
+            return True
+    return conn.execute(
+        "SELECT 1 FROM memory_links WHERE tenant_id IN (?, ?) AND ("
+        "(from_tier = ? AND from_category = ? AND from_key = ?) OR "
+        "(to_tier = ? AND to_category = ? AND to_key = ?)) LIMIT 1",
+        (*tenants, tier, cat, key, tier, cat, key)).fetchone() is not None
+
+
+def _resolve_edges(conn: sqlite3.Connection, target: str) -> dict[str, Any]:
+    audit: dict[str, Any] = {"dropped": [], "held": [], "resolved": [], "renamed": [],
+                             "dangling": 0}
+    if not _table_exists(conn, "memory_links"):
+        return audit
+    prior, moved_before = _prior_renames(conn, target)
+    rows = conn.execute(
+        "SELECT id, from_tier, from_category, from_key, to_tier, to_category, to_key, "
+        "relation_type, metadata, from_entity_id, to_entity_id FROM memory_links "
+        "WHERE tenant_id = ? ORDER BY created_at, id", (DEFAULT_TENANT,)).fetchall()
+    plans: list[tuple[Any, dict[str, Any]]] = []
+    collisions: dict[tuple, set] = {}          # (tier, cat, key) -> stamps seen
+    for r in rows:
+        plan: dict[str, Any] = {}
+        for side, (tier, cat, key, stamp) in (("from", (r[1], r[2], r[3], r[9])),
+                                               ("to", (r[4], r[5], r[6], r[10]))):
+            if _live(conn, DEFAULT_TENANT, tier, cat, key):
+                continue
+            if tier == "entity" and stamp:
+                hit = conn.execute(
+                    "SELECT category, name FROM entities WHERE id = ? AND tenant_id IN (?, ?)",
+                    (stamp, DEFAULT_TENANT, target)).fetchone()
+                if hit is not None:
+                    if (hit[0], hit[1]) != (cat, key) and hit[0] == cat:
+                        plan[side] = ("resolve", hit[1], "stamp")
+                    continue
+            renames = prior.get((tier, cat, key)) if not stamp else None
+            if renames:
+                if len(renames) > 1:
+                    plan["hold"] = "ambiguous_rename"
+                    break
+                (dst,) = tuple(renames)
+                if _live(conn, target, tier, cat, dst):
+                    plan[side] = ("resolve", dst, "replay")
+                    continue
+            if not _live(conn, target, tier, cat, key):
+                plan.setdefault("dangling", True)
+                continue
+            if not stamp and _has_twin(conn, target, tier, cat, key):
+                plan["hold"] = "twin"
+                break
+            if tier != "entity":
+                continue   # only an earlier adoption puts a DEFAULT doc key in the target
+            archived = conn.execute(
+                "SELECT 1 FROM archived_entities WHERE tenant_id = ? AND category = ? AND name = ? "
+                "LIMIT 1", (DEFAULT_TENANT, cat, key)).fetchone() is not None
+            if stamp or archived or not moved_before:
+                plan[side] = ("collide", None, "archived" if archived else "dangling")
+                collisions.setdefault((tier, cat, key), set()).add(stamp)
+        plans.append((r, plan))
+
+    names: dict[tuple, str] = {}
+    for (tier, cat, key), stamps in collisions.items():
+        new = _free_name(lambda c: _key_taken(conn, target, tier, cat, c), key)
+        names[(tier, cat, key)] = new
+        n_arch = conn.execute(
+            "UPDATE archived_entities SET name = ? WHERE category = ? AND name = ? AND ("
+            "tenant_id = ? OR (tenant_id = ? AND original_entity_id IN "
+            "(SELECT value FROM json_each(?))))",
+            (new, cat, key, DEFAULT_TENANT, target,
+             json.dumps([s for s in stamps if s]))).rowcount
+        audit["renamed"].append({"table": "archived_entities" if n_arch else "memory_links",
+                                 "category": cat, "from": key, "to": new,
+                                 "reason": "archived" if n_arch else "dangling"})
+
+    for r, plan in plans:
+        if "hold" in plan:
+            audit["held"].append(_links._edge_dict(r, plan["hold"]))
+            continue
+        if plan.get("dangling"):
+            audit["dangling"] += 1
+        kw: dict[str, str] = {}
+        for side, idx in (("from", 1), ("to", 4)):
+            step = plan.get(side)
+            if step is None:
+                continue
+            kind, new, how = step
+            if kind == "collide":
+                new = names[(r[idx], r[idx + 1], r[idx + 2])]
+            kw[f"{side}_key"] = new
+            audit["resolved"].append({"id": r[0], "side": side, "from": r[idx + 2], "to": new,
+                                      "how": how if kind == "resolve" else "collision"})
+        if kw:
+            _links.rekey_edge(conn, r[0], dropped=audit["dropped"], **kw)
+    return audit
+
+
 def _move_table(conn: sqlite3.Connection, table: str, target: str) -> int:
     cur = conn.execute(f"UPDATE {table} SET tenant_id = ? WHERE tenant_id = ?",
                        (target, DEFAULT_TENANT))
+    return int(cur.rowcount or 0)
+
+
+def _move_links_except(conn: sqlite3.Connection, target: str, hold: list[str]) -> int:
+    """memory_links move that leaves the held edges under DEFAULT_TENANT."""
+    cur = conn.execute(
+        "UPDATE memory_links SET tenant_id = ? WHERE tenant_id = ? "
+        "AND id NOT IN (SELECT value FROM json_each(?))",
+        (target, DEFAULT_TENANT, json.dumps(hold)))
     return int(cur.rowcount or 0)
 
 
@@ -216,12 +436,20 @@ def _move_derived(conn: sqlite3.Connection, target: str) -> None:
 
 
 def _record(conn: sqlite3.Connection, *, target: str, account_id: str, trigger: str,
-            counts: dict[str, int], renamed: list[dict[str, str]]) -> None:
+            counts: dict[str, int], renamed: list[dict[str, str]],
+            links_audit: dict[str, Any] | None = None) -> None:
+    """``renamed`` is a homogeneous list of key renames ({table, category?, from,
+    to, reason?}); edge outcomes (dropped / held / resolved / dangling) go in
+    ``links_audit`` (JSON object), never mixed into ``renamed``."""
+    la = None
+    if links_audit and any(links_audit.get(k) for k in ("dropped", "held", "resolved", "dangling")):
+        la = json.dumps({k: links_audit.get(k) for k in ("dropped", "held", "resolved", "dangling")},
+                        sort_keys=True)
     conn.execute(
         "INSERT INTO tenant_adoptions (id, from_tenant, to_tenant, account_id, kind, "
-        "counts, renamed) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "counts, renamed, links_audit) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (new_id(), DEFAULT_TENANT, target, account_id, trigger,
-         json.dumps(counts, sort_keys=True), json.dumps(renamed) if renamed else None),
+         json.dumps(counts, sort_keys=True), json.dumps(renamed) if renamed else None, la),
     )
 
 
@@ -292,30 +520,57 @@ def adopt_default_tenant(
                     "other_account",
                     "This computer's memory store also holds another account's memory. "
                     "Confirm before moving the rows written before sign-in into this account.")
-        renamed = _resolve_conflicts(conn, target_tenant)
+        dropped: list[dict[str, Any]] = []
+        renamed = _resolve_conflicts(conn, target_tenant, dropped)
+        la = _resolve_edges(conn, target_tenant)
+        renamed += la.pop("renamed")
+        dropped += la["dropped"]
+        held_ids = [h["id"] for h in la["held"]]
+        # v6: an edge identical to one the target already holds is the same
+        # fact. The target row is never touched; the moved copy is dropped and
+        # recorded, instead of the UNIQUE failing (and rolling back) the move.
+        dups = _links.drop_adoption_duplicates(conn, DEFAULT_TENANT, target_tenant,
+                                               exclude=held_ids)
+        dropped += dups
+        la["dropped"] = dropped
+        movable = sum(pending_counts(conn).values()) - len(held_ids)
+        if movable <= 0 and not renamed and not dropped and not la["resolved"]:
+            # Only held edges remain: nothing to do until the twin is resolved.
+            # No audit row per re-run (Fable consult Q5).
+            if trigger == "auto":
+                _record(conn, target=target_tenant, account_id=sub, trigger="seen",
+                        counts={}, renamed=[])
+            return AdoptionResult("nothing_to_move", target_tenant, held_links=la["held"])
         counts: dict[str, int] = {}
         for table in TENANT_TABLES:
-            n = _move_table(conn, table, target_tenant)
+            if table == "memory_links" and held_ids:
+                n = _move_links_except(conn, target_tenant, held_ids)
+            else:
+                n = _move_table(conn, table, target_tenant)
             if n:
                 counts[table] = n
         _move_derived(conn, target_tenant)
         _record(conn, target=target_tenant, account_id=sub, trigger=trigger,
-                counts=counts, renamed=renamed)
-    return AdoptionResult("moved", target_tenant, counts=counts, renamed=renamed)
+                counts=counts, renamed=renamed, links_audit=la)
+    return AdoptionResult("moved", target_tenant, counts=counts, renamed=renamed,
+                          dropped_duplicate_links=dups, dropped_links=dropped,
+                          held_links=la["held"], resolved_links=la["resolved"],
+                          dangling_links=la["dangling"])
 
 
 def adoption_history(storage: Storage) -> list[dict[str, Any]]:
     """The audit rows, newest first (no memory content beyond renamed keys)."""
     with storage.connection() as conn:
         rows = conn.execute(
-            "SELECT from_tenant, to_tenant, account_id, kind, moved_at, counts, renamed "
-            "FROM tenant_adoptions ORDER BY moved_at DESC, rowid DESC").fetchall()
+            "SELECT from_tenant, to_tenant, account_id, kind, moved_at, counts, renamed, "
+            "links_audit FROM tenant_adoptions ORDER BY moved_at DESC, rowid DESC").fetchall()
     out = []
     for r in rows:
         out.append({
             "from_tenant": r[0], "to_tenant": r[1], "account_id": r[2], "trigger": r[3],
             "moved_at": r[4], "counts": json.loads(r[5] or "{}"),
             "renamed": json.loads(r[6]) if r[6] else [],
+            "links": json.loads(r[7]) if r[7] else {},
         })
     return out
 
