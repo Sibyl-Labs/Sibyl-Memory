@@ -558,6 +558,8 @@ def cmd_skills(args: argparse.Namespace) -> int:
     print()
     if op == "proposals":
         return _proposals(args)
+    if op == "signals":
+        return _signals(args)
     if op == "install":
         rep = SK.install(home, force=bool(getattr(args, "force", False)))
         print(a.eyebrow(f"skills v{rep.version}"))
@@ -867,6 +869,61 @@ def _proposals(args: argparse.Namespace) -> int:
     else:
         _h.handoff("done")
     return rc
+
+
+# ----------------------------------------------------------------------
+# sibyl skills signals (R2, spec plugin-paid-tier-r2 1.3): Pro, local only
+# ----------------------------------------------------------------------
+
+SIGNALS_PRO_LINE = "Skill signals are on Pro."
+
+
+def _kb(n: Any) -> str:
+    return f"{(n or 0) / 1024:.1f} KB" if isinstance(n, int) else "none"
+
+
+def _signals(args: argparse.Namespace) -> int:
+    """status | clear | off | on. Prints counts, size and dates, never an
+    entry. Off and clear work on any plan; on and the recording itself need a
+    verified paid entitlement."""
+    from sibyl_memory_client.lifecycle import signals as SG
+    action = getattr(args, "signals_action", None) or "status"
+    home = _home()
+    print(a.eyebrow("skill signals"))
+    pro, _why = _pro(args)
+    if action == "clear":
+        removed = SG.clear(home)
+        print(a.kv("cleared", "signals.json deleted" if removed else "nothing was recorded"))
+        print(a.dim("  Nothing recorded before now is kept or proposed."))
+        return 0
+    if action == "off":
+        SG.set_enabled(home, False)
+        print(a.kv("recording", "off · nothing new is recorded (sibyl skills signals on)"))
+        print(a.dim("  What is already recorded stays until it ages out; sibyl skills signals clear deletes it."))
+        return 0
+    if not pro:
+        print(a.kv("signals", SIGNALS_PRO_LINE))
+        if action == "status":
+            st = SG.status(home)
+            if st["exists"]:
+                print(a.dim(f"  A file from an earlier Pro period is here ({_kb(st['bytes'])}); "
+                            "sibyl skills signals clear deletes it."))
+        return 0
+    if action == "on":
+        SG.set_enabled(home, True)
+        print(a.kv("recording", "on · from now; nothing from while it was off is read back"))
+        return 0
+    st = SG.status(home)
+    print(a.kv("recording", ("on" if st["on"] else "off (sibyl skills signals on)")
+               + " · tool sequences and repeated entity rewrites, on this computer only"))
+    print(a.kv("file", f"~/.sibyl-memory/{SG.SIGNALS_NAME} · {_kb(st['bytes'])}" if st["exists"]
+               else "none yet"))
+    print(a.kv("sequences", str(st["ngrams"])))
+    print(a.kv("entities", f"{st['entity_keys']} ({st['entity_writes']} writes)"))
+    print(a.kv("oldest", _fmt_ts(st["oldest"])))
+    print(a.kv("newest", _fmt_ts(st["newest"])))
+    print(a.dim("  Tool and MCP server names are kept; argument names and entity names only as hashes; never a value."))
+    return 0
 
 
 # ----------------------------------------------------------------------

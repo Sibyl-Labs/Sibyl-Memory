@@ -4,6 +4,115 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.6.0] - 2026-10-31
+
+One release: the paid tier R2 line, the shipped 0.5.0 fixes it was built beside, the graph line and the release merge items below.
+
+### Release summary
+- `sibyl memory neighbors`: the edges of one node. Existing relations are carried over on first open.
+- `sibyl setup cursor`, `sibyl setup grokbot`, `sibyl setup --print-config` and `sibyl doctor`.
+- Carried from the 0.5.0 family already on PyPI (2026-10-14), now also on this line: the shown tier
+  and plan end on `sibyl status`, `sibyl update` for every package, `sibyl --version`.
+- Pro: the Claude Code Stop hook records skill signals (names and hashes only, local).
+
+### Release merge (2026-10-28)
+
+#### Grok Bot / Cursor / any-MCP onboarding
+
+#### Added
+- `sibyl setup cursor`: `CursorWirer` writes `~/.cursor/mcp.json` (`mcpServers.sibyl-memory`,
+  `{"type": "stdio", "command": <absolute sibyl-memory-mcp>}`, format per cursor.com/docs/context/mcp).
+  Timestamped backup, atomic write, foreign entries and a differing `sibyl-memory` entry are never
+  clobbered without `--force`, a corrupt file is never replaced, `_verify_mcp_starts` runs after.
+  Auto-detected by `sibyl setup` (`~/.cursor` or `cursor` / `cursor-agent` on PATH). `--cursor-config`.
+- `sibyl setup grokbot`: the Cursor wiring plus a printed confirmation (server name, command path,
+  config file). Explicit target only; never auto-detected.
+- No-detect fallback and `sibyl setup --print-config`: print the absolute `sibyl-memory-mcp` path and a
+  copy-paste `mcpServers` JSON block so any MCP client or agent can wire itself.
+- `sibyl doctor` (`--json`): starts the MCP server, lists tools, saves a MARKED test memory
+  (`_sibyl_doctor/doctor-test-<uuid>`), recalls it, deletes it (`memory_forget` archives, so the exact
+  test row is then purged from `entities` and `archived_entities` and verified gone). Per-step
+  PASS/FAIL, exit 1 on any failure; a missing account reports "run `sibyl init`".
+
+#### Changed
+- `sibyl setup` never reads a non-terminal stdin at the multi-framework picker: it takes the same
+  default as end of input ("no terminal: wiring all detected"). An unknown target's handoff now names
+  every target (`hermes|claude-code|codex|cursor|grokbot`).
+- Installer (`sibyllabs/install`, shipped with the site at publish, not in this package): tests that /dev/tty can
+  be opened; with no usable terminal it runs `sibyl setup --yes` instead of skipping; `--yes` aliases `--setup`.
+
+#### Other
+- `tests/smoke/venv-compat.sh`: one `sibyl memory neighbors` check on a v6 edge.
+- The usage count keeps the opt-out default in the CLI (`test_telemetry_default_2026_10_28.py`, 2).
+- Requires `sibyl-memory-client>=0.10.0`, `sibyl-memory-hermes>=0.6.0`, `[mcp]` `sibyl-memory-mcp>=0.4.0`.
+
+### Paid tier R2: skill signals (built 2026-09-29)
+
+Spec plugin-paid-tier-r2-spec-2026-09-29 section 1. Requires sibyl-memory-client 0.10.0,
+sibyl-memory-hermes 0.6.0 (and sibyl-memory-mcp 0.4.0 with the `mcp` extra). BYOK drafting
+(spec section 2: `sibyl skills proposals draft`, `sibyl skills summarizer`, `byok.py`) is NOT in
+this release (operator 2026-09-29).
+
+### Changed (tier convention, 2026-10-05; carried from 0.5.0)
+- `sibyl status` Free / Pro / Elite, the `tier_unknown` access rows, the hooks mirror with elite
+  and the venv-compat Elite status check are carried from 0.9.0 / 0.5.0 (cherry-picked; the only
+  conflict was `tests/smoke/venv-compat.sh`, both blocks kept). See the 0.5.0 entry. Suite 456 -> 472.
+
+### Added
+- The Claude Code Stop hook (Pro) records the workflow's tool sequence: it reads the transcript
+  from the session's stored byte offset, at most 4 MiB per Stop, keeps each `tool_use` block's
+  name and the hashed sorted key names of its input, and drops the parsed text. Free and locked
+  devices return before it (no file, no offset). The hook never runs the learner; the next MCP
+  server start (or Hermes shutdown) turns the record into proposals. Measured: see the release
+  notes.
+- `sibyl skills signals [status|clear|off|on]`: status prints counts, size and dates, never an
+  entry; `clear` deletes `signals.json`; `off` stops recording; `on` starts it again from now.
+  Free: "Skill signals are on Pro." (`off` and `clear` still work, `on` changes nothing).
+- `sibyl skills proposals`: `mute tool_sequence` / `mute correction_loop`; help names the
+  signals. `sibyl save --fact` counts as an entity write on Pro (hashed).
+
+### Tests
+- `tests/test_hook_signals_2026_09_29.py` (12): canaries in `tool_use` input values and key
+  names never in any file under the home or the hook output; incremental offset; 4 MiB per Stop
+  on a 64 MB transcript (timed); offset reset on a changed or truncated transcript; an
+  unreadable transcript keeps the R1 output and the process exits 0; the `claude -p` rule; free,
+  locked and off; sidechain entries; a partial last line waits.
+- `tests/test_skills_signals_cli_2026_09_29.py` (7): the four verbs on Pro, free and locked;
+  `save --fact`; the new kinds through list, show, accept (valid SKILL.md, reference copy),
+  reject, mute and unmute.
+
+### Changed (R2 check fixes, 2026-09-30)
+- R2F-N4: `sibyl skills signals` help and status say the record keeps tool and MCP server names
+  (the Claude Code transcript names MCP tools `mcp__<server>__<tool>`), not tool names only;
+  README row and the repo README row the same.
+- The Stop hook is now the only recorder of Claude Code tool events when it is wired (mcp 0.4.0
+  R2F-2); nothing changes in the hook itself. Suite 456 passed.
+
+### Tiered retrieval and relations (graph line, built 2026-10-22)
+
+### Changed - Adoption edge outcomes (V1 panel theme A, 2026-10-22)
+- `sibyl memory adopt` reports links that were already in the account (not copied
+  twice) and links held back because their endpoint name exists in the account both
+  as itself and as `(before sign-in)` with no record of which one they meant (up to 5
+  listed, with how to clear them). A re-run with only held links says so instead of
+  "nothing to move".
+
+### Fixed - release train (V1 panel B, 2026-10-22)
+- `version = "0.6.0"`, requires `sibyl-memory-client>=0.10.0`,
+  `sibyl-memory-hermes>=0.6.0` and (extra `mcp`) `sibyl-memory-mcp>=0.4.0`. README:
+  upgrade the packages together (`sibyl update --apply`).
+- The version pin test moves to 0.6.0 (`test_package_version_is_0_6_0`).
+
+### Changed - bundled procedures v1.2.0 (tiered-retrieval section 3, 2026-10-22)
+- `sibyl setup` / the lifecycle screens now report "procedures v1.2.0" (client SAVE.md
+  agent guidance: which tier to write, links with the node, read top-down). No CLI code
+  change; the lifecycle test pin moves 1.1.0 -> 1.2.0.
+
+### Added
+- `sibyl memory neighbors (--entity CATEGORY NAME | --reference KEY | --state KEY)
+  [--relation R ...] [--direction out|in|both] [--tier T] [--limit N] [--cursor C]`:
+  read-only listing of one node's edges, tenant-resolved like `list` / `search` / `recall`.
+
 ## [0.5.0] - Unreleased
 
 ### 2026-10-14 - Pre-release cleanup

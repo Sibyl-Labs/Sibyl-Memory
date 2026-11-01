@@ -366,7 +366,7 @@ def test_36_init_installs_the_skill_files_after_the_entitlement(tmp_path, home, 
     out = capsys.readouterr().out
     assert (cred.parent / "entitlement.json").exists()
     assert (home / ".sibyl-memory" / "skills" / "SAVE.md").read_bytes() == SK.shipped_bytes("SAVE.md")
-    assert "Save + debloat" in out and "procedures v1.1.0 ready" in out
+    assert "Save + debloat" in out and "procedures v1.2.0 ready" in out
 
 
 def _settings(home: Path) -> Path:

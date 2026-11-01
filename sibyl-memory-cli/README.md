@@ -10,6 +10,14 @@ Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through
 
 This pulls in `sibyl-memory-client` (the local SDK) and `sibyl-memory-hermes` (the Hermes provider) automatically.
 
+**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.0, hermes 0.6.0, cli 0.6.0), and each one requires the client of its own release. Upgrade them together, never one alone:
+
+```bash
+sibyl update --apply
+# or, without the CLI:
+pip install -U sibyl-memory-client sibyl-memory-mcp sibyl-memory-hermes sibyl-memory-cli
+```
+
 ## Commands
 
 ```
@@ -264,6 +272,7 @@ once.
 | Automatic debloat | no | yes: `propose` by default; a file is trimmed by itself only after you run `sibyl debloat auto <file>` (that file at its path, never the same name elsewhere) |
 | Automatic save by active time: once early (after 5 memory writes or a compaction), then about every 60 minutes of active work, only when there is something to save, at most 8 a session and 12 a day (`sibyl autosave every <30-240>` or `sibyl autosave off`). Claude Code: the Stop hook asks your agent to run the save procedure headless (a scripted `claude -p` run is never asked); Cursor, Codex and other MCP hosts: a `notice` on the next tool result; Hermes: a note in the next prefetch. A session capsule (counts only) at compaction and session end. Each automatic save is one extra model turn that reads and writes memory | no | yes |
 | Skill proposals: Sibyl finds repeated work in your journal (locally, no network), names up to 3 at a session start at most once a day, and creates nothing without a yes (`/sibyl-save curate`, or `sibyl skills proposals accept <id>`, which writes the skill for Claude Code, Codex and Hermes) | no (`/sibyl-save` still offers skills when you run it) | yes |
+| Skill signals (0.10): Sibyl also notices a tool sequence your agent repeats (in Claude Code the whole workflow, for example `Read -> Edit -> Bash`; in Codex, Cursor and Hermes the memory tools only) and an entity rewritten again and again, and proposes a skill for it the same way. It keeps one small local file, `~/.sibyl-memory/signals.json`: tool and MCP server names in plain text, argument names and entity names only as hashes, never a value, never a prompt or a file path; nothing leaves your computer. `sibyl skills signals` shows its size, `clear` deletes it, `off` stops it. In Claude Code a proposal from the workflow appears at the next session start at the earliest | no (nothing is recorded) | yes |
 
 The procedures are vendored, with attribution, from the public MIT repos
 [sibyl-save](https://github.com/Sibyl-Labs/sibyl-save) and
@@ -285,7 +294,7 @@ or environment variable turns the automation on for a free account.
 Commands: `sibyl save` (`--fact`, `--status`, `--capsule` on Pro), `sibyl debloat` (`--fyi`,
 `--json`, `plan`, `apply [<file>]`, `auto <file>`, `manual <file>`, `undo [<file>]`),
 `sibyl skills install|status|reset|uninstall`, `sibyl skills proposals [show|accept|reject|mute|unmute]`
-(Pro), `sibyl autosave [on|off|every <minutes>]`, `sibyl reminders on|off|quiet`. `sibyl setup`
+(Pro), `sibyl skills signals [status|clear|off|on]` (Pro; `off` and `clear` on any plan), `sibyl autosave [on|off|every <minutes>]`, `sibyl reminders on|off|quiet`. `sibyl setup`
 installs the procedures and wires them: Claude Code gets the two skills plus five hooks in
 `~/.claude/settings.json` (`sibyl hook <event>`, installed by setup, not for manual use; any
 other hook you have is left alone; each hook exits 0 quietly if the `sibyl` it names is gone),
