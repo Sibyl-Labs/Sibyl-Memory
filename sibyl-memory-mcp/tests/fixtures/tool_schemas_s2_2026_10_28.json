@@ -1,0 +1,601 @@
+{
+ "memory_delete_reference": {
+  "inputSchema": {
+   "properties": {
+    "force": {
+     "default": false,
+     "title": "Force",
+     "type": "boolean"
+    },
+    "key": {
+     "title": "Key",
+     "type": "string"
+    }
+   },
+   "required": [
+    "key"
+   ],
+   "title": "memory_delete_referenceArguments",
+   "type": "object"
+  },
+  "meta": null
+ },
+ "memory_forget": {
+  "inputSchema": {
+   "properties": {
+    "category": {
+     "title": "Category",
+     "type": "string"
+    },
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "reason": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Reason"
+    }
+   },
+   "required": [
+    "category",
+    "name"
+   ],
+   "title": "memory_forgetArguments",
+   "type": "object"
+  },
+  "meta": null
+ },
+ "memory_get_reference": {
+  "inputSchema": {
+   "properties": {
+    "key": {
+     "title": "Key",
+     "type": "string"
+    },
+    "max_chars": {
+     "default": 20000,
+     "title": "Max Chars",
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "title": "Offset",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "key"
+   ],
+   "title": "memory_get_referenceArguments",
+   "type": "object"
+  },
+  "meta": {
+   "anthropic/maxResultSizeChars": 200000
+  }
+ },
+ "memory_get_state": {
+  "inputSchema": {
+   "properties": {
+    "key": {
+     "title": "Key",
+     "type": "string"
+    }
+   },
+   "required": [
+    "key"
+   ],
+   "title": "memory_get_stateArguments",
+   "type": "object"
+  },
+  "meta": null
+ },
+ "memory_link": {
+  "inputSchema": {
+   "properties": {
+    "from_node": {
+     "anyOf": [
+      {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      {
+       "type": "string"
+      }
+     ],
+     "title": "From Node"
+    },
+    "metadata": {
+     "anyOf": [
+      {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Metadata"
+    },
+    "relation": {
+     "title": "Relation",
+     "type": "string"
+    },
+    "to_node": {
+     "anyOf": [
+      {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      {
+       "type": "string"
+      }
+     ],
+     "title": "To Node"
+    }
+   },
+   "required": [
+    "from_node",
+    "to_node",
+    "relation"
+   ],
+   "title": "memory_linkArguments",
+   "type": "object"
+  },
+  "meta": null
+ },
+ "memory_list": {
+  "inputSchema": {
+   "properties": {
+    "category": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Category"
+    },
+    "limit": {
+     "default": 50,
+     "title": "Limit",
+     "type": "integer"
+    }
+   },
+   "title": "memory_listArguments",
+   "type": "object"
+  },
+  "meta": {
+   "anthropic/maxResultSizeChars": 200000
+  }
+ },
+ "memory_list_references": {
+  "inputSchema": {
+   "properties": {
+    "cursor": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Cursor"
+    },
+    "limit": {
+     "default": 50,
+     "title": "Limit",
+     "type": "integer"
+    },
+    "prefix": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Prefix"
+    }
+   },
+   "title": "memory_list_referencesArguments",
+   "type": "object"
+  },
+  "meta": {
+   "anthropic/maxResultSizeChars": 200000
+  }
+ },
+ "memory_neighbors": {
+  "inputSchema": {
+   "properties": {
+    "category": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Category"
+    },
+    "cursor": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Cursor"
+    },
+    "direction": {
+     "default": "both",
+     "enum": [
+      "out",
+      "in",
+      "both"
+     ],
+     "title": "Direction",
+     "type": "string"
+    },
+    "limit": {
+     "default": 50,
+     "title": "Limit",
+     "type": "integer"
+    },
+    "node": {
+     "anyOf": [
+      {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      {
+       "type": "string"
+      }
+     ],
+     "title": "Node"
+    },
+    "preview": {
+     "default": false,
+     "title": "Preview",
+     "type": "boolean"
+    },
+    "relation": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Relation"
+    },
+    "tier": {
+     "anyOf": [
+      {
+       "enum": [
+        "entity",
+        "reference",
+        "state"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Tier"
+    }
+   },
+   "required": [
+    "node"
+   ],
+   "title": "memory_neighborsArguments",
+   "type": "object"
+  },
+  "meta": {
+   "anthropic/maxResultSizeChars": 200000
+  }
+ },
+ "memory_recall": {
+  "inputSchema": {
+   "properties": {
+    "category": {
+     "title": "Category",
+     "type": "string"
+    },
+    "name": {
+     "title": "Name",
+     "type": "string"
+    }
+   },
+   "required": [
+    "category",
+    "name"
+   ],
+   "title": "memory_recallArguments",
+   "type": "object"
+  },
+  "meta": {
+   "anthropic/maxResultSizeChars": 200000
+  }
+ },
+ "memory_record_event": {
+  "inputSchema": {
+   "properties": {
+    "body": {
+     "additionalProperties": true,
+     "title": "Body",
+     "type": "object"
+    },
+    "category": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Category"
+    },
+    "kind": {
+     "title": "Kind",
+     "type": "string"
+    },
+    "name": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Name"
+    }
+   },
+   "required": [
+    "kind",
+    "body"
+   ],
+   "title": "memory_record_eventArguments",
+   "type": "object"
+  },
+  "meta": null
+ },
+ "memory_remember": {
+  "inputSchema": {
+   "properties": {
+    "body": {
+     "title": "Body"
+    },
+    "category": {
+     "title": "Category",
+     "type": "string"
+    },
+    "links": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Links"
+    },
+    "name": {
+     "title": "Name",
+     "type": "string"
+    }
+   },
+   "required": [
+    "category",
+    "name",
+    "body"
+   ],
+   "title": "memory_rememberArguments",
+   "type": "object"
+  },
+  "meta": null
+ },
+ "memory_search": {
+  "inputSchema": {
+   "properties": {
+    "limit": {
+     "default": 10,
+     "title": "Limit",
+     "type": "integer"
+    },
+    "query": {
+     "title": "Query",
+     "type": "string"
+    },
+    "scope": {
+     "default": "all",
+     "title": "Scope",
+     "type": "string"
+    },
+    "tiers": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Tiers"
+    },
+    "with_links": {
+     "default": true,
+     "title": "With Links",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "query"
+   ],
+   "title": "memory_searchArguments",
+   "type": "object"
+  },
+  "meta": {
+   "anthropic/maxResultSizeChars": 200000
+  }
+ },
+ "memory_set_reference": {
+  "inputSchema": {
+   "properties": {
+    "body": {
+     "title": "Body"
+    },
+    "key": {
+     "title": "Key",
+     "type": "string"
+    },
+    "links": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Links"
+    },
+    "metadata": {
+     "anyOf": [
+      {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Metadata"
+    }
+   },
+   "required": [
+    "key",
+    "body"
+   ],
+   "title": "memory_set_referenceArguments",
+   "type": "object"
+  },
+  "meta": null
+ },
+ "memory_set_state": {
+  "inputSchema": {
+   "properties": {
+    "body": {
+     "title": "Body"
+    },
+    "key": {
+     "title": "Key",
+     "type": "string"
+    }
+   },
+   "required": [
+    "key",
+    "body"
+   ],
+   "title": "memory_set_stateArguments",
+   "type": "object"
+  },
+  "meta": null
+ },
+ "memory_unlink": {
+  "inputSchema": {
+   "properties": {
+    "from_node": {
+     "anyOf": [
+      {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      {
+       "type": "string"
+      }
+     ],
+     "title": "From Node"
+    },
+    "relation": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Relation"
+    },
+    "to_node": {
+     "anyOf": [
+      {
+       "additionalProperties": true,
+       "type": "object"
+      },
+      {
+       "type": "string"
+      }
+     ],
+     "title": "To Node"
+    }
+   },
+   "required": [
+    "from_node",
+    "to_node"
+   ],
+   "title": "memory_unlinkArguments",
+   "type": "object"
+  },
+  "meta": null
+ }
+}
