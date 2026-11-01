@@ -39,6 +39,7 @@ onto similarity search, which loses structure. Sibyl Memory preserves it.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -159,6 +160,9 @@ class SibylMemoryProvider:
             account_id=client_account_id,
             session_token=client_session_token,
             credentials_path=Path(credentials_path).expanduser(),
+            # 0.6.0: Hermes sends no usage count unless the person opts in
+            # with SIBYL_MEMORY_TELEMETRY=1 (MCP and CLI keep the opt-out rule).
+            telemetry=(os.environ.get("SIBYL_MEMORY_TELEMETRY") == "1"),
         )
 
         # v0.3.0: no conditional super().__init__(): class is no longer
@@ -455,7 +459,9 @@ class SibylMemoryProvider:
         return self._client.search(query, limit=limit, prefix=prefix, tiers=tiers)
 
     def search_multi_record(self, query: str, *, limit: int = 20,
-                             diagnostics: dict | None = None) -> SearchResults:
+                             diagnostics: dict | None = None,
+                             scope: str = "all",
+                             with_links: bool = True) -> SearchResults:
         """Two-stage retrieve-then-verify search for workflow / linked-record
         queries (whose answer spans several related records, e.g. feedback + bug +
         journal). Surfaces all the linked records instead of only the single
@@ -463,6 +469,14 @@ class SibylMemoryProvider:
 
         Same hit shape as ``search()``. For exact single-entity lookups use
         ``recall()``. Backed by ``sibyl_memory_client.multi_record``.
+
+        Tier-aware (spec tiered-retrieval 2.C): a query that IS an entity's
+        name (or ``category:name``) returns that entity first with ``match:
+        "name"``; ``scope="graph"`` searches entities + state only (same
+        gates); every hit carries ``match``, ``chars``, ``title`` and, with
+        ``with_links`` (default True), a ``links`` edge summary fetched in one
+        batch query. At equal coverage entity/state rows rank ahead of
+        reference documents, then the journal.
 
         EVERY ZERO EXPLAINS ITSELF (verdict contract, 2026-08-31). The return is
         a ``verdicts.SearchResults`` — a ``list`` subclass, so every existing
@@ -503,7 +517,8 @@ class SibylMemoryProvider:
         """
         from sibyl_memory_client.multi_record import multi_record_search
         return multi_record_search(self._client, query, limit=limit,
-                                   diagnostics=diagnostics)
+                                   diagnostics=diagnostics, scope=scope,
+                                   with_links=with_links)
 
     # ------------------------------------------------------------------
     # Diagnostics

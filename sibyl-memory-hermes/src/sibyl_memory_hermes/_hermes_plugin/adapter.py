@@ -201,6 +201,10 @@ def _entitlement_tool_error(exc: BaseException) -> str:
 _CAP_HUMAN = ("the free 5 MB memory cap is full; Pro is a purchase, so it is your call; "
               "nothing was deleted")
 _NOT_INITIALIZED_HUMAN = "restart Hermes so the sibyl memory provider loads"
+# A catalog install loads this file straight from the repo, so the SDK package
+# can be missing; a restart does not fix that, a reinstall does.
+_NOT_INSTALLED_HUMAN = ("the sibyl-memory-hermes package is missing from Hermes' Python environment; "
+                        "reinstall the sibyl plugin so its dependencies install, then restart Hermes")
 
 # Timeouts + sizes: all named constants, no magic numbers in dispatch logic.
 _SYNC_JOIN_TIMEOUT = 5.0          # wait this long for previous sync_turn write
@@ -283,6 +287,63 @@ def _scrub_value(value: Any) -> Any:
 # not. Cap each hit body in the tool output (read-side, agent-facing) so one big
 # value can't flood the window. recall() of a specific entity still returns full.
 _SEARCH_HIT_BODY_MAX = 1500  # chars per hit body in sibyl_search output
+# 2.D D3 (2026-10-22): mirror of the MCP server's snippet cap. The client's hit
+# snippet is a 40-token match-centred window; cap it at 600 chars.
+_SEARCH_HIT_SNIPPET_MAX = 600
+
+
+# 2026-10-22 (output-size regression, parity with the MCP server): one
+# sibyl_search result is held to a character budget, degrading in the same
+# order (body prefix of snippet-bearing hits, then link samples, then trailing
+# hits, reported as verdict.truncated). Measured on the compact JSON this tool
+# returns: ~22,000 estimated tokens (SIBYL_MEMORY_HERMES_OUTPUT_TOKENS) and a
+# hard 190,000-char cap (SIBYL_MEMORY_HERMES_OUTPUT_BUDGET, chars; Hermes has
+# no 50,000-char persist line, so the token budget binds first).
+_OUTPUT_BUDGET_ENV = "SIBYL_MEMORY_HERMES_OUTPUT_BUDGET"
+_OUTPUT_TOKENS_ENV = "SIBYL_MEMORY_HERMES_OUTPUT_TOKENS"
+_SEARCH_TRUNCATION_HINT = (
+    "the result was cut to fit the output budget: call again with a smaller "
+    "limit, or read one entity in full with sibyl_recall")
+
+
+def _shape_search_payload(hits: list[dict[str, Any]],
+                          verdict: dict[str, Any] | None) -> dict[str, Any]:
+    from sibyl_memory_client import output_budget as ob
+    chars = ob.budget_from_env(_OUTPUT_BUDGET_ENV, ob.ANNOTATED_OUTPUT_BUDGET)
+    tokens = ob.token_budget_from_env(_OUTPUT_TOKENS_ENV)
+    placeholder = {"degraded": ["body_500", "body_150", "body_omitted",
+                                f"snippet_{ob.SNIPPET_STEP}", "links_counts_only"],
+                   "truncated": 9999, "hint": _SEARCH_TRUNCATION_HINT}
+
+    def fits(rows: list[dict[str, Any]]) -> bool:
+        probe: dict[str, Any] = {"results": rows}
+        probe["verdict"] = {**(verdict or {}), **placeholder}
+        return ob.within(json.dumps(probe, default=str), tokens=tokens, chars=chars)
+
+    shaped, info = ob.shape_hits(hits, fits)
+    payload: dict[str, Any] = {"results": shaped}
+    extra: dict[str, Any] = {}
+    if info["degraded"]:
+        extra["degraded"] = info["degraded"]
+    if info["truncated"]:
+        extra["truncated"] = info["truncated"]
+        extra["hint"] = _SEARCH_TRUNCATION_HINT
+    if verdict is not None:
+        if info["truncated"]:
+            # The verdict describes what the agent received (MCP parity).
+            verdict = {**verdict, "returned": len(shaped)}
+            if isinstance(verdict.get("tiers_hit"), dict):
+                verdict["tiers_hit"] = {
+                    t: sum(1 for h in shaped if isinstance(h, dict) and h.get("tier") == t)
+                    for t in verdict["tiers_hit"]}
+            if verdict.get("name_matches") is not None:
+                verdict["name_matches"] = sum(
+                    1 for h in shaped if isinstance(h, dict)
+                    and h.get("match") in ("name", "name_partial"))
+        payload["verdict"] = {**verdict, **extra}
+    elif extra:
+        payload.update(extra)
+    return payload
 
 
 def _truncate_hit_body(hit: dict[str, Any]) -> dict[str, Any]:
@@ -297,8 +358,9 @@ def _truncate_hit_body(hit: dict[str, Any]) -> dict[str, Any]:
         rendered = val if isinstance(val, str) else json.dumps(
             val, ensure_ascii=False, default=str
         )
-        if len(rendered) > _SEARCH_HIT_BODY_MAX:
-            out = {**out, field: rendered[:_SEARCH_HIT_BODY_MAX] + "…", "truncated": True}
+        cap = _SEARCH_HIT_SNIPPET_MAX if field == "snippet" else _SEARCH_HIT_BODY_MAX
+        if len(rendered) > cap:
+            out = {**out, field: rendered[:cap] + "…", "truncated": True}
     return out
 
 
@@ -387,7 +449,12 @@ SEARCH_SCHEMA = {
         "loop stops recovering your question and starts answering a shorter one). "
         "'gated' means rows were found and dropped for weak "
         "relevance (use more of the exact stored wording). 'empty_store' means "
-        "nothing has been written yet. 'no_match' is an honest miss."
+        "nothing has been written yet. 'no_match' is an honest miss.\n"
+        "A query that IS an entity's name (or 'category:name') returns that entity "
+        "first with match='name'; scope='graph' searches only entities + state (the "
+        "fast way to find the hub for a named thing). Each hit carries match, chars "
+        "(full body length), title (reference documents) and links (edge summary: "
+        "degree, by_relation, up to five sample edges)."
     ),
     "parameters": {
         "type": "object",
@@ -397,6 +464,12 @@ SEARCH_SCHEMA = {
                 "type": "integer",
                 "description": f"Max results (default {_DEFAULT_SEARCH_LIMIT}).",
                 "default": _DEFAULT_SEARCH_LIMIT,
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["all", "graph"],
+                "description": "'all' (default): every tier. 'graph': entities + state only, same gates.",
+                "default": "all",
             },
         },
         "required": ["query"],
@@ -879,12 +952,39 @@ class SibylAdapter(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs: Any) -> str:
         if not self._sibyl:
-            return _handoff_tool_error("Sibyl provider not initialized", "done", _NOT_INITIALIZED_HUMAN)
+            human = _NOT_INITIALIZED_HUMAN if self.is_available() else _NOT_INSTALLED_HUMAN
+            return _handoff_tool_error("Sibyl provider not initialized", "done", human)
         self._note_activity()
+        self._note_signal(tool_name, args)
         try:
             return self._handle_tool_call(tool_name, args)
         finally:
             _log_adoption_once(self._sibyl)
+
+    def _note_signal(self, tool_name: Any, args: Any) -> None:
+        """R2 (spec plugin-paid-tier-r2 1.2): one tool event for the skill
+        signals, before dispatch: the tool name and the 12-hex fingerprint of
+        the sorted top-level argument NAMES (never a value). Pro only (the
+        recorder checks the verified entitlement); local only."""
+        client = self._lifecycle_client()
+        if client is None:
+            return
+        try:
+            from sibyl_memory_client.lifecycle import signals as _sg
+            buf = _sg.recorder(Path.home())
+            sk = getattr(self._notices, "session_key", None)
+            if sk:
+                buf.set_session(sk)
+            buf.note_tool(tool_name, args, client=client)
+        except Exception:
+            pass
+
+    def _flush_signals(self) -> None:
+        try:
+            from sibyl_memory_client.lifecycle import signals as _sg
+            _sg.recorder(Path.home()).flush()
+        except Exception:
+            pass
 
     def _handle_tool_call(self, tool_name: str, args: dict[str, Any]) -> str:
         try:
@@ -920,7 +1020,10 @@ class SibylAdapter(MemoryProvider):
                 # Run15 multi-record fix (Terminal B): workflow queries spanning
                 # several linked records surface them all (retrieve-then-verify).
                 # See provider.search_multi_record / sibyl_memory_client.multi_record.
-                found = self._sibyl.search_multi_record(query, limit=limit)
+                scope = args.get("scope") or "all"
+                if scope not in ("all", "graph"):
+                    return tool_error("scope must be 'all' or 'graph'")
+                found = self._sibyl.search_multi_record(query, limit=limit, scope=scope)
                 # The verdict rides on the RETURN (stage 3, 2026-08-31), so read
                 # it BEFORE the comprehensions below turn the carrier back into a
                 # plain list. getattr-with-fallback keeps this adapter working
@@ -933,13 +1036,12 @@ class SibylAdapter(MemoryProvider):
                 # serialization (JSON-escaped markers can't bypass the regex,
                 # and the JSON envelope is never mangled by the substitution).
                 hits = [_scrub_value(h) for h in hits]
-                payload: dict[str, Any] = {"results": hits}
-                if verdict is not None:
-                    # Numbers, enum values and the caller's own query tokens —
-                    # no record text by construction. Scrubbed anyway, so a
-                    # future field that forgets that rule is caught by the fence
-                    # instead of becoming a second channel out of the store.
-                    payload["verdict"] = _scrub_value(verdict.as_dict())
+                # Numbers, enum values and the caller's own query tokens —
+                # no record text by construction. Scrubbed anyway, so a
+                # future field that forgets that rule is caught by the fence
+                # instead of becoming a second channel out of the store.
+                vdict = _scrub_value(verdict.as_dict()) if verdict is not None else None
+                payload = _shape_search_payload(hits, vdict)
                 return json.dumps(payload, default=str)
 
             if tool_name == "sibyl_list":
@@ -987,6 +1089,9 @@ class SibylAdapter(MemoryProvider):
         # R1 (plan 3.4): on Pro, one learner pass at session end (skill
         # proposals for the next start), bounded by what is left of the
         # shutdown budget; a daemon thread, so a slow pass never holds Hermes.
+        # R2: the buffered skill signals go to signals.json first, so the
+        # learner pass below sees this session.
+        self._flush_signals()
         if self._sibyl is not None and self._pro():
             left = max(0.5, _SHUTDOWN_JOIN_TIMEOUT - (time.monotonic() - t0))
             lt = threading.Thread(target=self._run_learner, daemon=True, name="sibyl-learner")
