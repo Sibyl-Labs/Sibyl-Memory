@@ -92,7 +92,7 @@ def test_claude_wire_binary_missing_errors(monkeypatch):
     monkeypatch.setattr(ClaudeCodeWirer, "_ensure_mcp_binary", lambda self, **k: False)
     _mock_run(monkeypatch, get_rc=1)
     out = ClaudeCodeWirer().wire()
-    assert out.status == "error" and "not on PATH" in out.message
+    assert out.status == "error" and "is not installed" in out.message
 
 
 def test_claude_current_state_reflects_cli(monkeypatch):
@@ -176,5 +176,5 @@ def test_codex_binary_missing_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(CodexWirer, "_mcp_binary_found", lambda self: False)
     monkeypatch.setattr(S.subprocess, "check_call", lambda *a, **k: None)  # pip install no-op
     out = CodexWirer(config_path=cfg).wire()
-    assert out.status == "error" and "not on PATH" in out.message
+    assert out.status == "error" and "is not installed" in out.message
     assert "[mcp_servers.sibyl_memory]" not in cfg.read_text()   # not written on error

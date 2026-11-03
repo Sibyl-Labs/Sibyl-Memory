@@ -80,7 +80,7 @@ def _verify_mcp_starts(binary: Optional[str]) -> tuple:
     healthy (it is blocking on stdin), not crashed.
     """
     if not binary:
-        return False, "MCP binary not found on PATH"
+        return False, "MCP binary not found"
     try:
         proc = subprocess.Popen(
             [binary],
@@ -744,7 +744,7 @@ class ClaudeCodeWirer:
         return False
 
     def _mcp_binary_found(self) -> bool:
-        return shutil.which(self.MCP_BINARY) is not None
+        return resolve_mcp_binary() is not None
 
     @staticmethod
     def _claude_cli() -> Optional[str]:
@@ -790,9 +790,9 @@ class ClaudeCodeWirer:
         ``_verify_mcp_starts`` helper (audit #19 B005) so the Claude and Codex
         wirers share one implementation instead of cross-class dispatch.
         """
-        binary = shutil.which(self.MCP_BINARY)
+        binary = resolve_mcp_binary()
         if not binary:
-            return False, f"'{self.MCP_BINARY}' not found on PATH"
+            return False, f"'{self.MCP_BINARY}' is not installed"
         return _verify_mcp_starts(binary)
 
     def current_state(self) -> dict:
@@ -836,7 +836,7 @@ class ClaudeCodeWirer:
         registration/discovery bug). `--scope user` makes it global across projects."""
         if not dry_run and not self._ensure_mcp_binary():
             return WireOutcome(self.name, "error",
-                f"'{self.MCP_BINARY}' not on PATH. Install it: pip install {self.MCP_PACKAGE}"
+                f"'{self.MCP_BINARY}' is not installed. Install it: pip install {self.MCP_PACKAGE}"
                 + self._install_hint(), handoff=_binary_missing_handoff(self.name))
         if self._registered_via_cli():
             if not force:
@@ -848,7 +848,7 @@ class ClaudeCodeWirer:
         # is launched from Claude Code's own PATH, which may not include a venv's bin.
         # Bare-name registration shows "✗ Failed to connect" for venv installs; the
         # absolute path connects regardless of how PATH is set when claude launches it.
-        binpath = shutil.which(self.MCP_BINARY) or self.MCP_BINARY
+        binpath = mcp_command_path()
         cmd = ["claude", "mcp", "add", "--scope", "user", self.MCP_NAME, "--", binpath]
         if dry_run:
             return WireOutcome(self.name, "dry-run", "Would run: " + " ".join(cmd))
@@ -978,7 +978,7 @@ class ClaudeCodeWirer:
             if not self._ensure_mcp_binary(prompt_fn=prompt_fn):
                 return WireOutcome(
                     self.name, "error",
-                    f"Config is set but '{self.MCP_BINARY}' not on PATH. "
+                    f"Config is set but '{self.MCP_BINARY}' is not installed. "
                     f"Install it: pip install {self.MCP_PACKAGE}" + self._install_hint(),
                     handoff=_binary_missing_handoff(self.name),
                 )
@@ -1022,7 +1022,7 @@ class ClaudeCodeWirer:
         if not self._ensure_mcp_binary(prompt_fn=prompt_fn):
             return WireOutcome(
                 self.name, "error",
-                f"'{self.MCP_BINARY}' not on PATH after install attempt. "
+                f"'{self.MCP_BINARY}' still not installed after install attempt. "
                 f"Install manually: pip install {self.MCP_PACKAGE}" + self._install_hint(),
                 handoff=_binary_missing_handoff(self.name),
             )
@@ -1110,12 +1110,12 @@ class CodexWirer:
         return self.config_path.exists() or shutil.which("codex") is not None
 
     def _mcp_binary_found(self) -> bool:
-        return shutil.which(self.MCP_BINARY) is not None
+        return resolve_mcp_binary() is not None
 
     def _mcp_command(self) -> str:
         """Resolved absolute path to the MCP binary, falling back to the bare
         name if it cannot be resolved (mirrors the Claude wirer fix)."""
-        return shutil.which(self.MCP_BINARY) or self.MCP_BINARY
+        return mcp_command_path()
 
     @staticmethod
     def _toml_escape(s: str) -> str:
@@ -1167,9 +1167,9 @@ class CodexWirer:
     def verify_mcp_starts(self) -> tuple:
         # reuse the same stdio smoke-test via the shared module-level helper
         # (audit #19 B005 — no more cross-class dispatch).
-        binary = shutil.which(self.MCP_BINARY)
+        binary = resolve_mcp_binary()
         if not binary:
-            return False, f"'{self.MCP_BINARY}' not found on PATH"
+            return False, f"'{self.MCP_BINARY}' is not installed"
         return _verify_mcp_starts(binary)
 
     # -- save / debloat wiring (spec plugin-save-debloat 3.5, D9) -----------
@@ -1259,7 +1259,7 @@ class CodexWirer:
                 f"Would {verb} [mcp_servers.sibyl_memory] in {self.config_path}")
         if not self._ensure_mcp_binary():
             return WireOutcome(self.name, "error",
-                f"'{self.MCP_BINARY}' not on PATH. Install it: pip install {self.MCP_PACKAGE}"
+                f"'{self.MCP_BINARY}' is not installed. Install it: pip install {self.MCP_PACKAGE}"
                 + self._install_hint(), handoff=_binary_missing_handoff(self.name))
         backup = self._backup_config()
         try:
@@ -1299,17 +1299,32 @@ class CodexWirer:
 MCP_BINARY_NAME = "sibyl-memory-mcp"
 
 
-def mcp_command_path() -> str:
-    """Absolute path of the MCP server binary for a client config, resolved
-    from PATH, then from the running interpreter's own scripts directory (a
-    venv that is not activated). Falls back to the bare name."""
+def _mcp_search_dirs() -> list:
+    """Places the installer and pip put the MCP server binary that may not be
+    on PATH yet: the running interpreter's scripts directory (a venv that is
+    not activated) and the user bin directory (~/.local/bin, where
+    sibyllabs.org/install and `pip install --user` put it on a fresh machine)."""
+    return [Path(sys.executable).parent, Path.home() / ".local" / "bin"]
+
+
+def resolve_mcp_binary() -> Optional[str]:
+    """Absolute path of the installed MCP server binary, or None. PATH first,
+    then the known install directories, so a fresh shell whose PATH does not
+    yet include ~/.local/bin still finds it (cli 0.6.1)."""
     w = shutil.which(MCP_BINARY_NAME)
     if w:
         return os.path.abspath(w)
-    cand = Path(sys.executable).parent / MCP_BINARY_NAME
-    if cand.exists():
-        return str(cand)
-    return MCP_BINARY_NAME
+    for d in _mcp_search_dirs():
+        cand = d / MCP_BINARY_NAME
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    return None
+
+
+def mcp_command_path() -> str:
+    """Absolute path of the MCP server binary for a client config (see
+    resolve_mcp_binary). Falls back to the bare name."""
+    return resolve_mcp_binary() or MCP_BINARY_NAME
 
 
 def mcp_servers_snippet(command: Optional[str] = None) -> str:
@@ -1344,7 +1359,9 @@ class CursorWirer:
         return bool(shutil.which("cursor") or shutil.which("cursor-agent"))
 
     def _mcp_binary_found(self) -> bool:
-        return shutil.which(self.MCP_BINARY) is not None
+        # Cursor's config stores the absolute path, so the server does not
+        # need to be on PATH; it only needs to be installed (cli 0.6.1).
+        return resolve_mcp_binary() is not None
 
     _last_install_error: Optional[str] = None
 
@@ -1358,9 +1375,9 @@ class CursorWirer:
         return self._mcp_binary_found()
 
     def verify_mcp_starts(self) -> tuple:
-        binary = shutil.which(self.MCP_BINARY)
+        binary = resolve_mcp_binary()
         if not binary:
-            return False, f"'{self.MCP_BINARY}' not found on PATH"
+            return False, f"'{self.MCP_BINARY}' is not installed"
         return _verify_mcp_starts(binary)
 
     def current_state(self) -> dict:
@@ -1410,8 +1427,10 @@ class CursorWirer:
             return WireOutcome(self.name, "dry-run",
                 f"Would {verb} mcpServers.sibyl-memory in {self.config_path}")
         if not self._ensure_mcp_binary():
+            looked = ", ".join(str(d) for d in _mcp_search_dirs())
             return WireOutcome(self.name, "error",
-                f"'{self.MCP_BINARY}' not on PATH. Install it: pip install {self.MCP_PACKAGE}"
+                f"'{self.MCP_BINARY}' is not installed (looked on PATH and in {looked}). "
+                f"Install it: pip install {self.MCP_PACKAGE}"
                 + self._install_hint())
         backup = _timestamped_backup(self.config_path)
         try:

@@ -4,6 +4,18 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.6.1] - 2026-11-02
+
+### Fixed
+- `sibyl setup cursor`, `sibyl setup grokbot`, `sibyl setup claude-code`, `sibyl setup codex` and
+  `sibyl doctor` now find `sibyl-memory-mcp` when it is installed but not on PATH. They look on
+  PATH, then beside the running Python, then in `~/.local/bin`, and write the absolute path into
+  the client config. On a fresh machine where `~/.local/bin` was not on PATH yet, setup used to
+  try to reinstall the server and then stop with "not on PATH. Install it" (field report from a
+  Grok Bot install, 2026-11-01).
+- When the server really is missing, the error now says it is not installed and names the places
+  it looked, instead of "not on PATH".
+
 ## [0.6.0] - 2026-10-31
 
 One release: the paid tier R2 line, the shipped 0.5.0 fixes it was built beside, the graph line and the release merge items below.

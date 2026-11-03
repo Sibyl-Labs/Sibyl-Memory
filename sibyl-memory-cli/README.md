@@ -10,7 +10,7 @@ Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through
 
 This pulls in `sibyl-memory-client` (the local SDK) and `sibyl-memory-hermes` (the Hermes provider) automatically.
 
-**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.0, hermes 0.6.0, cli 0.6.0), and each one requires the client of its own release. Upgrade them together, never one alone:
+**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.0, hermes 0.6.0, cli 0.6.1), and each one requires the client of its own release. Upgrade them together, never one alone:
 
 ```bash
 sibyl update --apply
