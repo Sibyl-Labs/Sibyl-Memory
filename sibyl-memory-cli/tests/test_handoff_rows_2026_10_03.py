@@ -1314,6 +1314,10 @@ def _claude_cli(ctx, add_rc):
 @scenario("X10 claude mcp add failed", "claude mcp add --scope user sibyl-memory -- sibyl-memory-mcp")
 def _(ctx):
     ctx.mp.setenv("PATH", str(ctx.tmp / "no-bin"))
+    # cli 0.6.1 also looks beside the interpreter and in ~/.local/bin; empty
+    # those too so the handoff carries the bare name this row pins.
+    import sibyl_memory_cli.setup as _setup_mod
+    ctx.mp.setattr(_setup_mod, "_mcp_search_dirs", lambda: [])
     return _claude_cli(ctx, 1)
 
 
@@ -1543,7 +1547,7 @@ REACHES = {
     "Z3 apply, pip failed": "Running: ",
     "X6 hermes has another provider": "Memory provider overwrite declined.",
     "X8 PyYAML missing": "PyYAML not installed.",
-    "X9 MCP binary missing": "not on PATH",
+    "X9 MCP binary missing": "is not installed",
     "X10 claude mcp add failed": "`claude mcp add` failed (exit 1)",
     "X11 added but not listed": "is not in `claude mcp list`",
     "X12 server did not start": "MCP server could not start.",

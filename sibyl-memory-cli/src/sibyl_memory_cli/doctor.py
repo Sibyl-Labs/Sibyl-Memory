@@ -265,13 +265,9 @@ def run_checks(*, server_cmd: list, db_path: Path, cred_path: Path,
 
 
 def _server_cmd() -> Optional[list]:
-    w = shutil.which("sibyl-memory-mcp")
-    if w:
-        return [w]
-    cand = Path(sys.executable).parent / "sibyl-memory-mcp"
-    if cand.exists():
-        return [str(cand)]
-    return None
+    from .setup import resolve_mcp_binary  # same lookup as setup (cli 0.6.1)
+    w = resolve_mcp_binary()
+    return [w] if w else None
 
 
 def run_doctor(args: Any) -> int:
