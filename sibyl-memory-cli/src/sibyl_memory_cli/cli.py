@@ -2083,7 +2083,7 @@ def cmd_whoami(args: argparse.Namespace) -> int:
     wallet = creds.get("wallet") if full else _mask_wallet(creds.get("wallet"))
 
     print()
-    print(f"  {a.color('account', a.INK_FAINT)}  {a.bold(acct or "—")}  {a.dim(a.GLYPH_DOT)}  {a.gradient_gold(tier)}")
+    print(f"  {a.color('account', a.INK_FAINT)}  {a.bold(acct or '—')}  {a.dim(a.GLYPH_DOT)}  {a.gradient_gold(tier)}")
     print(f"  {a.color('wallet ', a.INK_FAINT)}  {a.color(wallet or '—', a.INK)}")
     print(f"  {a.color('email  ', a.INK_FAINT)}  {a.color(email or '—', a.INK)}")
     _family, plat_label, plat_ok = _platform_info()

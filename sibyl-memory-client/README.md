@@ -10,7 +10,7 @@ pip install sibyl-memory-client
 
 Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through WSL2. Native Windows is not supported.
 
-**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.0, hermes 0.6.0, cli 0.6.0), and each one requires the client of its own release. Upgrade them together, never one alone:
+**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.1, hermes 0.6.0, cli 0.6.2), and each one requires the client of its own release. Upgrade them together, never one alone:
 
 ```bash
 sibyl update --apply

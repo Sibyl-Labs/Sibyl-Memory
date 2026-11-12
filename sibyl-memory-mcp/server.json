@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Sibyl-Labs/sibyl-memory",
+  "title": "Sibyl Memory",
+  "description": "Local, structured long-term memory for AI agents. SQLite and FTS5, no vectors, no embeddings.",
+  "repository": {
+    "url": "https://github.com/Sibyl-Labs/Sibyl-Memory",
+    "source": "github",
+    "subfolder": "sibyl-memory-mcp"
+  },
+  "websiteUrl": "https://sibyllabs.org/products/memory",
+  "version": "0.4.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "sibyl-memory-mcp",
+      "version": "0.4.1",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

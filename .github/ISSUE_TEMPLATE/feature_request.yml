@@ -1,0 +1,22 @@
+name: Feature request
+description: Suggest an improvement or a new integration
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and where does Sibyl Memory get in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+    validations:
+      required: true
+  - type: input
+    id: harness
+    attributes:
+      label: Harness or framework it applies to
+      placeholder: Claude Code, Hermes, LangGraph, all

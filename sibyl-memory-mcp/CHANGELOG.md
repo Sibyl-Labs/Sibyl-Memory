@@ -4,6 +4,12 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.4.1] - 2026-11-12
+
+### Changed
+- README carries the MCP Registry ownership line (`mcp-name: io.github.Sibyl-Labs/sibyl-memory`)
+  so the server can be listed in the official registry as "Sibyl Memory". No code changes.
+
 ## [0.4.0] - 2026-10-31
 
 One release: the paid tier R2 line, the shipped 0.9.0 family fixes it was built beside, the graph line (tiered retrieval and relations) and the release merge items below.

@@ -4,6 +4,17 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.6.2] - 2026-11-12
+
+### Fixed
+- `sibyl` crashed at import on Python 3.10 and 3.11 although the package declares
+  `requires-python >=3.10` (issue #32, reported by @drexthealpha). One f-string in
+  `sibyl status` reused its own quote inside a replacement field, which only parses on
+  Python 3.12+. Install succeeded and every command then failed with a SyntaxError.
+- New test `tests/test_py310_syntax_2026_11_12.py` walks the token stream of all five
+  packages and fails on that construct, since Python 3.12's parser accepts it even with
+  `feature_version=(3, 10)`.
+
 ## [0.6.1] - 2026-11-02
 
 ### Fixed

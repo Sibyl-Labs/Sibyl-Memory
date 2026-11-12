@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://docs.sibyllabs.org/memory/
+    about: Install, setup for each harness, the CLI, and tiers.
+  - name: Account or billing help
+    url: mailto:support@sibyllabs.org
+    about: Sign-in, plans and payments go to support, not the issue tracker.

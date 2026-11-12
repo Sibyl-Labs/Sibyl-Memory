@@ -1214,11 +1214,12 @@ def test_full_email_flow_never_prints_bearer(creds, server, capsys, monkeypatch,
 # 4.10 version
 # =========================================================================
 
-def test_package_version_is_0_6_1():
+def test_package_version_is_0_6_2():
+    # 0.6.2 (2026-11-12): imports on Python 3.10/3.11 again (issue #32).
     # 0.6.1 (2026-11-02): setup and doctor find the MCP server off PATH.
     # 0.6.0: the paid tier R2 follow-up (skill signals) and the V1 graph line
     # (2026-10-22) ship together as cli 0.6.0 with client 0.10.0.
     from sibyl_memory_cli import __version__
-    assert __version__ == "0.6.1"
+    assert __version__ == "0.6.2"
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
-    assert 'version = "0.6.1"' in pyproject.read_text()
+    assert 'version = "0.6.2"' in pyproject.read_text()

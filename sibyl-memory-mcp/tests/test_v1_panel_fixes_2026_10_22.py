@@ -70,12 +70,14 @@ def test_release_train_versions_and_floors():
     mcp = _version(ROOT / "sibyl-memory-mcp" / "pyproject.toml")
     hermes = _version(ROOT / "sibyl-memory-hermes" / "pyproject.toml")
     cli = _version(ROOT / "sibyl-memory-cli" / "pyproject.toml")
-    assert (client, mcp, hermes, cli) == ((0, 10, 0), (0, 4, 0), (0, 6, 0), (0, 6, 0))
+    # Patch releases move one package at a time (cli 0.6.1/0.6.2, mcp 0.4.1 README-only),
+    # so pin the train and compare dependency floors by major.minor.
+    assert (client, mcp, hermes, cli) == ((0, 10, 0), (0, 4, 1), (0, 6, 0), (0, 6, 2))
     for pkg in ("sibyl-memory-mcp", "sibyl-memory-hermes", "sibyl-memory-cli"):
         assert _floor(ROOT / pkg / "pyproject.toml", "sibyl-memory-client") == client, pkg
     assert _floor(ROOT / "sibyl-memory-mcp" / "pyproject.toml", "sibyl-memory-hermes") == hermes
     assert _floor(ROOT / "sibyl-memory-cli" / "pyproject.toml", "sibyl-memory-hermes") == hermes
-    assert _floor(ROOT / "sibyl-memory-cli" / "pyproject.toml", "sibyl-memory-mcp") == mcp
+    assert _floor(ROOT / "sibyl-memory-cli" / "pyproject.toml", "sibyl-memory-mcp")[:2] == mcp[:2]
 
 
 def _import_with_client(client_src: Path) -> subprocess.CompletedProcess:
