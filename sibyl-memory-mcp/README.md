@@ -79,6 +79,52 @@ command = "/absolute/path/to/sibyl-memory-mcp"
 
 Use the absolute path (`which sibyl-memory-mcp`): Codex starts the server from its own environment, so a bare command name may not resolve. Restart Codex.
 
+## Add to Cursor
+
+The one command:
+
+```bash
+sibyl setup cursor
+```
+
+It registers the server in `~/.cursor/mcp.json`. To configure it by hand, merge this entry into the file's `mcpServers` block:
+
+```json
+{
+  "mcpServers": {
+    "sibyl-memory": {
+      "type": "stdio",
+      "command": "/absolute/path/to/sibyl-memory-mcp"
+    }
+  }
+}
+```
+
+Use the absolute path printed by `sibyl setup --print-config`. Restart Cursor after editing the config.
+
+## Add to Grok Bot
+
+Run the one command on the machine where Grok Bot runs:
+
+```bash
+sibyl setup grokbot
+```
+
+Grok Bot uses Cursor's MCP config on that machine. To configure it by hand, merge this entry into `mcpServers` in `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "sibyl-memory": {
+      "type": "stdio",
+      "command": "/absolute/path/to/sibyl-memory-mcp"
+    }
+  }
+}
+```
+
+Run `sibyl setup --print-config` on the same machine to get the server's absolute path.
+
 ## Run with Docker
 
 A first-party image is provided at the repo root (`Dockerfile`,
