@@ -21,7 +21,7 @@ Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through
 
 **Hermes plugin catalog (listing pending).** The `hermes-catalog/` folder of this repo is the catalog package (the same adapter, byte for byte). Once Sibyl is listed in the catalog, `hermes plugins install sibyl` will load it and install `sibyl-memory-hermes` and `sibyl-memory-client` into Hermes' environment; then run `sibyl init` and `sibyl setup hermes` as below. Until then, install with pip as above.
 
-**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.0, hermes 0.6.0, cli 0.6.0), and each one requires the client of its own release. Upgrade them together, never one alone:
+**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.1, hermes 0.6.0, cli 0.6.2), and each one requires the client of its own release. Upgrade them together, never one alone:
 
 ```bash
 sibyl update --apply

@@ -1,0 +1,66 @@
+name: Bug report
+description: Something in Sibyl Memory does not work as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Never paste the contents of `~/.sibyl-memory/credentials.json` or any token.
+        Security issues: email sibyl@sibyllabs.org instead of opening an issue.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. pip install sibyl-memory-cli
+        2. sibyl setup cursor
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Full error output
+      render: shell
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: Output of `sibyl status`, or `pip show sibyl-memory-client sibyl-memory-cli sibyl-memory-mcp sibyl-memory-hermes`.
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: harness
+    attributes:
+      label: Harness
+      options:
+        - Claude Code
+        - Codex
+        - Cursor
+        - Grok Bot
+        - Hermes
+        - LangGraph
+        - Another MCP client
+        - Not harness-related
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and Python version
+      placeholder: macOS 15 (Apple Silicon), Python 3.11.9
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: sibyl doctor output (setup or MCP problems)
+      render: shell
