@@ -4,6 +4,103 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.7.0] - 2026-11-14
+
+### Added
+- `sibyl setup deepseek` (alias `dsh`) wires Sibyl Memory into DeepSeek Harness (developer
+  preview). It adds one `sibyl-memory` row to the home patch file (`$DSH_HOME/cordis.patch.yml`,
+  default `~/.dsh`), which covers every profile, or with `--dsh-profile <name>` to that one
+  profile's patch. The file is edited as text, never re-serialized, and every edit is proven by
+  parsing it: your own patches, comments and `!!js` values stay as written. DeepSeek Harness is
+  detected only by its `profiles/` folder or `cordis.patch.yml`; a `~/.dsh` that belongs to the
+  unrelated Debian `dsh` program is never detected or written, and no `dsh` binary is run. New
+  flags `--dsh-home` and `--dsh-profile`. Needs DeepSeek Harness on Node 24.9 or newer.
+- `sibyl doctor` checks each harness's wiring (Hermes, Claude Code, Codex, Cursor, Grok Bot,
+  DeepSeek Harness) and reports ok, missing, stale, broken, foreign, duplicate, unreadable,
+  disabled, overridden or unverifiable. Read-only by default. `--fix` repairs stale or broken
+  entries only (it never adds a missing one and never touches another tool's entry); a missing
+  entry is a warning that names the `sibyl setup <target>` command. `--harness` limits the checks
+  (repeatable) and `--no-harness` skips them. `--json` adds `server_ok`, `harnesses`, `fix`,
+  `legacy_backups` and `later`, and `ok` is now the overall verdict. Exit 1 while wiring is still
+  stale or broken.
+
+### Changed
+- Config backups now live in one place: `~/.sibyl-memory/backups/<harness>/` (folders 0700,
+  files 0600, never overwritten). A backup that cannot be written stops the config write. Old
+  `.bak` files beside harness configs are listed by `sibyl doctor` and never deleted.
+- Codex: a stale command path in `[mcp_servers.sibyl_memory]` is fixed in place; only the command
+  line changes, and a second table is never appended.
+- Cursor and Grok Bot: a stale path in our own entry is updated without a prompt, keeping its
+  `env`, `args` and other keys.
+- Cursor and Codex configs that are symlinks are written through to the file they point at; the
+  link is kept.
+- Setup and doctor never print another tool's command string.
+
+### Fixed (review panel, 2026-11-14)
+- `sibyl setup hermes` edits `config.yaml` as text instead of re-serializing it: comments,
+  anchors, key order, quoting and non-ASCII text stay as written. Only `memory.provider` changes
+  (or two lines are added), and the result must parse to the old data with only that value
+  changed. When that cannot be proven, setup prints the two lines to set by hand and leaves the
+  file alone. A `memory:` value that is not a mapping (`memory: honcho`) now counts as an
+  existing setting and goes through the overwrite question. A symlinked `config.yaml` is written
+  through and the link is kept, as for Cursor and Codex.
+- `sibyl setup hermes` and `sibyl doctor --fix` honor the plugin installer's refusal codes. A
+  refused install (plugin folder not empty, a symlink, or not a Sibyl install) is an error that
+  says what to decide, and `memory.provider` is not switched.
+- Codex: table headers are found structurally. Quoted keys such as `[projects."/path"]` and
+  `[mcp_servers."a@b"]` end our table, so `--force` no longer drops the trusted-project tables
+  after it and a table with no command line no longer takes the next server's command. A
+  `[mcp_servers.sibyl_memory]` line inside a multi-line string is not our table. The table
+  replace proof checks that every other line is kept, and a command edit must sit inside our
+  table.
+- Codex: adding the table is proven before the write. A file that sets `mcp_servers` as a key
+  (an inline table), ends inside an open string or array, or does not parse is refused with the
+  exact text to add by hand. CRLF files keep CRLF. `sibyl doctor` reports a `config.toml` that
+  does not parse as unreadable instead of PASS, and setup no longer calls a table with no
+  command, or one that runs another server, "already wired".
+- Codex: a quoted `"command"` or `'command'` key is recognized, so `doctor --fix` updates it in
+  place instead of adding a second command key. A missing command is fixable only when a TOML
+  parser is available.
+- New dependency `tomli>=2` on Python 3.10, used when `tomllib` is not in the standard library,
+  so the Codex parse-and-compare proof runs on every supported Python. The text checks stay.
+- Config writes create the temp file with `O_EXCL` under a unique name beside the target, set
+  the target's mode before any content is written, fsync the file and the directory, and remove
+  only their own temp file on failure.
+- The CLI sends the session token only to https `*.sibyllabs.org` or a loopback host (the same
+  gate as the client library). Any other `SIBYL_API_BASE` gets a clear error and nothing is sent;
+  the legacy upgrade link is never built for another host.
+- DeepSeek Harness: when setup or `doctor --fix` cannot update an existing row, the manual text
+  changes that row's command (or replaces the row) instead of adding a second row. `sibyl doctor`
+  prints the block on its own lines (and in `fix_block` in `--json`), so it stays valid YAML.
+- Claude Code without the `claude` command on PATH: setup no longer writes `mcpServers` into
+  `~/.claude/settings.json` (Claude Code does not read servers from there) and no longer reports
+  the server as wired. It installs the hooks and skills and hands over the exact
+  `claude mcp add --scope user sibyl-memory -- <path>` command.
+- Tests: the DeepSeek Harness proof layers and the `_atomic_text` symlink refusal each have a test
+  that fails when that check is removed; the version test reads `pyproject.toml`.
+- With an untrusted `SIBYL_API_BASE` (not https `*.sibyllabs.org` and not a loopback address), `sibyl
+  status`, `refresh`, `devices`, `upgrade`, `email` and `claim` say the sign-in was not sent and hand
+  over `next: done` with "ask your human: SIBYL_API_BASE points at a host Sibyl will not send your
+  sign-in to; unset it", never "retry", "server error: 0" or "connect to the internet". The
+  explanation prints at most once per process (`sibyl upgrade` printed it twice). An untrusted
+  `SIBYL_UPGRADE_BASE` gets the same treatment. `sibyl whoami` makes no network call.
+- The CLI refuses to send the sign-in to a URL with a backslash, whitespace, a control character or
+  userinfo (`https://evil.com\@sibyllabs.org/x` was allowed), on its own side, before the client's
+  host rule, and for the client gate's `/entitlement` refresh too, so cli 0.7.0 is protected with
+  sibyl-memory-client 0.10.0 installed.
+- Codex: a `config.toml` that starts with a UTF-8 BOM is no longer called invalid TOML; the BOM is
+  kept.
+- Hermes: the `config.yaml` edit is proven before the plugin install and the backup, so a file setup
+  cannot edit (`memory: {provider: x}`) ends with nothing installed, no backup and the two lines to
+  set by hand. Doctor reports `memory: honcho` as foreign, as setup does, not as absent. On an
+  installer refusal only setup's handoff is printed, not the installer's own `next:` line.
+- `sibyl doctor` repair for Claude Code quotes the binary path in the manual `claude mcp add` command.
+- README: the environment override examples use `staging.sibyllabs.org` and say where the sign-in
+  is sent.
+- Tests: the Hermes `__init__.py` check after a zero-return install, the Codex doctor parser check
+  (duplicate `command` keys) and the open-string refusal message each fail when removed. CI runs on
+  push to main and on pull requests (once per PR branch), plus one Python 3.10 job on mcp 1.19.0.
+
 ## [0.6.2] - 2026-11-12
 
 ### Fixed

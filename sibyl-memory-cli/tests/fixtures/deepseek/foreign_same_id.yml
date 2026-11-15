@@ -1,0 +1,16 @@
+# keep this comment
+- insert:
+    - id: sibyl-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: engram
+        transport: stdio
+        command: engram
+        args: [mcp]
+        env:
+          ENGRAM_DIR: /data/engram
+        cwd: !!js process.cwd()
+    - id: after-row
+      name: other
+- id: tail-override
+  config: {a: 1}

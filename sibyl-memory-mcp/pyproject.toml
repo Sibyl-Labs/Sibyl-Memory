@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sibyl-memory-mcp"
-version = "0.4.1"
+version = "0.4.2"
 description = "MCP server for Sibyl Memory Plugin: wraps the local SQLite + FTS5 memory engine and exposes it to MCP-compatible agents (Claude Code, Codex, Cursor, Continue, anything that speaks MCP)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,7 +23,11 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "mcp>=1.0.0,<2",
+    # 1.19.0 is the first mcp release whose FastMCP.tool() takes meta=
+    # (server.py passes it); title= on prompt/resource arrived in 1.10.0 and
+    # instructions=/log_level= are older. Measured 2026-11-14: the test suite
+    # passes on 1.19.0 and fails on 1.18.0 (TypeError: unexpected keyword 'meta').
+    "mcp>=1.19.0,<2",
     # 0.3.0 account gate: the gate lives in the client; floors keep a partial
     # upgrade from pairing a gated server with an un-gated engine (spec 6.1).
     "sibyl-memory-client>=0.10.0",

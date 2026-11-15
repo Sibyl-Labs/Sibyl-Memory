@@ -105,14 +105,17 @@ def test_claude_current_state_reflects_cli(monkeypatch):
     assert ClaudeCodeWirer().current_state()["wired_with_sibyl"] is False
 
 
-def test_claude_no_cli_falls_back_to_settings(tmp_path):
-    # autouse conftest already forces no-CLI -> settings.json path
+def test_claude_no_cli_registers_nothing_and_says_so(tmp_path):
+    # autouse conftest forces no-CLI. Panel fix 10 (2026-11-14): settings.json
+    # is not where Claude Code reads MCP servers, so nothing is written for
+    # the server and the outcome names the command instead of "wired".
     p = tmp_path / "settings.json"
     out = ClaudeCodeWirer(settings_path=p).wire()
-    assert out.status in ("wired", "error")     # wired if binary present
-    if out.status == "wired":
+    assert out.status in ("skipped", "error")   # error only if the binary is missing
+    if out.status == "skipped":
         import json
-        assert "sibyl-memory" in json.loads(p.read_text())["mcpServers"]
+        assert "mcpServers" not in json.loads(p.read_text())
+        assert out.handoff[0].startswith("claude mcp add --scope user sibyl-memory -- ")
 
 
 # ---------------------------------------------------------------- Codex auto-wire
@@ -141,8 +144,11 @@ def test_codex_wire_appends_and_preserves(tmp_path):
     txt = cfg.read_text()
     assert 'model = "o4"' in txt and "[other]" in txt           # preserved
     assert "[mcp_servers.sibyl_memory]" in txt                  # appended
-    # audit #19: timestamped backup suffix, not a fixed .bak
-    assert len(list(tmp_path.glob("config.toml.*.bak"))) == 1
+    # audit #19: timestamped backup suffix, not a fixed .bak; cli 0.7.0: the
+    # backup lives under ~/.sibyl-memory/backups/codex/, nothing beside the config
+    assert list(tmp_path.glob("config.toml.*.bak")) == []
+    bdir = Path.home() / ".sibyl-memory" / "backups" / "codex"
+    assert len(list(bdir.glob("config.toml.*.bak"))) == 1
 
 
 def test_codex_wire_idempotent(tmp_path):

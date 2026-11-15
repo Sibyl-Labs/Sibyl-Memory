@@ -23,17 +23,25 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from sibyl_memory_cli.setup import (  # noqa: E402
     ALL_WIRERS,
+    HOOK_EVENTS,
     ClaudeCodeWirer,
     HermesWirer,
     WireOutcome,
     _accept_defaults_prompt,
     _interactive_prompt,
+    count_our_hooks,
 )
 
 
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
+
+
+def _backups(harness: str) -> Path:
+    """cli 0.7.0: where a wirer's config backups land (under the test HOME)."""
+    return Path.home() / ".sibyl-memory" / "backups" / harness
+
 
 def _stub_install_plugin(hermes_home: str):
     """Replacement for sibyl_memory_hermes.install_plugin.install: drops a fake
@@ -202,8 +210,10 @@ def test_hermes_wire_existing_other_provider_with_force(tmp_path, monkeypatch):
     import yaml
     cfg = yaml.safe_load((home / "config.yaml").read_text())
     assert cfg["memory"]["provider"] == "sibyl"
-    # Backup landed (audit #19: timestamped suffix, not a fixed .bak)
-    backups = list(home.glob("config.yaml.*.bak"))
+    # Backup landed (audit #19: timestamped suffix, not a fixed .bak). cli 0.7.0:
+    # backups live under ~/.sibyl-memory/backups/<harness>/, never beside the config.
+    assert list(home.glob("config.yaml.*.bak")) == []
+    backups = list((Path.home() / ".sibyl-memory" / "backups" / "hermes").glob("config.yaml.*.bak"))
     assert len(backups) == 1
     assert "mem0" in backups[0].read_text()
 
@@ -277,11 +287,14 @@ def test_claude_state_fresh(tmp_path):
 
 
 def test_claude_state_existing_sibyl(tmp_path):
+    # Panel fix 10 (2026-11-14): without the claude CLI an mcpServers entry in
+    # settings.json is not a registration Claude Code reads, so it is never
+    # reported as wired.
     p = tmp_path / "settings.json"
     p.write_text(json.dumps({"mcpServers": {"sibyl-memory": {"command": "sibyl-memory-mcp"}}}))
     w = ClaudeCodeWirer(settings_path=p)
     st = w.current_state()
-    assert st["wired_with_sibyl"] is True
+    assert st["wired_with_sibyl"] is False and st["cli_registered"] is None
 
 
 def test_claude_state_existing_other_mcps_no_sibyl(tmp_path):
@@ -296,16 +309,25 @@ def test_claude_state_existing_other_mcps_no_sibyl(tmp_path):
     assert st["wired_with_sibyl"] is False
 
 
-def test_claude_wire_fresh_no_settings_creates(tmp_path):
+def _assert_not_registered_outcome(outcome):
+    assert outcome.status == "skipped"
+    assert "not registered" in outcome.message
+    nxt = outcome.handoff[0]
+    assert nxt.startswith("claude mcp add --scope user sibyl-memory -- ")
+    assert nxt in outcome.message
+
+
+def test_claude_wire_without_cli_writes_no_mcp_entry(tmp_path):
     p = tmp_path / "subdir" / "settings.json"  # parent doesn't exist yet
     w = ClaudeCodeWirer(settings_path=p)
     outcome = w.wire()
-    assert outcome.status == "wired"
-    cfg = json.loads(p.read_text())
-    assert cfg["mcpServers"]["sibyl-memory"] == {"command": "sibyl-memory-mcp"}
+    _assert_not_registered_outcome(outcome)
+    cfg = json.loads(p.read_text())          # the hooks were still written
+    assert "mcpServers" not in cfg
+    assert count_our_hooks(cfg) == len(HOOK_EVENTS)
 
 
-def test_claude_wire_fresh_preserves_other_mcps(tmp_path):
+def test_claude_wire_without_cli_preserves_other_mcps(tmp_path):
     p = tmp_path / "settings.json"
     p.write_text(json.dumps({
         "mcpServers": {"github": {"command": "gh-mcp"}},
@@ -313,51 +335,36 @@ def test_claude_wire_fresh_preserves_other_mcps(tmp_path):
     }))
     w = ClaudeCodeWirer(settings_path=p)
     outcome = w.wire()
-    assert outcome.status == "wired"
+    _assert_not_registered_outcome(outcome)
     cfg = json.loads(p.read_text())
-    assert cfg["mcpServers"]["github"] == {"command": "gh-mcp"}
-    assert cfg["mcpServers"]["sibyl-memory"] == {"command": "sibyl-memory-mcp"}
+    assert cfg["mcpServers"] == {"github": {"command": "gh-mcp"}}
     assert cfg["theme"] == "dark"
-    # backup landed (audit #19: timestamped suffix, not a fixed .bak)
-    assert len(list(tmp_path.glob("settings.json.*.bak"))) == 1
+    # cli 0.7.0: backups under ~/.sibyl-memory/backups/claude-code/, nothing
+    # beside the config; one backup, before the lifecycle hooks write.
+    assert list(tmp_path.glob("settings.json.*.bak")) == []
+    assert len(list(_backups("claude-code").glob("settings.json.*.bak"))) == 1
 
 
-def test_claude_wire_existing_sibyl_is_noop(tmp_path):
+def test_claude_wire_existing_settings_entry_is_not_already(tmp_path):
     p = tmp_path / "settings.json"
     p.write_text(json.dumps({"mcpServers": {"sibyl-memory": {"command": "sibyl-memory-mcp"}}}))
     w = ClaudeCodeWirer(settings_path=p)
-    outcome = w.wire()
-    assert outcome.status == "already"
-    # 2026-09-27 save/debloat build: the first wire() of an already-registered
-    # server still adds the five lifecycle hooks (one backup). The no-op is the
-    # SECOND run: nothing changes and no further backup is written.
-    first = list(tmp_path.glob("settings.json.*.bak"))
-    assert len(first) <= 1
-    outcome = w.wire()
-    assert outcome.status == "already"
-    # No backup written for no-op (audit #19: timestamped suffix pattern)
-    assert list(tmp_path.glob("settings.json.*.bak")) == first
+    _assert_not_registered_outcome(w.wire())
+    first = list(_backups("claude-code").glob("settings.json.*.bak"))
+    # The second run changes nothing and writes no further backup.
+    _assert_not_registered_outcome(w.wire())
+    assert list(_backups("claude-code").glob("settings.json.*.bak")) == first
+    assert json.loads(p.read_text())["mcpServers"] == {
+        "sibyl-memory": {"command": "sibyl-memory-mcp"}}
 
 
-def test_claude_wire_mismatched_sibyl_refused_without_force(tmp_path):
-    p = tmp_path / "settings.json"
-    # sibyl-memory key exists but command is different
-    p.write_text(json.dumps({"mcpServers": {"sibyl-memory": {"command": "/some/other/path"}}}))
-    w = ClaudeCodeWirer(settings_path=p)
-    outcome = w.wire()
-    assert outcome.status == "skipped"
-    # File UNCHANGED
-    assert "/some/other/path" in p.read_text()
-
-
-def test_claude_wire_mismatched_sibyl_with_force(tmp_path):
+def test_claude_wire_mismatched_sibyl_untouched_even_with_force(tmp_path):
     p = tmp_path / "settings.json"
     p.write_text(json.dumps({"mcpServers": {"sibyl-memory": {"command": "/some/other/path"}}}))
     w = ClaudeCodeWirer(settings_path=p)
-    outcome = w.wire(force=True)
-    assert outcome.status == "wired"
-    cfg = json.loads(p.read_text())
-    assert cfg["mcpServers"]["sibyl-memory"]["command"] == "sibyl-memory-mcp"
+    for force in (False, True):
+        _assert_not_registered_outcome(w.wire(force=force))
+        assert json.loads(p.read_text())["mcpServers"]["sibyl-memory"]["command"] == "/some/other/path"
 
 
 def test_claude_wire_dry_run_no_writes(tmp_path):
@@ -368,13 +375,13 @@ def test_claude_wire_dry_run_no_writes(tmp_path):
     assert not p.exists()
 
 
-def test_claude_wire_mismatched_dry_run(tmp_path):
+def test_claude_wire_dry_run_without_cli_names_the_command(tmp_path):
     p = tmp_path / "settings.json"
     p.write_text(json.dumps({"mcpServers": {"sibyl-memory": {"command": "/old"}}}))
     w = ClaudeCodeWirer(settings_path=p, )
     outcome = w.wire(dry_run=True, force=True)
     assert outcome.status == "dry-run"
-    assert "update" in outcome.message
+    assert "claude mcp add --scope user sibyl-memory" in outcome.message
     # Still no write
     assert "/old" in p.read_text()
 
@@ -384,6 +391,6 @@ def test_claude_wire_mismatched_dry_run(tmp_path):
 # ----------------------------------------------------------------------
 
 def test_registry_has_all_wirers():
-    assert set(ALL_WIRERS) == {"hermes", "claude-code", "codex", "cursor"}
+    assert set(ALL_WIRERS) == {"hermes", "claude-code", "codex", "cursor", "deepseek"}
     assert ALL_WIRERS["hermes"] is HermesWirer
     assert ALL_WIRERS["claude-code"] is ClaudeCodeWirer

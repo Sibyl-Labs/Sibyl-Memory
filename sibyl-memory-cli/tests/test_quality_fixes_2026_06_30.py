@@ -217,6 +217,10 @@ def test_b005_timestamped_backup_is_unique(tmp_path, monkeypatch):
     assert ".20260630T010000Z." in b1.name
     # original extension preserved in the backup name
     assert b1.name.startswith("config.yaml.")
+    # cli 0.7.0: backups live under ~/.sibyl-memory/backups/<harness>/ (default
+    # label "other"), never beside the config
+    assert b1.parent == Path.home() / ".sibyl-memory" / "backups" / "other"
+    assert list(tmp_path.glob("config.yaml.*.bak")) == []
 
 
 def test_b005_timestamped_backup_none_when_missing(tmp_path):

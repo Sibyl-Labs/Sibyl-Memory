@@ -9,12 +9,12 @@
     "subfolder": "sibyl-memory-mcp"
   },
   "websiteUrl": "https://sibyllabs.org/products/memory",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "sibyl-memory-mcp",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "transport": {
         "type": "stdio"
       }

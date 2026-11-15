@@ -1070,6 +1070,15 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     elif outcome == "denied":
         print(a.kv("access", G.access_row(after), value_color="err"))
         rc = 1
+    elif after.get("refresh_code") == G.UNTRUSTED_BASE_CODE:
+        # Follow-up D1: the sign-in was not sent (SIBYL_API_BASE is not a Sibyl
+        # address). Not a network fault: no retry, no "connect".
+        from . import cli as _cli
+        _cli._note_untrusted_base(_cli.API_BASE)
+        print(a.kv("account", G.UNTRUSTED_BASE_LINE, value_color="err"))
+        print(a.kv("access", G.access_row(after)))
+        rc = 1
+        nxt, human = G.untrusted_base_handoff()
     else:
         print(a.kv("account", "could not reach the server; this is the last check-in", value_color="warn"))
         print(a.kv("access", G.access_row(after)))

@@ -1,0 +1,4 @@
+# User patch layer for this profile.
+# A top-level YAML list of loader patch entries.
+# See docs/user/guide for examples.
+[]

@@ -1637,7 +1637,7 @@ def test_x1_unknown_target(capsys) -> None:
     from sibyl_memory_cli import setup as S
     rc = S.cmd_setup(argparse.Namespace(target="nonsense", yes=False, force=False, dry_run=False))
     h = assert_convention(capsys.readouterr().out)
-    assert rc == 1 and h["next"] == "sibyl setup <hermes|claude-code|codex|cursor|grokbot>"
+    assert rc == 1 and h["next"] == "sibyl setup <hermes|claude-code|codex|cursor|deepseek|grokbot>"
     assert h["human"].startswith("which agent you use")
 
 
