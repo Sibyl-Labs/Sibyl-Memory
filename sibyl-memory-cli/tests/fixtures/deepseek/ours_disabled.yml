@@ -1,0 +1,9 @@
+- insert:
+    - id: sibyl-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      disabled: true
+      config:
+        serverName: sibyl-memory
+        transport: stdio
+        command: "/old/venv/bin/sibyl-memory-mcp"
+        cwd: !!js process.cwd()

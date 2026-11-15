@@ -1,0 +1,3 @@
+- id: some-builtin-row
+  config:
+    theme: dark

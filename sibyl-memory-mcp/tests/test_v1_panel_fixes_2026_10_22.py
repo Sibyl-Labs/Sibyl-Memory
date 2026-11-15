@@ -72,7 +72,18 @@ def test_release_train_versions_and_floors():
     cli = _version(ROOT / "sibyl-memory-cli" / "pyproject.toml")
     # Patch releases move one package at a time (cli 0.6.1/0.6.2, mcp 0.4.1 README-only),
     # so pin the train and compare dependency floors by major.minor.
-    assert (client, mcp, hermes, cli) == ((0, 10, 0), (0, 4, 1), (0, 6, 0), (0, 6, 2))
+    # cli 0.7.0 + mcp 0.4.2 (2026-11-13): setup deepseek, doctor harness checks,
+    # server instructions.
+    # Panel fix 32 (2026-11-14): no hand-edited version literals. Each
+    # installed package must be the version its pyproject.toml declares.
+    from importlib.metadata import version as _installed
+    for dist, want in (("sibyl-memory-client", client), ("sibyl-memory-mcp", mcp),
+                       ("sibyl-memory-hermes", hermes), ("sibyl-memory-cli", cli)):
+        try:
+            got = tuple(int(x) for x in _installed(dist).split(".")[:3])
+        except Exception:
+            continue          # not installed in this environment
+        assert got == want, dist
     for pkg in ("sibyl-memory-mcp", "sibyl-memory-hermes", "sibyl-memory-cli"):
         assert _floor(ROOT / pkg / "pyproject.toml", "sibyl-memory-client") == client, pkg
     assert _floor(ROOT / "sibyl-memory-mcp" / "pyproject.toml", "sibyl-memory-hermes") == hermes

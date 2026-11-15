@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sibyl-memory-cli"
-version = "0.6.2"
+version = "0.7.0"
 description = "Command-line interface for the Sibyl Memory Plugin. `sibyl init` activates, `sibyl upgrade` opens the Pro / Elite upgrade flow, `sibyl status` shows current tier and DB stats, `sibyl whoami` gives a one-line account summary, `sibyl devices` lists active devices and supports per-device revoke."
 authors = [{ name = "SIBYL, Sibyl Labs LLC", email = "sibyl@sibyllabs.org" }]
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.10"
-keywords = ["sibyl", "memory", "cli", "agent", "hermes"]
+keywords = ["sibyl", "memory", "cli", "agent", "hermes", "deepseek"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
@@ -28,6 +28,8 @@ dependencies = [
   "sibyl-memory-client>=0.10.0",
   "sibyl-memory-hermes>=0.6.0",
   "pyyaml>=6.0,<7",
+  # The Codex config proof parses TOML; tomllib is stdlib only from 3.11.
+  'tomli>=2; python_version < "3.11"',
 ]
 
 [project.optional-dependencies]

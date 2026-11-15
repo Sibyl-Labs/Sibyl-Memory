@@ -190,3 +190,14 @@ def assert_convention(out: str, err: str = "") -> dict:
     assert _next_ok(h["next"]), h["next"]
     assert err == "", err
     return h
+
+
+@pytest.fixture(autouse=True)
+def _reset_untrusted_base_note(monkeypatch):
+    """The untrusted-base explanation prints once per process (follow-up D1);
+    each test is its own process for that purpose."""
+    try:
+        from sibyl_memory_cli import cli as _cli
+    except Exception:  # pragma: no cover
+        return
+    monkeypatch.setattr(_cli, "_UNTRUSTED_NOTED", set())

@@ -1,0 +1,3 @@
+- insert:
+    - id: sibyl-memory
+      config: {env: {GITHUB_TOKEN: FAKESECRET123 ]]]

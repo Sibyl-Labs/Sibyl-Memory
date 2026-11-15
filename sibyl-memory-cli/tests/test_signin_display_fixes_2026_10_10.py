@@ -249,10 +249,12 @@ def _claude(tmp_path, monkeypatch):
 
 def test_claude_dry_run_after_setup_says_already_in(tmp_path, monkeypatch):
     w = _claude(tmp_path, monkeypatch)
-    assert w.wire().status == "wired"
+    # Panel fix 10: with no claude CLI the server is not registered (skipped),
+    # but skills, shims and hooks are installed, and a dry run says so.
+    assert w.wire().status == "skipped"
     before = (tmp_path / ".claude" / "settings.json").read_text()
     out = w.wire(dry_run=True)
-    assert out.status == "already"
+    assert out.status == "dry-run"
     lines = out.lifecycle
     assert any(re.match(r"skills v\S+: SAVE\.md, DEBLOAT\.md already in ", ln) for ln in lines), lines
     assert sum(1 for ln in lines if ln.startswith("shim ") and ln.endswith(": already in")) == 2, lines

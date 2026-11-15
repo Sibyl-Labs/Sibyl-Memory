@@ -10,7 +10,7 @@ Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through
 
 This pulls in `sibyl-memory-client` (the local SDK) and `sibyl-memory-hermes` (the Hermes provider) automatically.
 
-**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.1, hermes 0.6.0, cli 0.6.2), and each one requires the client of its own release. Upgrade them together, never one alone:
+**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.2, hermes 0.6.0, cli 0.7.0), and each one requires the client of its own release. Upgrade them together, never one alone:
 
 ```bash
 sibyl update --apply
@@ -44,9 +44,11 @@ sibyl migrate                 Guided onboarding: back up your existing memory/ag
                               into every detected harness, populate Sibyl Memory from the backup, and
                               optionally slim the instruction files it found (CLAUDE.md, AGENTS.md,
                               .cursorrules, ...). Backup-first, never destructive.
-sibyl setup [target]          Wire Sibyl as the memory provider for Hermes, Claude Code, and/or Codex,
-                              and install the save and debloat procedures for each.
-                              target is one of: hermes | claude-code | codex (default: detect all).
+sibyl setup [target]          Wire Sibyl as the memory provider for Hermes, Claude Code, Codex, Cursor,
+                              Grok Bot and/or DeepSeek Harness, and install the save and debloat
+                              procedures for each. target is one of: hermes | claude-code | codex |
+                              cursor | grokbot | deepseek (alias dsh) (default: detect all).
+                              DeepSeek Harness: --dsh-home, --dsh-profile <name>.
 sibyl save                    Save: --fact "<text>" writes one fact; --status shows the last save; bare
                               prints how to run the save procedure in your agent. --capsule on Pro.
 sibyl debloat                 Measure the instruction files your agent loads every start (--fyi, --json);
@@ -57,7 +59,7 @@ sibyl status                  Show local credentials, DB size, this computer's a
                               view of your tier.
 sibyl whoami                  One-line account summary (masked by default).
 sibyl devices                 List the devices (active tokens) bound to your account, with the
-                              account's computer limit when the api sends it (Free 1, Pro up to 10).
+                              account's computer limit when the api sends it (Free 1, Pro up to 2).
 sibyl devices revoke N        Revoke a device by index (run `sibyl devices` to see the indexes).
 sibyl dashboard               Open the account page at account.sibyllabs.org (no token in the URL; you
                               sign in there). Shows `sibyl status` while the page is not open yet.
@@ -228,12 +230,14 @@ If `LOCAL` and `SERVER` tiers diverge, run `sibyl refresh` to pick up the server
 For internal testing only:
 
 ```bash
-SIBYL_API_BASE=https://staging.example.internal sibyl init
-SIBYL_ACTIVATE_BASE=https://staging.example.internal/plugin/activate sibyl init
-SIBYL_UPGRADE_BASE=https://staging.example.internal/plugin/upgrade sibyl upgrade
-SIBYL_ACCOUNT_BASE=https://account.staging.example.internal sibyl dashboard
+SIBYL_API_BASE=https://staging.sibyllabs.org sibyl init
+SIBYL_ACTIVATE_BASE=https://staging.sibyllabs.org/plugin/activate sibyl init
+SIBYL_UPGRADE_BASE=https://staging.sibyllabs.org/plugin/upgrade sibyl upgrade
+SIBYL_ACCOUNT_BASE=https://account.staging.sibyllabs.org sibyl dashboard
 SIBYL_NONINTERACTIVE=1 sibyl init     # never prompt (same as a non-TTY shell)
 ```
+
+The CLI sends your sign-in only to an https `*.sibyllabs.org` address or a loopback address (for example `http://127.0.0.1:8787`); any other `SIBYL_API_BASE` or `SIBYL_UPGRADE_BASE` gets no session token.
 
 ## Security
 

@@ -52,6 +52,28 @@ STUB = textwrap.dedent('''
 ''')
 
 
+@pytest.fixture(autouse=True)
+def _isolated_path(monkeypatch):
+    """cli 0.7.0: doctor now checks harness wiring, so the result must not
+    depend on what is installed on the machine (the real `claude` is on PATH on
+    the build box). The harness binaries are hidden; PATH keeps this
+    interpreter's bin directory so the real-server test below still finds the
+    real sibyl-memory-mcp."""
+    import os
+    real_which = shutil.which
+    hidden = ("claude", "codex", "cursor", "cursor-agent", "hermes", "dsh")
+
+    def which(cmd, mode=os.F_OK | os.X_OK, path=None):
+        if os.path.basename(str(cmd)) in hidden:
+            return None
+        return real_which(cmd, mode=mode, path=path)
+
+    monkeypatch.setenv("PATH", f"{os.path.dirname(sys.executable)}:/usr/bin:/bin")
+    monkeypatch.setattr(shutil, "which", which)
+    for name in ("DSH_HOME", "CLAUDE_CONFIG_DIR"):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def stub(tmp_path, monkeypatch):
     f = tmp_path / "stub_server.py"

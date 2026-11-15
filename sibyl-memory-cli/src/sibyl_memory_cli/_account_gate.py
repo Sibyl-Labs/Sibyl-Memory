@@ -42,6 +42,53 @@ SETUP_INCOMPLETE_LINE = ("setup is not finished on this computer. connect to the
                          "to finish setup. nothing was deleted.")
 
 
+# Follow-up D1 (2026-11-14): the CLI refused to send the sign-in because
+# SIBYL_API_BASE is not https *.sibyllabs.org or a loopback address
+# (cli.http_request raises HttpError(0, code untrusted_api_base); the client
+# gate's refresh answers transient with the same code). Not a network fault:
+# never "retry" and never "connect to the internet".
+UNTRUSTED_BASE_CODE = "untrusted_api_base"
+UNTRUSTED_BASE_LINE = "sign-in not sent: SIBYL_API_BASE is not a Sibyl address."
+UNTRUSTED_BASE_HUMAN = ("SIBYL_API_BASE points at a host Sibyl will not send your sign-in to; "
+                        "unset it")
+UNTRUSTED_UPGRADE_HUMAN = ("SIBYL_UPGRADE_BASE points at a host Sibyl will not send your sign-in "
+                           "to; unset it")
+
+
+def untrusted_base_handoff() -> tuple[str, str | None]:
+    return ("done", UNTRUSTED_BASE_HUMAN)
+
+
+def _unsafe_url_chars(url: str) -> bool:
+    return any(c == "\\" or c.isspace() or ord(c) < 0x20 or ord(c) == 0x7F for c in url)
+
+
+def bearer_url_safe(url: Any) -> bool:
+    """Follow-up D3: the extra refusals the CLI applies before the client's
+    host rule, so cli 0.7.0 is protected with client 0.10.0 installed. A URL
+    with a backslash, whitespace or a control character, or with userinfo
+    (``https://evil.com\\@sibyllabs.org/x`` parses with hostname sibyllabs.org
+    while some HTTP stacks connect to evil.com), never gets the bearer."""
+    import urllib.parse
+    if not isinstance(url, str) or _unsafe_url_chars(url):
+        return False
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.username is not None or parsed.password is not None:
+            return False
+    except ValueError:
+        return False
+    return True
+
+
+def _guarded_refresh(account_id: str, session_token: str):
+    """The client's /entitlement transport behind the CLI's own URL check
+    (D3): the client gate's own rule alone accepts a userinfo URL."""
+    if not bearer_url_safe(_E._api_base() + _E.ENTITLEMENT_PATH):
+        return _E.RefreshOutcome("transient", code=UNTRUSTED_BASE_CODE)
+    return _E.http_refresh(account_id, session_token)
+
+
 # F-1 (contract C1): the api's 401 ``code`` for a computer that was signed
 # out when the account's email was confirmed on the account page.
 SIGNED_OUT_ON_CLAIM = "signed_out_on_claim"
@@ -109,7 +156,8 @@ def remove_entitlement(cred_path: Path) -> list[str]:
 def gate_for(cred_path: Path, *, background: bool = False):
     if _E is None:
         return None
-    return _E.EntitlementGate(Path(cred_path).expanduser(), background_refresh=background)
+    return _E.EntitlementGate(Path(cred_path).expanduser(), background_refresh=background,
+                              refresh_fn=_guarded_refresh)
 
 
 def header_token(cred_path: Path) -> str | None:
@@ -168,6 +216,8 @@ def gate_http_line(status: int, code: str | None, *, cred_path: Path | None = No
 
     F-1: a 401 whose ``code`` is ``signed_out_on_claim`` gets its own
     line, with the ``signed_out_at`` from ``body`` (the HttpError body)."""
+    if status == 0 and code == UNTRUSTED_BASE_CODE:
+        return UNTRUSTED_BASE_LINE
     if status == 401 and code == SIGNED_OUT_ON_CLAIM:
         return signed_out_on_claim_line(body.get("signed_out_at") if isinstance(body, dict) else None)
     if status == 403 and code == "entitlement_invalid":
@@ -309,6 +359,14 @@ def _tier_unknown_row(info: dict[str, Any]) -> str | None:
     return None
 
 
+def _untrusted_offline(info: dict[str, Any]) -> bool:
+    """D1: the last refresh was not sent (untrusted SIBYL_API_BASE) and the
+    state is one whose copy would otherwise say "connect to the internet"."""
+    return (info.get("refresh_code") == UNTRUSTED_BASE_CODE
+            and (info.get("state") in ("stale", "bootstrap")
+                 or info.get("code") in ("expired_offline", "setup_incomplete")))
+
+
 def access_row(info: dict[str, Any]) -> str:
     """The `access` eyebrow value (spec 3.4, 8.2-8.5)."""
     state = info.get("state")
@@ -316,6 +374,8 @@ def access_row(info: dict[str, Any]) -> str:
     tier_row = _tier_unknown_row(info)
     if tier_row is not None:
         return tier_row
+    if _untrusted_offline(info):
+        return "not checked · " + UNTRUSTED_BASE_LINE
     if state == "fresh":
         secs = info.get("renews_in_seconds") or 0
         hours = max(0, int(round(secs / 3600)))
@@ -387,6 +447,8 @@ def access_handoff(info: dict[str, Any] | None) -> tuple[str, str | None]:
         return ("sibyl init", None)
     state = info.get("state")
     code = info.get("code")
+    if _untrusted_offline(info):
+        return untrusted_base_handoff()
     if state in ("fresh", "stale", "bootstrap"):
         if info.get("refresh_code") == TIER_UNKNOWN:
             return ("done", None)
@@ -417,6 +479,8 @@ def gate_http_handoff(status: int, code: str | None, *, cred_path: Path | None =
     line = gate_http_line(status, code, cred_path=cred_path, body=body)
     if line is None:
         return None
+    if line == UNTRUSTED_BASE_LINE:
+        return untrusted_base_handoff()
     if status == 401 and code == SIGNED_OUT_ON_CLAIM:
         return (SIGNED_OUT_ON_CLAIM_NEXT, None)
     if line == ENTITLEMENT_INVALID_LINE:

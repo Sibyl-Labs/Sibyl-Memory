@@ -5,7 +5,8 @@ Entry point: `sibyl` (installed via [project.scripts] in pyproject).
 
     sibyl init          sign in (email + code, or a wallet) and write
                         ~/.sibyl-memory/credentials.json
-    sibyl setup         wire Claude Code, Codex and Hermes
+    sibyl setup         wire Claude Code, Codex, Cursor, Hermes and
+                        DeepSeek Harness
     sibyl status        show current tier, DB size, expiry, account
     sibyl upgrade       open the upgrade flow: Pro by card or USDC, or by
                         staking $SIBYL

@@ -1,0 +1,11 @@
+- insert:
+    - id: sibyl-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: sibyl-memory
+        command: "/a/sibyl-memory-mcp"
+    - id: sibyl-memory-2
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: sibyl-memory-2
+        command: "/b/sibyl-memory-mcp"
