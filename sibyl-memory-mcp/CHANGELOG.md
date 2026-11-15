@@ -4,6 +4,27 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning follows
 [SemVer](https://semver.org/).
 
+## [0.4.2] - 2026-11-14
+
+### Added
+- Server-level instructions in the `initialize` result: a short, harness-neutral note on when to
+  search, save and link memories, naming only existing tools. Harnesses that place server
+  instructions in the system prompt (DeepSeek Harness does) pick it up. Set
+  `SIBYL_MEMORY_INSTRUCTIONS=0` to turn it off.
+
+### Changed
+- The MCP SDK logs at WARNING by default, so the per-request "Processing request of type ..."
+  line no longer reaches the harness terminal. `FASTMCP_LOG_LEVEL` raises it again.
+
+### Fixed (review panel, 2026-11-14)
+- Dependency floor raised from `mcp>=1.0.0` to `mcp>=1.19.0`. The server passes `meta=` to
+  `FastMCP.tool()`, which mcp first accepts in 1.19.0. Measured in throwaway environments: the
+  test suite passes on mcp 1.19.0 (282 passed) and fails on 1.18.0 (TypeError: unexpected
+  keyword argument 'meta'). A pip that resolved an older mcp installed a server that crashed at
+  start.
+- Tests: the log level test checks the environment variable the server actually reads, and the
+  release train test compares installed versions with `pyproject.toml` instead of literals.
+
 ## [0.4.1] - 2026-11-12
 
 ### Changed

@@ -318,6 +318,71 @@ def _https_context() -> ssl.SSLContext:
     return https_context()
 
 
+try:
+    from sibyl_memory_client._entitlement import _bearer_allowed as _client_bearer_allowed
+except ImportError:  # pragma: no cover - a client without the gate
+    _BEARER_HOST = "sibyllabs.org"
+    _LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+    def _client_bearer_allowed(url: str) -> bool:
+        """Same rule as sibyl_memory_client._entitlement._bearer_allowed."""
+        try:
+            parsed = urllib.parse.urlparse(url)
+        except ValueError:
+            return False
+        host = (parsed.hostname or "").lower()
+        scheme = (parsed.scheme or "").lower()
+        if host in _LOCAL_HOSTS and scheme in ("http", "https"):
+            return True
+        return scheme == "https" and (host == _BEARER_HOST or host.endswith("." + _BEARER_HOST))
+
+
+def _bearer_allowed(url: str) -> bool:
+    """The client's host rule behind the CLI's own refusals (follow-up D3): a
+    backslash, whitespace, a control character or userinfo in the URL is
+    refused first, so cli 0.7.0 is safe with client 0.10.0, whose rule alone
+    accepts ``https://evil.com\\@sibyllabs.org/x``."""
+    return _gate.bearer_url_safe(url) and _client_bearer_allowed(url)
+
+
+UNTRUSTED_BASE_CODE = _gate.UNTRUSTED_BASE_CODE
+_UNTRUSTED_NOTED: set[str] = set()
+_CREDENTIAL_HEADERS = ("authorization", "x-sibyl-entitlement")
+_CREDENTIAL_BODY_KEYS = ("session_token", "bearer_token")
+
+
+def _carries_credential(headers: dict | None, body: dict | None) -> bool:
+    if any(k.lower() in _CREDENTIAL_HEADERS for k in (headers or {})):
+        return True
+    return isinstance(body, dict) and any(body.get(k) for k in _CREDENTIAL_BODY_KEYS)
+
+
+def _untrusted_base_message(base: str, name: str = "SIBYL_API_BASE") -> str:
+    try:
+        p = urllib.parse.urlparse(base)
+        shown = f"{p.scheme}://{p.hostname}" if p.scheme and p.hostname else "an unusable value"
+    except ValueError:
+        shown = "an unusable value"
+    return (f"{name} ({shown}) is not an https *.sibyllabs.org address or a loopback address "
+            "for local development, so the session token was not sent. Unset it or point "
+            "it at the Sibyl api.")
+
+
+def _note_untrusted_base(base: str, name: str = "SIBYL_API_BASE") -> None:
+    """Print the untrusted-base explanation to stderr at most once per process
+    and variable (follow-up D1: `sibyl upgrade` printed it twice)."""
+    if name in _UNTRUSTED_NOTED:
+        return
+    _UNTRUSTED_NOTED.add(name)
+    print(_untrusted_base_message(base, name), file=sys.stderr)
+
+
+def _is_untrusted(e: "HttpError | None") -> bool:
+    """True for the refusal http_request raises instead of sending the
+    sign-in to a host outside the bearer rule (never a network fault)."""
+    return e is not None and e.status == 0 and e.code == UNTRUSTED_BASE_CODE
+
+
 def http_request(  # noqa: D401
     method: str,
     path: str,
@@ -326,8 +391,18 @@ def http_request(  # noqa: D401
     timeout: float = 15.0,
     headers: dict | None = None,
 ) -> dict:
-    """Single source of truth for HTTP calls. Returns parsed JSON or raises HttpError."""
+    """Single source of truth for HTTP calls. Returns parsed JSON or raises HttpError.
+
+    Panel fix 6 (2026-11-14): a request that carries the session bearer (an
+    Authorization or X-Sibyl-Entitlement header, or a session_token or
+    bearer_token in the body) is sent only to https *.sibyllabs.org or a
+    loopback host, the same gate the client library applies. Otherwise it is
+    not sent at all and HttpError(0, code untrusted_api_base) is raised."""
     url = f"{API_BASE}{path}"
+    if _carries_credential(headers, body) and not _bearer_allowed(url):
+        msg = _untrusted_base_message(API_BASE)
+        _note_untrusted_base(API_BASE)
+        raise HttpError(0, {"error": msg, "code": UNTRUSTED_BASE_CODE}, url)
     data = None
     full_headers = {"Accept": "application/json", "User-Agent": f"sibyl-memory-cli/{_client_version()}"}
     if body is not None:
@@ -691,6 +766,8 @@ def _email_error_message(e: HttpError) -> str:
 
 def _email_rc(e: HttpError) -> int:
     """Exit code for an email-verify failure: 2 server side, 1 otherwise."""
+    if _is_untrusted(e):
+        return 1
     return 2 if (e.status == 0 or e.status >= 500 or e.status == 404) else 1
 
 
@@ -1411,10 +1488,16 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 # ---- `sibyl upgrade` ---------------------------------------------------
 
-def _legacy_upgrade_url(session_token: str) -> str:
+def _legacy_upgrade_url(session_token: str) -> str | None:
     """The pre-2026-05-25 upgrade link. Only for an api with no upgrade-nonce
     endpoint (404). It carries the bearer in the URL, which is why every other
     path avoids it."""
+    if not _bearer_allowed(UPGRADE_BASE):
+        # Panel fix 6: the bearer never goes into a link on another host.
+        _note_untrusted_base(UPGRADE_BASE, "SIBYL_UPGRADE_BASE")
+        global _UPGRADE_GATE_HANDOFF
+        _UPGRADE_GATE_HANDOFF = ("done", _gate.UNTRUSTED_UPGRADE_HUMAN)
+        return None
     return f"{UPGRADE_BASE}?session={session_token}"
 
 
@@ -1484,6 +1567,11 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     # 0.5.0: the bearer never rides a URL. Either the account billing page
     # (sign in there; no token) or the one-time upgrade-nonce exchange.
     access, access_err = _fetch_access_ex(creds)
+    if _is_untrusted(access_err):
+        print(a.err_line(_gate.UNTRUSTED_BASE_LINE))
+        nxt, human = _gate.untrusted_base_handoff()
+        _h.handoff(nxt, human=human)
+        return 1
     if access_err is not None and access_err.status == 401:
         # Release-blocker F7: say what fixes it, never "try again".
         claim_line = _claim_signout_line(access_err)
@@ -1524,8 +1612,13 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
             _h.handoff("sibyl init")
             return 1
         if upgrade_url is None:
-            print(a.err_line("could not start the upgrade. try again."))
             gate_h = _UPGRADE_GATE_HANDOFF
+            if gate_h is not None and gate_h[0] == "done":
+                # D1: an untrusted SIBYL_UPGRADE_BASE; nothing to retry.
+                print(a.err_line("could not start the upgrade: the sign-in was not sent."))
+                _h.handoff(gate_h[0], human=gate_h[1])
+                return 1
+            print(a.err_line("could not start the upgrade. try again."))
             if gate_h is not None:
                 _h.handoff(gate_h[0], human=gate_h[1], later=("sibyl upgrade",))
             else:
@@ -1869,7 +1962,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     # Server view (only if account_id + session_token are present)
     drift = False
-    server_err: int | None = None
+    server_err: int | str | None = None
     if creds.get("account_id") and creds.get("session_token"):
         print()
         print(a.eyebrow("server"))
@@ -1908,9 +2001,14 @@ def cmd_status(args: argparse.Namespace) -> int:
             if claim_line:
                 print(a.kv("Tier", "signed out", value_color="err"))
                 print(a.dim(f"  {claim_line}"))
+            elif _is_untrusted(e):
+                server_err = UNTRUSTED_BASE_CODE
+                print(a.kv("Tier", "not checked", value_color="err"))
+                print(a.dim(f"  {_gate.UNTRUSTED_BASE_LINE}"))
             else:
                 print(a.kv("Tier", f"server error: {e.status}", value_color="err"))
-            if e.status == 0 and ent_info and isinstance(ent_info.get("acct"), dict):
+            if e.status == 0 and server_err != UNTRUSTED_BASE_CODE and ent_info \
+                    and isinstance(ent_info.get("acct"), dict):
                 # Offline: the last known account state, from the entitlement.
                 when = ent_info.get("received_at")
                 as_of = _utc_minute(when) or "?"
@@ -1924,7 +2022,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     print()
     # Agent handoff (rows S3 to S12): the access state first; a healthy state
     # gives way to an unreachable server, then tier drift, then split stores.
-    if nxt == "done":
+    if server_err == UNTRUSTED_BASE_CODE or (ent_info or {}).get("refresh_code") == UNTRUSTED_BASE_CODE:
+        # D1: the access state above was not checked with the server because
+        # the sign-in was not sent; the only fix is the environment.
+        nxt, human = _gate.untrusted_base_handoff()
+    elif nxt == "done":
         if server_err is not None:
             nxt, human = "sibyl refresh", (OFFLINE_HUMAN if server_err == 0 else None)
         elif drift:
@@ -2147,7 +2249,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
                             headers=_bearer_headers(creds))
     except HttpError as e:
         msg = e.body.get("error") if isinstance(e.body, dict) else None
-        print(a.warn_line(f"Claim failed ({e.status or 'network'})."))
+        print(a.warn_line(f"Claim failed ({'sign-in not sent' if _is_untrusted(e) else e.status or 'network'})."))
         gate_line = _gate.gate_http_line(e.status, e.code, cred_path=_ENT_CRED_PATH, body=e.body)
         if gate_line:
             print(a.dim(f"  {gate_line}"))
@@ -2254,6 +2356,12 @@ def cmd_email(args: argparse.Namespace) -> int:
                 print(a.warn_line(claim_line or "session expired. re-run sibyl init."))
                 print()
                 _h.handoff(_gate.SIGNED_OUT_ON_CLAIM_NEXT if claim_line else "sibyl init")
+                return 1
+            if _is_untrusted(err):
+                print(a.warn_line(_gate.UNTRUSTED_BASE_LINE))
+                print()
+                nxt, human = _gate.untrusted_base_handoff()
+                _h.handoff(nxt, human=human)
                 return 1
             offline = err is None or err.status == 0
             print(a.warn_line("could not reach the server." if offline
@@ -2441,7 +2549,7 @@ def cmd_devices(args: argparse.Namespace) -> int:
             print(a.err_line(_devices_error_line(e)))
             dn, dh = _devices_error_handoff(e)
             _h.handoff(dn, human=dh)
-        return 2
+        return 1 if _is_untrusted(e) else 2
 
     devices = resp.get("devices", [])
     # LIGHT treatment: table-like dashboard. Eyebrow line with count + the rows. No banner.
@@ -3164,11 +3272,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_h = sub.add_parser("health", help="Run the provider self-check")
     p_h.set_defaults(func=cmd_health)
 
+    from .setup import cmd_setup, SETUP_TARGETS, ALL_WIRERS, SETUP_ALIASES
     p_doc = sub.add_parser(
         "doctor",
-        help="End-to-end check: start the MCP server, list tools, save a marked test memory, recall it, delete it",
+        help="End-to-end check: start the MCP server, list tools, save a marked test memory, "
+             "recall it, delete it; checks each agent's wiring (--fix repairs stale paths)",
     )
     p_doc.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_doc.add_argument("--fix", action="store_true",
+                       help="Repair stale or broken harness wiring without asking (never adds a missing one)")
+    p_doc.add_argument("--harness", action="append", default=None,
+                       choices=list(ALL_WIRERS) + list(SETUP_ALIASES) + ["grokbot"],
+                       help="Limit harness checks and repairs to this harness; repeatable "
+                            "(grokbot checks the Cursor file, where setup grokbot wires it)")
+    p_doc.add_argument("--no-harness", action="store_true",
+                       help="Skip harness checks: server round trip only")
     p_doc.set_defaults(func=cmd_doctor)
 
     p_mem = sub.add_parser("memory", help="Inspect your memory store (list / search / recall / neighbors), or adopt memory from before sign-in")
@@ -3219,14 +3337,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_update.set_defaults(func=cmd_update)
 
     # v0.1.4: one-command auto-detect-and-wire setup for any agent stack
-    from .setup import cmd_setup, SETUP_TARGETS
+    # (cmd_setup and SETUP_TARGETS are imported above, before p_doc)
     p_setup = sub.add_parser(
         "setup",
-        help="Auto-detect Hermes / Claude Code / Codex and wire SIBYL as the memory provider",
+        help="Auto-detect Hermes / Claude Code / Codex / Cursor / DeepSeek Harness and wire SIBYL as the memory provider",
     )
     p_setup.add_argument(
         "target", nargs="?", choices=list(SETUP_TARGETS),
-        help="Wire just this framework (default: detect all). grokbot = Cursor wiring + confirmation",
+        help="Wire just this framework (default: detect all). deepseek = DeepSeek Harness "
+             "(dsh is an alias). grokbot = Cursor wiring + confirmation",
     )
     p_setup.add_argument(
         "--yes", "-y", action="store_true",
@@ -3255,6 +3374,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument(
         "--cursor-config", default=None,
         help="Override ~/.cursor/mcp.json autodetection",
+    )
+    p_setup.add_argument(
+        "--dsh-home", default=None,
+        help="DeepSeek Harness home (default: $DSH_HOME, else ~/.dsh)",
+    )
+    p_setup.add_argument(
+        "--dsh-profile", default=None,
+        help="Write to one DeepSeek Harness profile's patch file instead of the home patch "
+             "that covers every profile",
     )
     p_setup.add_argument(
         "--print-config", action="store_true",

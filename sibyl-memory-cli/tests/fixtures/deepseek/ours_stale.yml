@@ -1,0 +1,11 @@
+# Sibyl Memory MCP server (added by "sibyl setup deepseek"; re-run it to update the path)
+- insert:
+    - id: sibyl-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: sibyl-memory
+        transport: stdio
+        command: "/old/venv/bin/sibyl-memory-mcp"
+        args: []
+        env: {}
+        cwd: !!js process.cwd()

@@ -12,7 +12,7 @@ pip install sibyl-memory-mcp
 
 Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through WSL2. Native Windows is not supported.
 
-**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.1, hermes 0.6.0, cli 0.6.2), and each one requires the client of its own release. Upgrade them together, never one alone:
+**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.2, hermes 0.6.0, cli 0.7.0), and each one requires the client of its own release. Upgrade them together, never one alone:
 
 ```bash
 sibyl update --apply
@@ -78,6 +78,31 @@ command = "/absolute/path/to/sibyl-memory-mcp"
 ```
 
 Use the absolute path (`which sibyl-memory-mcp`): Codex starts the server from its own environment, so a bare command name may not resolve. Restart Codex.
+
+## Add to DeepSeek Harness (developer preview)
+
+The one command:
+
+```bash
+sibyl setup deepseek
+```
+
+It adds one row to DeepSeek Harness's home patch file, `~/.dsh/cordis.patch.yml` (or `$DSH_HOME`), which covers every profile. `--dsh-profile <name>` writes to one profile's patch instead. The file is edited as text, so your own patches and comments stay as written. To do the same by hand, add this item to the YAML list in that file:
+
+```yaml
+- insert:
+    - id: sibyl-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: sibyl-memory
+        transport: stdio
+        command: "/absolute/path/to/sibyl-memory-mcp"
+        args: []
+        env: {}
+        cwd: !!js process.cwd()
+```
+
+The tools appear as `mcp__sibyl-memory__*`. DeepSeek Harness needs Node 24.9 or newer. `sibyl doctor` checks the row and `sibyl doctor --fix` repairs a stale path.
 
 ## Run with Docker
 
@@ -183,6 +208,8 @@ Full docs at [docs.sibyllabs.org/memory/integrations](https://docs.sibyllabs.org
 | `SIBYL_MEMORY_RECALL_SMALL_HUB_MAX` / `SIBYL_MEMORY_RECALL_SIBLING_CAP` | 60 / 60 | Largest hub whose other records are listed as siblings; most sibling rows in one result |
 | `SIBYL_MEMORY_RANKED_FALLBACK` | off | `1`: a search of 3+ significant words that comes back short is filled with ranked candidates (`match: "ranked"`, verdict `ranked_appended`). Tuning: `SIBYL_MEMORY_RANKED_MIN_TOKENS` (3), `SIBYL_MEMORY_RANKED_EXCLUDE_CATEGORIES` (comma list) |
 | `SIBYL_MEMORY_HOP_OWNERS` | off | `1`: a document's `links` summary lists its owning hubs first (with `doc_count`) plus `owners_total` |
+| `SIBYL_MEMORY_INSTRUCTIONS` | on | `0` leaves out the short server-level instructions in the `initialize` result |
+| `FASTMCP_LOG_LEVEL` | `WARNING` | The MCP SDK log level on stderr (`INFO` shows each request) |
 
 ## Tier behavior
 

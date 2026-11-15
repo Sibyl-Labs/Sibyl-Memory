@@ -1,0 +1,12 @@
+- insert:
+    - id: sibyl-memory
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: sibyl-memory
+        transport: stdio
+        command: /old/venv/bin/sibyl-memory-mcp   # moved when I rebuilt the venv
+        args: []
+        env: {SIBYL_MEMORY_MCP_OUTPUT_TOKENS: "9000"}
+        cwd: !!js process.cwd()
+        startupTimeoutMs: 9000
+        toolCallTimeoutMs: 120000

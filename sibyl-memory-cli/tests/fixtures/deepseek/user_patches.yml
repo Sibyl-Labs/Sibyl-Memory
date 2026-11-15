@@ -1,0 +1,19 @@
+# my patches
+- id: some-builtin-row
+  config:
+    theme: dark
+
+- insert:
+    - id: memory-github
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: github
+        transport: stdio
+        command: npx
+        args: [-y, '@modelcontextprotocol/server-github']
+        env: {GITHUB_TOKEN: !!js process.env.GITHUB_TOKEN}
+        cwd: !!js process.cwd()
+    - id: note-row
+      name: some-plugin
+      config:
+        greeting: !!js '`hello ${process.env.USER}`'
