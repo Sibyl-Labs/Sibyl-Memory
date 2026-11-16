@@ -1,0 +1,91 @@
+# Test suites of the five packages on every supported Python (review panel
+# finding 9, 2026-11-14): nothing ran the tests on push, and Python 3.10, the
+# declared floor, was never executed. Each package's own pytest runs with an
+# empty HOME, so no test can read or write a real ~/.sibyl-memory, ~/.claude,
+# ~/.codex, ~/.cursor, ~/.hermes or ~/.dsh.
+name: tests
+
+# push runs on the default branch only (main); a PR branch runs once, from
+# pull_request, instead of twice.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: install (editable, dependencies first)
+        run: |
+          set -eux
+          python -m pip install --upgrade pip
+          # client first: hermes, mcp, cli and langgraph all depend on it;
+          # hermes before mcp and cli, mcp before cli.
+          python -m pip install -e ./sibyl-memory-client
+          python -m pip install -e ./sibyl-memory-hermes
+          python -m pip install -e ./sibyl-memory-mcp
+          python -m pip install -e ./sibyl-memory-cli
+          python -m pip install -e ./sibyl-memory-langgraph
+          python -m pip install pytest
+          python -m pip list
+
+      - name: pytest per package (temp HOME)
+        run: |
+          set -u
+          status=0
+          for pkg in client hermes mcp cli langgraph; do
+            home="$(mktemp -d)"
+            echo "::group::sibyl-memory-$pkg"
+            extra=""
+            # needs the `claude` binary, which the runner does not have
+            if [ "$pkg" = "cli" ]; then
+              extra="--deselect tests/test_orchestrator.py::test_orchestrator_full_flow"
+            fi
+            (cd "sibyl-memory-$pkg" && HOME="$home" USERPROFILE="$home" \
+              python -m pytest -q -p no:cacheprovider $extra tests) || status=1
+            echo "::endgroup::"
+            rm -rf "$home"
+          done
+          exit $status
+
+  # The lowest declared mcp (sibyl-memory-mcp pins mcp>=1.19.0) on the lowest
+  # supported Python, for the mcp package only, with pydantic held below 2.12
+  # to match that mcp release (measured 2026-11-14: 284 passed).
+  mcp-floor:
+    name: pytest mcp (Python 3.10, mcp 1.19.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: install (lowest mcp)
+        run: |
+          set -eux
+          python -m pip install --upgrade pip
+          python -m pip install -e ./sibyl-memory-client -e ./sibyl-memory-mcp \
+            "mcp==1.19.0" "pydantic<2.12" pytest
+          python -m pip list
+
+      - name: pytest sibyl-memory-mcp (temp HOME)
+        run: |
+          home="$(mktemp -d)"
+          cd sibyl-memory-mcp
+          HOME="$home" USERPROFILE="$home" python -m pytest -q -p no:cacheprovider tests
