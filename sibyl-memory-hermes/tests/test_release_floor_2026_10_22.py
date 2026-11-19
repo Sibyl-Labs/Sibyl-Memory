@@ -19,7 +19,7 @@ def _ver(text: str, pat: str) -> tuple[int, ...]:
 def test_client_floor_is_the_train_release():
     mine = (ROOT / "sibyl-memory-hermes" / "pyproject.toml").read_text()
     client = (ROOT / "sibyl-memory-client" / "pyproject.toml").read_text()
-    assert _ver(mine, r'^version = "([0-9.]+)"') == (0, 6, 0)
+    assert _ver(mine, r'^version = "([0-9.]+)"') == (0, 6, 1)
     assert (_ver(mine, r'"sibyl-memory-client>=([0-9.]+)"')
             == _ver(client, r'^version = "([0-9.]+)"') == (0, 10, 0))
 

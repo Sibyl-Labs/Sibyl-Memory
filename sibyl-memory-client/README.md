@@ -10,7 +10,7 @@ pip install sibyl-memory-client
 
 Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through WSL2. Native Windows is not supported.
 
-**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.2, hermes 0.6.0, cli 0.7.0), and each one requires the client of its own release. Upgrade them together, never one alone:
+**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.2, hermes 0.6.1, cli 0.7.0), and each one requires the client of its own release. Upgrade them together, never one alone:
 
 ```bash
 sibyl update --apply
@@ -60,7 +60,7 @@ Most agent-memory products store everything on someone else's servers, treat eve
 
 - **Local-first.** Memory lives in a SQLite database in `~/.sibyl-memory/`. Memory content never leaves the machine.
 - **Organized by kind.** Five separate tiers: state, entities, journal, reference, archive: each recalled the way it should be recalled.
-- **Benchmarked.** The Sibyl Memory Plugin (built on this SDK) sits at #2 globally on the LongMemEval Oracle benchmark when paired with Claude Opus 4.6. Methodology open at [blog.sibylcap.com/longmemeval-v2](https://blog.sibylcap.com/longmemeval-v2).
+- **Benchmarked.** The Sibyl Memory Plugin (built on this SDK) scored 95.1% on LongMemEval Oracle with Claude Sonnet 4.5 (447/470, preference questions excluded; 90.6% across all 500). The underlying architecture scored 95.6% on Claude Opus 4.6, #2 on the leaderboard as of April 2026. Results and scorer: [memory-bench-kit](https://github.com/Sibyl-Labs/memory-bench-kit). Report: [blog.sibylcap.com/plugin-longmemeval](https://blog.sibylcap.com/longmemeval-v2).
 
 ## The five tiers
 
@@ -122,14 +122,14 @@ removes the row outright. Use archive to declutter, delete to truly forget.
 
 Every memory operation needs an activated account (`sibyl init`) holding a valid, server-signed entitlement for this computer. Without one, operations raise `EntitlementError` whose message names the one thing to do (usually `sibyl init`); `e.code` says why (`no_account`, `signed_out`, `expired_offline`, `setup_incomplete`, `under_review`, `account_deleted`, `invalid_entitlement`, `wrong_device`, `policy_read_only`, `policy_none`, `client_too_old`). Constructing a `MemoryClient` never raises for this.
 
-- The entitlement is an Ed25519-signed token the client verifies offline against a public key pinned in the package. It renews itself about once a day and keeps working offline for up to 14 days.
+- The entitlement is an Ed25519-signed token the client verifies offline against a public key pinned in the package. It renews itself about once an hour on Free and about once a day on Pro and keeps working offline for up to 14 days.
 - Revoking this computer (account page, `sibyl devices revoke`, `sibyl logout`) or deleting the account takes effect on its next check-in.
 - A computer that holds credentials but has never received its signed access file (an upgrade from before 0.9.0) needs ONE successful check-in first; until then operations raise `setup_incomplete` ("connect to the internet once to finish setup"). There is no offline grace before that first check-in.
 - Your local data is never deleted by the gate. `sibyl memory list|search|recall` reads it without an account.
 - Memory written before sign-in (the pre-account default tenant) moves into the account the first time a signed-in client uses this store: one local SQLite transaction, nothing deleted, nothing sent anywhere, a key the account already has kept under `<key> (before sign-in)`, an audit row in the store. It happens automatically only if the store has never held another account; otherwise `sibyl memory adopt` (or `MemoryClient.adopt_pre_signin_memory(confirm_other_accounts=True)`) does it after a confirmation.
 - There is no environment variable that turns the gate off. Test suites inject `sibyl_memory_client.testing.NullEntitlementGate()` at construction (`MemoryClient.local(path, entitlement_gate=NullEntitlementGate())`).
 
-> **Privacy disclosure.** Your memory content never leaves the machine. The plugin talks to `api.sibyllabs.org` for these things only: activation (`sibyl init`); a daily account check-in that renews this computer's access (account id, this computer's sign-in token, plugin version, OS family; no memory content); a size check when a free account nears its cap (account id, sign-in token, the database's byte size and the proposed delta); and, unless you opt out with `SIBYL_MEMORY_TELEMETRY=0`, an aggregate count of memory operations. The size check and the count also carry this computer's signed access token (account id, tier, cap, device hash, account flags; no personal data). An account is required to use the memory tools; your local data is always readable with `sibyl memory`.
+> **Privacy disclosure.** Your memory content never leaves the machine. The plugin talks to `api.sibyllabs.org` for these things only: activation (`sibyl init`); an account check-in that renews this computer's access (about once an hour on Free, about once a day on Pro) (account id, this computer's sign-in token, plugin version, OS family; no memory content); a size check when a free account nears its cap (account id, sign-in token, the database's byte size and the proposed delta); and, unless you opt out with `SIBYL_MEMORY_TELEMETRY=0`, an aggregate count of memory operations. The size check and the count also carry this computer's signed access token (account id, tier, cap, device hash, account flags; no personal data). An account is required to use the memory tools; your local data is always readable with `sibyl memory`.
 
 ## Tier model
 

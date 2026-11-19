@@ -20,9 +20,9 @@
 [![PyPI · langgraph](https://img.shields.io/pypi/v/sibyl-memory-langgraph?label=langgraph&color=8a6a2a)](https://pypi.org/project/sibyl-memory-langgraph/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-15110a.svg)](./LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-15110a.svg)](https://www.python.org/downloads/)
-[![LongMemEval](https://img.shields.io/badge/LongMemEval-95.6%25%20%23%E2%80%832-2e6b3a.svg)](https://blog.sibylcap.com/longmemeval-v2)
+[![LongMemEval](https://img.shields.io/badge/LongMemEval-plugin_95.1%25-2e6b3a.svg)](https://blog.sibylcap.com/plugin-longmemeval)
 
-<sub><i>built by an autonomous agent · sibyl labs llc</i></sub>
+<sub><i>sibyl labs, llc</i></sub>
 
 </div>
 
@@ -36,11 +36,11 @@ Five PyPI packages, one schema family, one architecture.
 
 `sibyl-memory-client` is a local-first agentic memory SDK. SQLite-backed, five-tier hierarchical schema, FTS5 search, multi-tenant by design. No vector database. No embedding model. No external retrieval service. The memory lives on the agent's machine; the substrate is a single file on disk.
 
-> **Privacy disclosure.** Your memory content never leaves the machine. The plugin talks to `api.sibyllabs.org` for these things only: activation (`sibyl init`); a daily account check-in that renews this computer's access (account id, this computer's sign-in token, plugin version, OS family; no memory content); a size check when a free account nears its cap (account id, sign-in token, the database's byte size and the proposed delta); and an aggregate count of memory operations (the MCP server and CLI send it unless you opt out with `SIBYL_MEMORY_TELEMETRY=0`; Hermes, since 0.6.0, only if you opt in with `SIBYL_MEMORY_TELEMETRY=1`). The size check and the count also carry this computer's signed access token (account id, tier, cap, device hash, account flags; no personal data). An account is required to use the memory tools; your local data is always readable with `sibyl memory`. Verified against the source in `sibyl-memory-client/src/sibyl_memory_client/` (`_entitlement.py`, `_capcheck.py`, `_heartbeat.py`).
+> **Privacy disclosure.** Your memory content never leaves the machine. The plugin talks to `api.sibyllabs.org` for these things only: activation (`sibyl init`); an account check-in that renews this computer's access (about once an hour on Free, about once a day on Pro) (account id, this computer's sign-in token, plugin version, OS family; no memory content); a size check when a free account nears its cap (account id, sign-in token, the database's byte size and the proposed delta); and an aggregate count of memory operations (the MCP server and CLI send it unless you opt out with `SIBYL_MEMORY_TELEMETRY=0`; Hermes, since 0.6.0, only if you opt in with `SIBYL_MEMORY_TELEMETRY=1`). The size check and the count also carry this computer's signed access token (account id, tier, cap, device hash, account flags; no personal data). An account is required to use the memory tools; your local data is always readable with `sibyl memory`. Verified against the source in `sibyl-memory-client/src/sibyl_memory_client/` (`_entitlement.py`, `_capcheck.py`, `_heartbeat.py`).
 
 The other four packages ride on top: `sibyl-memory-cli` for activation and tier management, `sibyl-memory-hermes` for Hermes Agent integration, `sibyl-memory-mcp` for any MCP-compatible client (Claude Code, Codex, Cursor, Continue), and `sibyl-memory-langgraph` as a LangGraph `BaseStore` adapter.
 
-The architecture was benchmarked publicly on [LongMemEval Oracle](https://blog.sibylcap.com/longmemeval-v2) (ICLR 2025, University of Michigan, 500 questions) and placed **#2 overall at 95.6%**, tied with Chronos (PwC), beating Mastra, MemMachine, Hindsight, Mem0, Supermemory, Zep, and the Oracle baseline. It is the only file-based system in the top tier: running on a single 4 vCPU / 16 GB box, no vector infrastructure, no embedding fees.
+The architecture was benchmarked publicly on [LongMemEval Oracle](https://blog.sibylcap.com/longmemeval-v2) (ICLR 2025, University of Michigan, 500 questions) and scored **95.6%** on Claude Opus 4.6, #2 on the leaderboard as of April 2026 (tied with Chronos, PwC). The shipped plugin scored **95.1%** on Claude Sonnet 4.5 (447/470, preference questions excluded; 90.6% across all 500), [reported here](https://blog.sibylcap.com/plugin-longmemeval), and an outside tester reproduced it at about 95.2%. Results, scorer and per-question answers: [memory-bench-kit](https://github.com/Sibyl-Labs/memory-bench-kit). It runs on a single 4 vCPU / 16 GB box: no vector infrastructure, no embedding fees.
 
 This is the entire stack as it ships to production agents today.
 
@@ -51,7 +51,7 @@ This is the entire stack as it ships to production agents today.
 | Package | PyPI | Description |
 |---|---|---|
 | [`sibyl-memory-client`](./sibyl-memory-client) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-client)](https://pypi.org/project/sibyl-memory-client/) | Local-first agentic memory SDK. SQLite-backed five-tier hierarchical schema, FTS5 search, multi-tenant, with self-learning skill detection and local memory linter. Foundation of the plugin family. |
-| [`sibyl-memory-cli`](./sibyl-memory-cli) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-cli)](https://pypi.org/project/sibyl-memory-cli/) | Command-line interface. `sibyl init` activates, `sibyl upgrade` opens the Pro / Elite upgrade flow, `sibyl status` shows current tier and DB stats, `sibyl whoami`, `sibyl devices`. |
+| [`sibyl-memory-cli`](./sibyl-memory-cli) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-cli)](https://pypi.org/project/sibyl-memory-cli/) | Command-line interface. `sibyl init` activates, `sibyl upgrade` opens the Pro upgrade flow, `sibyl status` shows current tier and DB stats, `sibyl whoami`, `sibyl devices`. |
 | [`sibyl-memory-hermes`](./sibyl-memory-hermes) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-hermes)](https://pypi.org/project/sibyl-memory-hermes/) | Bundled memory payload for Hermes Agent v0.13+ (and any other Python orchestration that wants direct SDK access). |
 | [`sibyl-memory-mcp`](./sibyl-memory-mcp) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-mcp)](https://pypi.org/project/sibyl-memory-mcp/) | MCP server. Wraps the local SQLite + FTS5 memory engine and exposes it to MCP-compatible agents (Claude Code, Codex, Cursor, Continue, anything that speaks MCP). |
 | [`sibyl-memory-langgraph`](./sibyl-memory-langgraph) | [![PyPI](https://img.shields.io/pypi/v/sibyl-memory-langgraph)](https://pypi.org/project/sibyl-memory-langgraph/) | LangGraph `BaseStore` adapter. Long-term, cross-thread store backed by the same SQLite + FTS5 engine — durable agent memory with no vector database and no embeddings. |
@@ -65,7 +65,7 @@ pip install sibyl-memory-cli
 sibyl init
 ```
 
-`sibyl init` opens a browser to activate your account, binds your wallet or email, and writes credentials to `~/.sibyl-memory/credentials.json` plus this computer's signed access file, `entitlement.json`. Free tier is the default; Pro and Elite unlock self-learning, the memory linter, and remove the local cap.
+`sibyl init` opens a browser to activate your account, binds your wallet or email, and writes credentials to `~/.sibyl-memory/credentials.json` plus this computer's signed access file, `entitlement.json`. Free tier is the default; Pro unlock self-learning, the memory linter, and remove the local cap.
 
 **An account is required.** Since client 0.9.0 every memory tool (MCP, Hermes, LangGraph, the SDK) needs an activated account holding a valid, server-signed entitlement. Without one the tools answer with a clear "run `sibyl init`" error instead of storing anything. The entitlement renews itself in the background about once a day and keeps working offline for up to 14 days. Your local memory is never deleted by any of this, and `sibyl memory list|search|recall` always reads it without an account. Memory written on this computer before you signed in moves into your account, on this computer, the first time you sign in (one local step, nothing uploaded); `sibyl memory adopt` does it on request, and asks first if the store has held another account. Upgrading needs one connection to finish setup: until this computer has checked in once, the tools answer "connect to the internet once to finish setup".
 
@@ -157,13 +157,7 @@ Rule 43 (single source of truth per entity) is enforced at the schema level via 
 
 ## Provenance
 
-Built by [SIBYL](https://x.com/sibylcap), the autonomous agent operating at [Sibyl Labs LLC](https://sibyllabs.org).
-
-The agent has been operating in production since February 2026, ships code daily, holds an on-chain identity on Base (ERC-8004 agent ID 20880), runs an autonomous trading engine, an on-chain messaging protocol, an x402 payment rail, a token-gated chat demo, an advisory dashboard, and this memory product family. Everything verifiable on-chain.
-
-Memory architecture is the proven core. Sibyl Labs LLC owns the IP, signs contracts, and holds the legal wrapper around the agent's work. The work itself is shipped by the agent, in sessions, through the operator (`@tradingtulips`). The PyPI releases, the CLI, the SDK, the CLI banner above: all of it is autonomous agent output.
-
-The on-chain record is the resume. This repository is one chapter of it.
+Built and maintained by [Sibyl Labs, LLC](https://sibyllabs.org).
 
 ---
 

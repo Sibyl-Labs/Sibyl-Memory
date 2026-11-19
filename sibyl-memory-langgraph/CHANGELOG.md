@@ -4,45 +4,38 @@ All notable changes to `sibyl-memory-langgraph` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
-## Unreleased (paid tier R2, 2026-09-29)
+## [0.3.0] - 2026-10-14
 
-### Unchanged
-- No code change and no publish in the 0.10 family: a `SibylStore` records no skill signals.
-  README: one sentence on where the signals are recorded.
+Account-gated release.
 
-## [0.3.0] - Unreleased
-
-Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.3).
-
-### 2026-10-14 - Pre-release cleanup
+### Pre-release cleanup
 - `sibyl_memory_langgraph.__version__` reports the installed version (it said 0.2.0 on 0.3.0).
   It is read from package metadata, like the other packages.
 
-### Added (agent handoff messages, 2026-10-06)
-Spec agent-handoff-messages-spec-2026-10-03 (rows L1, L2; needs sibyl-memory-client 0.9.0).
+### Added (agent handoff messages)
+Needs sibyl-memory-client 0.9.0.
 - No code change in the store: `EntitlementError` still propagates unchanged and now carries the
   handoff (`e.next`, `e.human_action`; `str(e)` ends with the block). README and the
   `SibylStore` docstring document both attributes.
 - Tests: `tests/test_handoff_2026_10_03.py` (+7). Suite: 470 passed, 5 xfailed.
 
-### Unchanged (paid tier R1, 2026-09-29)
-- No automatic save or skill proposals in a framework store; README says where they run.
-
-### Unchanged (save and debloat, 2026-09-27)
+### Unchanged
+- No automatic save or skill proposals in a framework store, and a `SibylStore` records no skill
+  signals; README says where they run and where the signals are recorded.
 - No lifecycle for a framework store: the save and debloat procedures belong to agent
   sessions (MCP, Hermes, Claude Code hooks). README paragraph only.
 
-### Changed (independent check of save and debloat, 2026-09-27, SD-7)
+### Changed (save and debloat)
 - A `SibylStore` client no longer counts writes into `~/.sibyl-memory/lifecycle.json` (the
   client's counting is now opt-in, and LangGraph has no lifecycle). README: run `sibyl skills
   uninstall` before uninstalling the CLI.
 
-### Changed (independent check fix batch, 2026-09-27, GATE-15)
+### Changed (privacy disclosure)
 - README privacy section: the size check and the usage heartbeat also carry
   this computer's signed access token (account id, tier, cap, device hash,
   account flags; no personal data). No code change.
 
-### Tests (gate fix before the independent check, 2026-09-27)
+### Tests
 - conftest: the network guard is installed at import and every test fails if
   it attempted a non-loopback connection or lookup, even one it caught;
   `test_network_guard_2026_09_27.py` proves the guard. No langgraph code
@@ -81,12 +74,11 @@ Minor version: `SibylStore` gained `last_search_verdict`, and the underlying
   as 0.1.1. It now tracks the pyproject version.
 
 ### Added
-- **`SibylStore.last_search_verdict`** (branch `lang-core-verdict`,
-  2026-08-31). langgraph's `BaseStore.search` signature is fixed as
-  `list[SearchItem]`, so a zero cannot carry its own explanation through that
-  API. What this store can do is stop throwing the cause away: the canonical
+- **`SibylStore.last_search_verdict`** (2026-08-31). langgraph's
+  `BaseStore.search` signature is fixed as `list[SearchItem]`, so a zero cannot
+  carry its own explanation through that API. What this store can do is stop throwing the cause away: the canonical
   verdict of the most recent query-backed search is exposed on the store, and an
-  empty FTS result is logged at DEBUG with its cause, so an operator debugging
+  empty FTS result is logged at DEBUG with its cause, so anyone debugging
   "the store returns nothing" reads `empty_store` or `no_match` instead of
   silence.
 - This package declares no cause vocabulary of its own — asserted by a test.
@@ -95,7 +87,7 @@ Minor version: `SibylStore` gained `last_search_verdict`, and the underlying
 - Row handling is untouched. `search_entities` now returns a `list` subclass, and
   the store's slicing, filtering and comprehension over it behave identically.
 
-### Fixed (independent adversarial review, 2026-08-31)
+### Fixed (independent review, 2026-08-31)
 - **A zero-row page could ship with `verdict.code == "ok"`.** The verdict was
   recorded from the raw FTS result, before the namespace-prefix filter, the value
   filter and the offset/limit slice, so a page emptied by any of those three
@@ -127,9 +119,8 @@ Minor version: `SibylStore` gained `last_search_verdict`, and the underlying
 Initial release. `SibylStore`, a LangGraph `BaseStore` backed by Sibyl Memory's
 local SQLite + FTS5 engine — durable, long-term, cross-thread agent memory with
 no vector database and no embeddings (lexical FTS5 search only). Ships hardened
-against the recovered findings from the Fable 10-lens audit
-(`plugin-hardening-superpatch-plan-2026-07-05.md`) before first publish, so
-these land as part of 0.1.0 rather than a follow-up patch.
+against the findings of a pre-publish audit, so these land as part of 0.1.0
+rather than a follow-up patch.
 
 ### Added
 - Full long-term `BaseStore` surface (`get`/`put`/`delete`/`search`/
@@ -145,7 +136,7 @@ these land as part of 0.1.0 rather than a follow-up patch.
   truncation.
 
 ### Fixed (pre-publish audit hardening)
-- **O(categories) search fan-out (R14 / Hardening #2).** The naive
+- **O(categories) search fan-out.** The naive
   implementation would issue one FTS `MATCH` per category and buffer up to the
   10,000-row pool EACH — worst case ~10^4 categories x 10^4 rows for a single
   query. `_search` now issues ONE FTS `MATCH` across all categories, then
@@ -155,30 +146,30 @@ these land as part of 0.1.0 rather than a follow-up patch.
   materialized per call stays bounded by the client's `MAX_LIMIT` (10,000); a
   warning is logged if that ceiling is hit (results may be incomplete for
   stores larger than a single pass covers — no client-side cursor exists yet).
-- **Pagination `TypeError`s and unbounded negative-limit slices (R32 / R33).**
+- **Pagination `TypeError`s and unbounded negative-limit slices.**
   `search` and `list_namespaces` both normalize `(limit, offset)` through one
   `_clamp_page` helper: `limit=None` resolves to the op's documented default
   instead of tripping `offset + None` arithmetic; a negative limit clamps to 0
   instead of producing a negative-index slice that silently returned nearly
   every row; a negative/None offset clamps to 0; the limit is capped at the
   10,000-row candidate pool.
-- **Filter operator crashes on malformed operands (R16).** `$gt`/`$gte`/`$lt`/
+- **Filter operator crashes on malformed operands.** `$gt`/`$gte`/`$lt`/
   `$lte` against an incomparable pair (e.g. dict vs int) no longer raises a raw
   `TypeError` that would abort an otherwise-valid batch — it now evaluates as
   "no match." `$in`/`$nin` validate the operand is iterable up front and raise
   a clean `ValueError` naming the operator instead of crashing on a
   non-iterable membership test.
-- **Empty-dict filter vacuously matched every row (R34).** `{"f": {}}` was
+- **Empty-dict filter vacuously matched every row.** `{"f": {}}` was
   read as an (empty) operator map and matched unconditionally. Only a
   NON-EMPTY dict of `$`-prefixed keys is now treated as an operator map;
   anything else — including `{}` — falls to the equality branch, so `{"f":
   {}}` matches only rows where `f == {}`.
-- **Unknown `match_type` failed open (R35).** `_ns_matches` returned `True`
+- **Unknown `match_type` failed open.** `_ns_matches` returned `True`
   (matching every namespace) for an unrecognized `match_type`. It now raises
   `ValueError` naming the unsupported type, mirroring `_match_filter`'s
   unknown-operator handling — a typo'd/unsupported condition is loud instead
   of silently returning the entire namespace set.
-- **`batch` was per-op best-effort with no pre-flight (R25).** Each `PutOp`
+- **`batch` was per-op best-effort with no pre-flight.** Each `PutOp`
   commits independently through the client, so a raise partway through a batch
   could leave an earlier prefix committed with no signal. Every `PutOp` in a
   batch is now fully validated (namespace shape/traversal, non-empty string
@@ -188,16 +179,15 @@ these land as part of 0.1.0 rather than a follow-up patch.
   surfaces during execution (I/O error, cap exceeded on the Nth write) can
   still leave prior writes applied — this is documented, not a full
   transactional guarantee.
-- **Default store ran identity-blind on `DEFAULT_TENANT` (Hardening #5 /
-  Contract T).** With no explicit `client=` or `tenant_id=`, `SibylStore()`
+- **Default store ran identity-blind on `DEFAULT_TENANT`.** With no explicit `client=` or `tenant_id=`, `SibylStore()`
   now reads `credentials.json` beside the DB file (written by `sibyl init`)
   and resolves the tenant via the canonical ladder shared by every plugin
   surface: `credentials.tenant_id -> credentials.account_id ->
   DEFAULT_TENANT`. `DEFAULT_TENANT` is reached only when credentials are
   genuinely absent (un-activated). The credentials read is symlink-guarded
-  (mirrors `sibyl-memory-hermes` SEC-11) and never raises — any error degrades
+  (as in `sibyl-memory-hermes`) and never raises — any error degrades
   to the un-activated default.
-- **Telemetry/local-first posture undocumented (Hardening #7).** README now
+- **Telemetry/local-first posture undocumented.** README now
   states explicitly: fully local reads/writes with no network round-trip for
   store operations; zero network while un-activated; once activated, only a
   privacy-preserving debounced usage heartbeat (aggregate operation count,
@@ -208,9 +198,9 @@ these land as part of 0.1.0 rather than a follow-up patch.
 ### Metadata
 - Published with a conservative upper bound on the third-party
   `langgraph-checkpoint` dependency (`>=2.0.0,<3`) rather than an unbounded
-  `>=`, so a fresh install can't auto-pip a future breaking major (R29). The
+  `>=`, so a fresh install can't auto-pip a future breaking major. The
   internal `sibyl-memory-client` pin stays `>=` (vendor-controlled name).
 - `pyproject.toml` ships a `Repository` URL
-  (`https://github.com/Sibyl-Labs/Sibyl-Memory`) from first publish (R27) —
+  (`https://github.com/Sibyl-Labs/Sibyl-Memory`) from first publish —
   earlier sibling packages omitted it entirely or pointed at a foreign,
   nonexistent GitHub org.

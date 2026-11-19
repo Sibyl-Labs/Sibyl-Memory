@@ -21,7 +21,7 @@ Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through
 
 **Hermes plugin catalog (listing pending).** The `hermes-catalog/` folder of this repo is the catalog package (the same adapter, byte for byte). Once Sibyl is listed in the catalog, `hermes plugins install sibyl` will load it and install `sibyl-memory-hermes` and `sibyl-memory-client` into Hermes' environment; then run `sibyl init` and `sibyl setup hermes` as below. Until then, install with pip as above.
 
-**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.2, hermes 0.6.0, cli 0.7.0), and each one requires the client of its own release. Upgrade them together, never one alone:
+**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.2, hermes 0.6.1, cli 0.7.0), and each one requires the client of its own release. Upgrade them together, never one alone:
 
 ```bash
 sibyl update --apply
@@ -130,7 +130,7 @@ client = MemoryClient.local("/tmp/test-memory.db", tenant_id="test-user",
                             entitlement_gate=NullEntitlementGate())
 ```
 
-> **Privacy disclosure.** Your memory content never leaves the machine. The plugin talks to `api.sibyllabs.org` for these things only: activation (`sibyl init`); a daily account check-in that renews this computer's access (account id, this computer's sign-in token, plugin version, OS family; no memory content); a size check when a free account nears its cap (account id, sign-in token, the database's byte size and the proposed delta); and, only if you opt in with `SIBYL_MEMORY_TELEMETRY=1` (off by default in Hermes since 0.6.0; the MCP server and CLI keep it on unless `SIBYL_MEMORY_TELEMETRY=0`), an aggregate count of memory operations. The size check and the count also carry this computer's signed access token (account id, tier, cap, device hash, account flags; no personal data).
+> **Privacy disclosure.** Your memory content never leaves the machine. The plugin talks to `api.sibyllabs.org` for these things only: activation (`sibyl init`); an account check-in that renews this computer's access (about once an hour on Free, about once a day on Pro) (account id, this computer's sign-in token, plugin version, OS family; no memory content); a size check when a free account nears its cap (account id, sign-in token, the database's byte size and the proposed delta); and, only if you opt in with `SIBYL_MEMORY_TELEMETRY=1` (off by default in Hermes since 0.6.0; the MCP server and CLI keep it on unless `SIBYL_MEMORY_TELEMETRY=0`), an aggregate count of memory operations. The size check and the count also carry this computer's signed access token (account id, tier, cap, device hash, account flags; no personal data).
 
 ## Free tier
 
@@ -141,7 +141,7 @@ client = MemoryClient.local("/tmp/test-memory.db", tenant_id="test-user",
 - Multi-tenant isolation
 - Per-profile memory isolation: each Hermes profile gets its own DB automatically (`<HERMES_HOME>/sibyl/profiles/<name>/memory.db`), so specialist agents don't share or leak memory
 
-Paid tiers (Pro, Elite) unlock self-learning, the memory check-up, and no cap. See [docs.sibyllabs.org/memory/tiers](https://docs.sibyllabs.org/memory/tiers).
+Pro unlocks self-learning, the memory check-up, and no cap. See [docs.sibyllabs.org/memory/tiers](https://docs.sibyllabs.org/memory/tiers).
 
 ## Documentation
 
@@ -206,4 +206,4 @@ MIT. Package on PyPI: [pypi.org/project/sibyl-memory-hermes](https://pypi.org/pr
 
 ## Citation
 
-The Sibyl Memory Plugin holds #2 globally on the LongMemEval Oracle benchmark. The benchmark methodology and report are at [blog.sibylcap.com/longmemeval-v2](https://blog.sibylcap.com/longmemeval-v2).
+The Sibyl Memory Plugin scored 95.1% on LongMemEval Oracle with Claude Sonnet 4.5 (447/470, preference questions excluded; 90.6% across all 500): [report](https://blog.sibylcap.com/plugin-longmemeval). The underlying architecture scored 95.6% on Claude Opus 4.6, #2 on the leaderboard as of April 2026: [report](https://blog.sibylcap.com/longmemeval-v2). Results and scorer: [memory-bench-kit](https://github.com/Sibyl-Labs/memory-bench-kit).

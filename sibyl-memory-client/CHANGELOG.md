@@ -6,7 +6,7 @@ follows [SemVer](https://semver.org/).
 
 ## [0.10.0] - 2026-10-31
 
-One release: the paid tier R2 line, the shipped 0.9.0 family fixes it was built beside, the graph line (tiered retrieval and relations) and the release merge items below.
+One release: the skill-signals line, the shipped 0.9.0 family fixes it was built beside, the graph line (tiered retrieval and relations) and the release merge items below.
 
 ### Release summary
 - Typed links between entities, reference documents and state (`link`, `unlink`, `neighbors`,
@@ -18,7 +18,7 @@ One release: the paid tier R2 line, the shipped 0.9.0 family fixes it was built 
 - `MemoryClient(telemetry=False)` turns the usage count off for one client.
 
 ### Release merge (2026-10-28)
-- Recall neighborhood (from the hopfix line): `MemoryClient.doc_neighborhood`, `_links.owners_of`,
+- Recall neighborhood: `MemoryClient.doc_neighborhood`, `_links.owners_of`,
   `hub_members`, `doc_neighborhood`; `output_budget` drops `owners_total` in its counts-only stage.
 - Two retrieval flags, both default OFF (they reproduce the agent-bench harness configuration):
   `SIBYL_MEMORY_RANKED_FALLBACK=1` (a short multi-record result is filled with ranked candidates,
@@ -30,21 +30,20 @@ One release: the paid tier R2 line, the shipped 0.9.0 family fixes it was built 
   the null heartbeat; None or True follow `SIBYL_MEMORY_TELEMETRY` (on unless "0").
 - Known limit, large stores: `count_touching` scans a tenant's edges per entity insert (felt near
   111k edges) and the search shadow triggers scan at about 680k rows. Not fixed in this release.
-- Tests: `test_hopfix_neighborhood_2026_10_28.py` (8), `test_hopfix_flags_2026_10_28.py` (8),
+- Tests: recall neighborhood (8), retrieval flags (8),
   `test_upgrade_0_9_0_store_2026_10_28.py` (4: the 0.9.0 fixture and a store the 0.9.0 client
   creates; base tables hashed before and after, second open a no-op, the 0.9.0 client reads and
   searches the upgraded file, a crash inside the copy rolls back), `test_telemetry_param_2026_10_28.py` (5).
 
-### Paid tier R2: skill signals (built 2026-09-29)
+### Skill signals (2026-09-29)
 
-Spec plugin-paid-tier-r2-spec-2026-09-29 section 1 (skill signals). Follow-up release to 0.9.0;
-minor, no break. BYOK drafting (spec section 2) is not in this release (operator 2026-09-29):
-proposals stay fully local with the deterministic draft.
+Follow-up release to 0.9.0; minor, no break. BYOK drafting is not in this release: proposals
+stay fully local with the deterministic draft.
 
 ### Changed (tier convention, 2026-10-05; carried from 0.9.0)
-- The shared `tiers` module (free / pro / elite, legacy labels as input aliases, an unrecognised
-  label is Free with reason `tier_unknown`) is carried from 0.9.0 / 0.5.0 unchanged (cherry-picked
-  onto this line; no conflict in the client). See the 0.9.0 entry. Suite 866 + 11 skipped ->
+- The shared `tiers` module (free / pro / elite, legacy labels as input aliases, an unrecognized
+  label is Free with reason `tier_unknown`) is carried from 0.9.0 / 0.5.0 unchanged. See the
+  0.9.0 entry. Suite 866 + 11 skipped ->
   903 + 11 skipped.
 
 ### Added
@@ -83,7 +82,7 @@ proposals stay fully local with the deterministic draft.
   timestamp, one-line snippet); the local-deterministic summarizer has a body for each kind.
   `LearningRunReport.signal_keys`.
 - `proposals.KINDS` gains `tool_sequence` and `correction_loop` (mute works for both);
-  `is_relevant` waives the two-sessions span rule for `tool_sequence` and (R2F-N1)
+  `is_relevant` waives the two-sessions span rule for `tool_sequence` and
   `correction_loop`; `run_learner` loads the snapshot (nothing when recording is off) and marks
   the tool sequences that became a proposal.
 - `testing.REAL_HOME_WATCHED` includes `signals.json`.
@@ -101,16 +100,16 @@ proposals stay fully local with the deterministic draft.
   the pending line, a valid SKILL.md and reference copy, `run_learner` marking proposals, and
   a canary entity named only in `memory.db`.
 
-### Changed (R2 check fixes, 2026-09-30)
-- R2F-N1: `correction_loop` joins the span-rule waiver. Its detector fires at 10 minutes in one
+### Changed (skill-signal fixes, 2026-09-30)
+- `correction_loop` joins the span-rule waiver. Its detector fires at 10 minutes in one
   session; `is_relevant` still demanded 30, so loops between 10 and 30 minutes were detected and
   then never named. The detector's own thresholds are the gate; confidence, evidence count,
   recency, the anchor and muting still apply.
-- R2F-N2: `signals.json` no longer carries an `entity_proposed` map (it was written by
+- `signals.json` no longer carries an `entity_proposed` map (it was written by
   `mark_proposed` and never read; the learner's slug rules already stop a re-proposal).
   `mark_proposed(home, ngram_keys, *, now)` takes no entity keys. A file that still has the key
   loads normally and the next write drops it.
-- R2F-N4 (README): the signals file keeps tool and MCP server names in plain text.
+- README: the signals file keeps tool and MCP server names in plain text.
 - Tests: +2 (`test_learning_signals` N1 case; `test_signals` old-file load), the span-waiver and
   `mark_proposed` tests updated. 866 passed, 11 skipped.
 
@@ -126,14 +125,14 @@ proposals stay fully local with the deterministic draft.
   hash and manifest recomputed): a search result is held to about 22,000 tokens and says
   what it dropped (`verdict.truncated`).
 
-### Fixed - Edge identity, adoption and the v6 copy (V1 panel theme A + migration should-fix, 2026-10-22)
+### Fixed - Edge identity, adoption and the v6 copy (2026-10-22)
 - **Endpoint identity stamp.** `memory_links` gains nullable `from_entity_id` /
   `to_entity_id` (entity endpoints only; reference/state stay NULL) and `updated_at`.
   `link()` and `links=` stamp both ends with the live row ids; re-asserting an edge
   re-stamps it. An edge side is **stale** when it carries a stamp and a live entity
   holds its (category, key) under a different id (archive + re-create, a namesake);
   a side with no live row is dangling, not stale; a NULL stamp is never stale. Edges
-  still survive archive (operator decision 1). Read-side contract:
+  still survive archive. Read-side contract:
   `_links.STALE_SIDE_SQL` / `_links.stale_sql(alias)` (SQL boolean) and
   `_links.stale_ids(conn, tenant, ids)` (set of stale ids for a page of edges);
   neighbors/links_of render it as `stale: true`.
@@ -144,7 +143,7 @@ proposals stay fully local with the deterministic draft.
   existing edge's metadata or stamps differed (`updated_at` bumps only then). An
   identical re-link, or an `unlink` that removed nothing, is not counted as a
   lifecycle write. MCP `memory_link` returns `changed`.
-- **Stores already at v6** (earlier V1 builds) get the new columns, plus
+- **Stores already at v6** (earlier pre-release builds) get the new columns, plus
   `tenant_adoptions.links_audit`, by additive `ALTER TABLE` on open, with the stamp
   backfill, in ONE transaction (crash leaves the store as it was; the next open
   retries). Backfill: the live id only if that row existed when the edge was written,
@@ -153,7 +152,7 @@ proposals stay fully local with the deterministic draft.
   Before memory_links moves, each default-tenant edge side whose endpoint is not a live
   default row is resolved in order: (1) its stamp names a live row -> re-pointed to
   that row's current name; (2) unstamped with one audited rename from an earlier
-  adoption into this account (0.9.0 or V1) -> the renamed key (replay); two different
+  adoption into this account (0.9.0 or 0.10.0) -> the renamed key (replay); two different
   audited renames -> held; (3) unstamped, live in the account AND the account holds a
   `(before sign-in)` twin -> **held** (not moved, recorded); (4) an entity live in the
   account under another identity (stamped id gone, archived in the default tenant, or
@@ -187,7 +186,7 @@ proposals stay fully local with the deterministic draft.
 - Tests: `test_link_identity_2026_10_22.py` (stamp/stale/inherited, updated_at/changed,
   ALTER + atomicity, copy receipt, adoption collision/replay/hold/drop, renamer
   invariant) and `test_cross_version_2026_10_22.py` (0.9.0 from `git archive 708bd89`
-  and this client against one store: write, 0.9.0 delete + adopt, V1 reopen + adopt;
+  and this client against one store: write, 0.9.0 delete + adopt, 0.10.0 reopen + adopt;
   no edge changes identity, the dangling edge is reported).
 
 ### `entity_relations` is frozen
@@ -206,18 +205,18 @@ index, which 0.9.0 never reads. What each 0.9.0 action does to a v6 store:
 |---|---|
 | open (any surface) | none; its schema script is `IF NOT EXISTS`; v6 tables, columns, index kept |
 | search / recall / list | edges and reference tools invisible; results as 0.9.0 |
-| `set_entity` new name | if edges were keyed to that name, they attach by name and read `stale` in V1 |
+| `set_entity` new name | if edges were keyed to that name, they attach by name and read `stale` in 0.10.0 |
 | `set_entity` update, `set_state`, `set_reference`, journal | none on edges |
-| `archive_entity` | same as V1: edges kept, endpoint reads archived |
+| `archive_entity` | same as 0.10.0: edges kept, endpoint reads archived |
 | `delete_entity` | row deleted, **edges not cascaded**: dangling (lint `dangling-link`, `exists: false`); re-creating the name makes them stale |
-| adoption (`sibyl memory adopt`, auto) | renames entity/doc keys without rewriting edges and leaves `memory_links` under the default tenant; V1's next adoption re-points them by stamp or by replaying the audited renames, holds the ambiguous ones, reports dangling ones |
+| adoption (`sibyl memory adopt`, auto) | renames entity/doc keys without rewriting edges and leaves `memory_links` under the default tenant; 0.10.0's next adoption re-points them by stamp or by replaying the audited renames, holds the ambiguous ones, reports dangling ones |
 | writes in general | the `entities_tenant_lname` index is maintained (write cost only) |
 
 Index size: `entities_tenant_lname` costs about 55 bytes + the name length per entity
 (measured 72 bytes/entity at 17-character names: the 36-character tenant id dominates),
 about 0.7 MB per 10,000 entities, counted toward the free-tier cap.
 
-Full revert to a v5 store (only with no V1 process running; back up the file first):
+Full revert to a v5 store (only with no 0.10.0 process running; back up the file first):
 
 ```sql
 BEGIN IMMEDIATE;
@@ -228,20 +227,20 @@ COMMIT;
 -- optional, SQLite >= 3.35: ALTER TABLE tenant_adoptions DROP COLUMN links_audit;
 ```
 
-Resurrection caveat: every edge written under V1 is lost, and if any V1 client opens the
+Resurrection caveat: every edge written under 0.10.0 is lost, and if any 0.10.0 client opens the
 file again it sees a pre-v6 store and re-runs the one-time copy from the frozen
-`entity_relations`: edges that were unlinked or deleted under V1 but came from that table
-come back. Do not revert a store you intend to reopen with V1; downgrade the packages and
+`entity_relations`: edges that were unlinked or deleted under 0.10.0 but came from that table
+come back. Do not revert a store you intend to reopen with 0.10.0; downgrade the packages and
 leave the v6 schema in place instead.
 
-### Fixed - V1 panel, graph read side (PANEL-SYNTHESIS themes C, F, 2026-10-22)
+### Fixed - Graph read side (2026-10-22)
 - **`neighbors()` no longer scans the tenant.** Each branch is pinned to its endpoint
   index (`INDEXED BY memory_links_from` / `memory_links_to`) and the cursor predicate
   sits inside each branch; before, SQLite drove the union through
-  `memory_links_created` (one node at 45k edges: 155 ms -> 0.6 ms on a loaded box; panel
-  measured 83.8 ms -> 0.24 ms). Plan test with and without a cursor.
-- **`links_of()` (search-hit `links`) is index-only, O(degree).** Operator decision 3:
-  one sample edge per (direction, relation), largest group first, out before in, then
+  `memory_links_created` (one node at 45k edges: 155 ms -> 0.6 ms on a loaded box; a second
+  measurement 83.8 ms -> 0.24 ms). Plan test with and without a cursor.
+- **`links_of()` (search-hit `links`) is index-only, O(degree).**
+  One sample edge per (direction, relation), largest group first, out before in, then
   relation name (`by_relation` in the same order), replacing the five newest edges and
   the full-partition window sort (5,000-edge hub: 151 ms -> 8 ms). Counts come from the
   covering endpoint indexes; one representative row per group is read by rowid. A
@@ -253,13 +252,13 @@ leave the v6 schema in place instead.
 - **Decoration never fails a search.** A `sqlite3.Error`/`StorageError` while reading
   titles or edges (e.g. a dropped memory_links index) returns the hits with
   `links: None` (or `title: None`) and sets `verdict.decoration_note`. The explicit
-  walk (`neighbors`, public `links_of`) still raises on a missing index (Fable consult:
-  no silent hint-less re-run); lint reports it.
+  walk (`neighbors`, public `links_of`) still raises on a missing index
+  (no silent hint-less re-run); lint reports it.
 - **`neighbors()` reports the queried node**: `node` carries `exists`, `archived`,
   `status`, `updated_at`, so a mistyped or wrong-case name is distinguishable from an
   isolated node.
 - **`stale` on every rendered edge** (`neighbors` edges, `links_of` / search-hit
-  samples), always a bool. V1 merge reconciliation: ONE implementation, the identity
+  samples), always a bool. ONE implementation, the identity
   contract `_links.STALE_SIDE_SQL` (stamp set AND a live entity at that
   (category, key) under a different id; dangling and NULL-stamp sides are never
   stale). `neighbors` applies it to the returned page via `stale_ids`; `links_of`
@@ -282,8 +281,8 @@ leave the v6 schema in place instead.
   `set_reference` now returns `{key, links}` (`links` None without `links=`; was None).
   `_decorate_hits(..., info=)` reports `links_ms` / `note`.
 
-### Fixed - V1 panel, search and reference themes (PANEL-SYNTHESIS B, D, E, G; 2026-10-22)
-- **Release train.** `version = "0.10.0"` (0.9.0 is the published release; the V1
+### Fixed - Search and reference (2026-10-22)
+- **Release train.** `version = "0.10.0"` (0.9.0 is the published release; the 0.4.0
   MCP server imports `count_tiers`, which 0.9.0 lacks). mcp 0.4.0, hermes 0.6.0 and
   cli 0.6.0 require `sibyl-memory-client>=0.10.0`. Upgrade the packages together
   (`sibyl update --apply`); README says so.
@@ -293,15 +292,14 @@ leave the v6 schema in place instead.
   matches `_TERM_RE` (its `not ` lookbehind re-checked on the full body). Only rows a
   rowid-only FTS pre-screen (`_TERM_FTS_QUERY`, a superset: each marker as word and
   prefix plus the JSON-escape tails) flags have their full body read. "Draft ...
-  approved by the board" with the decision at char 10,000 is kept again, as in 0.9.0
-  (NOCTURNE exp1 EXP4). The full-body check (`_term_anywhere`) finds the marker
+  approved by the board" with the decision at char 10,000 is kept again, as in 0.9.0. The full-body check (`_term_anywhere`) finds the marker
   literals at C speed and runs the anchored regex only there (equivalence pinned).
   Worst case measured: 102k rows with 2,000 draft-headed 20 KB documents on a
   terminal query, p50 ~0.55-0.62 s (was ~0.35-0.39 s, which dropped all 2,000 and
   returned nothing); the standard bench store is unaffected.
 - **Stage 0, short exact names.** The `lower(name) = ?` probe runs for names under 4
   chars (IBM, AWS, Bob); the `name_partial` phrase keeps the guard.
-- **Exact name vs the negation gate** (operator decision 2). When the whole query is
+- **Exact name vs the negation gate.** When the whole query is
   exactly an entity's name (or `<category>:<name>`), the `match: "name"` rows survive
   `NEGATION_ABSTAIN` ("Not Invented Here" is reachable); partial names, text rows and
   every other negated query still abstain; `ABSTAINED_ON` is unchanged.
@@ -316,9 +314,9 @@ leave the v6 schema in place instead.
   links and a re-created name reconnects them marked `stale`; check whether
   `memory_neighbors` found the node.
 - Tests: `test_search_fixes_v1_2026_10_22.py` (20 cases); two tier-aware tests updated to
-  the decided behaviour.
+  the decided behavior.
 
-### Changed - Agent guidance (tiered-retrieval spec section 3, 2026-10-22)
+### Changed - Agent guidance (2026-10-22)
 - `SAVE.md` release v1.2.0 (skills manifest 1.2.0; DEBLOAT.md unchanged): the interface
   table lists all 15 MCP tools with their SDK twins; new "Writing: which tier" (entity =
   a card under about 1 KB, reference = anything read in full with `kind/slug` and
@@ -331,7 +329,7 @@ leave the v6 schema in place instead.
   item 14. README: the tier table gains LINKS and the gated search, plus a "write a card,
   link the documents, read top-down" section.
 
-### Added - Tier-aware search (tiered-retrieval spec 2.C, 2026-10-22)
+### Added - Tier-aware search (2026-10-22)
 - **Stage 0, exact-name resolution.** `multi_record_search` first resolves a query
   that IS an entity name (`lower(name)` equality, ASCII fold, newest first, up to
   5) or `<category>:<name>` (prefix constrains the category; the whole query is
@@ -342,7 +340,7 @@ leave the v6 schema in place instead.
   token under 4 chars. Body text never qualifies a stage-0 row, and an
   abstention (ABSTAINED_ON / NEGATION_ABSTAIN) always wins: stage-0 rows are
   dropped and the abstain verdict is returned unchanged. Stage 0 runs before
-  tokenising, so a name made only of short words or stopwords is still found.
+  tokenizing, so a name made only of short words or stopwords is still found.
   The shard case (a parent card plus many rows whose names contain the parent's
   name) resolves to the parent. sqlite `lower()` folds ASCII only, so non-ASCII
   letters in a name match case-sensitively. New private primitive
@@ -370,7 +368,7 @@ leave the v6 schema in place instead.
   depth: "The best row reached 0.41 against the 0.45 floor at depth 2,100."
   New helpers `verdicts.count_tiers`, `NEAR_FLOOR_BAND`, `HIT_TIERS`.
 
-### Changed - Tier-aware search (2.C)
+### Changed - Tier-aware search
 - **Tie-break at equal coverage:** `_TIER_PRIORITY` entity 0, state 0,
   reference 0 -> 1, journal 1 -> 2. Coverage still sorts first. The raw path's
   rank tie-break (`_search_strict`, `_candidate_ids`) uses the same values via
@@ -383,7 +381,7 @@ leave the v6 schema in place instead.
   Its two halves are `want CROSS JOIN memory_links INDEXED BY memory_links_from /
   memory_links_to`: without that, SQLite drove the "in" half through
   `memory_links_created (tenant_id=?)`, a scan of every edge in the tenant per call
-  (54 ms -> 0.7 ms for 10 nodes at 26k edges; this also affected 2.B's
+  (54 ms -> 0.7 ms for 10 nodes at 26k edges; this also affected the earlier
   `client.links_of`). A plan test pins the per-node key lookups.
 - The stage-0 equality probe carries no `ORDER BY` (rows are ordered newest-first
   in Python): with `ORDER BY updated_at` SQLite chose `entities_updated_at` and
@@ -396,7 +394,7 @@ leave the v6 schema in place instead.
   higher-priority tier moving ahead. The verdict envelope key-set test lists the
   four new keys.
 
-### Added - Reference tier read surface (tiered-retrieval spec 2.A, 2026-10-22)
+### Added - Reference tier read surface (2026-10-22)
 - `read_reference(key, *, offset=0, max_chars=20000)`: paged read of a reference document.
   Returns `{key, body, offset, chars, next_offset, metadata, updated_at}` or None. Offsets count
   characters (code points), so a page never splits a character; `offset >= chars` returns an empty
@@ -404,7 +402,7 @@ leave the v6 schema in place instead.
 - `list_references(*, prefix=None, limit=100, cursor=None)`: `{items: [{key, chars, metadata,
   updated_at}], next_cursor}` in key order, bodies never loaded. The cursor is opaque (keyset on
   the key). The prefix is literal and case-sensitive, implemented as the key range
-  `[prefix, successor(prefix))` on the primary key rather than the spec's `LIKE ... ESCAPE`,
+  `[prefix, successor(prefix))` on the primary key rather than `LIKE ... ESCAPE`,
   because SQLite `LIKE` is ASCII case-insensitive and would list `doc/x` for prefix `Doc/`.
 - `delete_reference(key) -> bool`: hard delete, tenant scoped. It is a write op: listed in
   `_entitlement.WRITE_OPS`, `lifecycle.state.WRITE_OPS` and the lifecycle write kinds (the
@@ -416,11 +414,11 @@ leave the v6 schema in place instead.
   dict/list bodies. The `str` branch skipped `_check_json`, so a paid caller could write one
   unbounded string. A string with an unpaired surrogate is a `ValidationError` instead of a
   storage error. `get_reference` and `set_reference` signatures are unchanged.
-- Not in this change: the spec's 4 KB reference-metadata bound is enforced on the MCP write tool
+- Not in this change: the 4 KB reference-metadata bound is enforced on the MCP write tool
   only; product writers (Pro debloat history) can carry larger metadata, so the SDK bound waits
   for a measurement.
 
-### Added - Relations (tiered-retrieval spec 2.B)
+### Added - Relations
 - Schema v6: `memory_links`, typed directed edges between entity / reference / state nodes,
   keyed by business keys (entity `category`+`name`, reference `doc_key`, state `document_key`;
   `''` category for non-entities, enforced by CHECK). Indexes on both endpoints and on
@@ -429,7 +427,7 @@ leave the v6 schema in place instead.
   and every `entity_relations` row is copied (both ids resolved inside the row's own tenant,
   `relation_type` case-folded, id and `created_at` kept) in ONE transaction before the schema
   script runs, so the table's existence is the crash-atomic "copied" marker (an unlinked edge
-  is never resurrected). `entity_relations` stays, unwritten, until R4. Nothing gates on the
+  is never resurrected). `entity_relations` stays, unwritten, until a later release. Nothing gates on the
   version-6 row.
 - `MemoryClient.link` / `unlink` / `neighbors` / `links_of` and the `entity_ref` /
   `reference_ref` / `state_ref` NodeRef helpers. `link` is strict (both endpoints must exist
@@ -441,7 +439,7 @@ leave the v6 schema in place instead.
 - `links=` on `set_entity` and `set_reference`: the node and its outgoing edges are written in
   one `BEGIN IMMEDIATE` transaction; a missing target rolls back the node write too. At most
   1,000 edges per call. Edge bytes count toward the free-tier cap (pre-write estimate and the
-  CAP-2 in-transaction recheck).
+  in-transaction recheck).
 - `link` and `unlink` are write ops (`WRITE_OPS`, lifecycle counting, refused under
   `policy_read_only`); `neighbors` and `links_of` are reads. All four carry `_track_op`.
 - Lint: `hub-degree` (warning, > 500 out-edges), `dangling-link` (warning; info when the
@@ -452,8 +450,7 @@ leave the v6 schema in place instead.
 - `delete_entity` deletes every edge touching the entity in the same transaction.
   `archive_entity` keeps them; `neighbors` reports the archived endpoint with
   `tier: "entity"` (still a usable NodeRef), `exists: false`, `archived: true`,
-  `status: "archived"`, `archived_at` (spec text said `tier: "archive"`; changed so the ref
-  stays reusable). Re-creating the entity restores its edges.
+  `status: "archived"`, `archived_at` (so the ref stays reusable). Re-creating the entity restores its edges.
 - Adoption (`_adopt.py`): a collision rename rewrites both endpoint columns of the moved
   tenant's edges in the adoption transaction; `memory_links` joins `TENANT_TABLES`. A moved
   edge identical to one the account already holds (possible when the account's endpoints are
@@ -463,7 +460,7 @@ leave the v6 schema in place instead.
   (`_cascade_node_links(conn, "reference", "", key)`), as `delete_entity` does;
   `test_delete_reference_cascades_edges` runs unconditionally.
 
-### Changed - search scale fixes (tiered-retrieval spec 2.D, 2026-10-22)
+### Changed - search scale fixes (2026-10-22)
 - **Recall depth scales with the store.** `multi_record_search` now reads
   `K = clamp(200, ceil(0.05 x rows), 5000)` candidates per query token instead
   of a fixed 200 (`RECALL_FRACTION`, `RECALL_DEPTH_MAX`, `recall_depth()` in
@@ -480,8 +477,8 @@ leave the v6 schema in place instead.
   `bm25(entities_fts, 8, 1, 1)` (`NAME_WEIGHT`); reference and state keys with
   weight 4 (`KEY_WEIGHT`). An entity whose name is the query now outranks long
   bodies that only mention it. Rows that do not match in the name score as before.
-- **Match-centred snippets.** Hit snippets are 40 tokens (from 12). In
-  `multi_record_search` the snippet is centred on the densest match of the
+- **Match-centered snippets.** Hit snippets are 40 tokens (from 12). In
+  `multi_record_search` the snippet is centered on the densest match of the
   query words that row matched.
 - **Prep filter scope on documents.** On reference documents the
   draft/proposed filter reads `metadata.status` when set, else the first 2,000
@@ -524,7 +521,7 @@ leave the v6 schema in place instead.
   | 102k | term16  |   254 |  2,411 |   607 |
   | 102k | abstain |    89 |    205 |   244 |
 
-  Within the spec budget (p50 < 0.6 s at ~55k, < 1.0 s at double) for every
+  Within the target budget (p50 < 0.6 s at ~55k, < 1.0 s at double) for every
   class. Above ~50k rows the engine is slower than 0.9.0 by design: each token
   now ranks up to 5,000 rows instead of 200 (that depth is what finds the
   planted document 0.9.0 misses), and the FTS rank + tenant check per matched
@@ -537,10 +534,9 @@ leave the v6 schema in place instead.
 - `NAME_WEIGHT` does not lift a hub whose card is several times the store's
   average row length; exact-name lookup (a later release) covers that case.
 
-## [0.9.0] - Unreleased
+## [0.9.0] - 2026-10-14
 
-Account-gated release (spec account-gated-plugin-spec-2026-09-27). Minor, not
-patch: every caller without an activated account now gets `EntitlementError`.
+Account-gated release. Minor, not patch: every caller without an activated account now gets `EntitlementError`.
 
 ### 2026-10-14 - Pre-release cleanup
 - Quickstart in the README now opens the client on your account's tenant (from
@@ -561,7 +557,7 @@ patch: every caller without an activated account now gets `EntitlementError`.
   instead of naming testers or internal QA rounds. Text and test file names only; no code changed.
 
 ### 2026-10-10 - sign-in and display fixes
-- F-1 (contract C1): `classify_denial` reads the 401 body's `code`. For `signed_out_on_claim`
+- `classify_denial` reads the 401 body's `code`. For `signed_out_on_claim`
   the outcome stays `denied` / `signed_out` (the MCP `reason` is unchanged) and carries `cause`
   and `since` (the api's `signed_out_at`, shape-checked ISO, at most 40 characters). The gate
   keeps both in `entitlement.json` (`denied.cause`, `denied.since`), `Decision` and `status()`
@@ -574,19 +570,19 @@ patch: every caller without an activated account now gets `EntitlementError`.
   (was 884).
 
 ### Fixed (shown tier and plan end, 2026-10-08)
-- F1: a verified, bound pass that arrives on a refresh (a blocking `refresh()` or the background
+- A verified, bound pass that arrives on a refresh (a blocking `refresh()` or the background
   re-check, both through `_do_refresh`) now rewrites the saved `tier` in `credentials.json`
   (`_entitlement.sync_credentials_tier`), so a computer that signed in on Free and then bought
   Pro, or whose Pro ended, no longer keeps the sign-in-time tier on disk. Canonical labels only
-  (an unrecognised label is left alone), no write when the saved tier already normalises to the
+  (an unrecognized label is left alone), no write when the saved tier already normalizes to the
   pass's tier, only for the same account and session the pass is bound to, never through a
   symlink; `signature` / `signed_at` are dropped with the edit (a signed field never changes
   under an old signature); mkstemp + fsync + `os.replace` with the file's existing mode; the
   `tier_cache.json` beside it is removed when the tier changed. Never raises.
-- F1: `MemoryClient.tier_for_display()` (the pass's tier when the computer holds a valid one,
+- `MemoryClient.tier_for_display()` (the pass's tier when the computer holds a valid one,
   else the saved hint; never the tier cache). `free_tier_status()` reports that tier and its cap
   instead of the construction-time hint.
-- F2: `EntitlementGate.status()["plan"]` carries the server's additive `ends_at` / `renews_at`
+- `EntitlementGate.status()["plan"]` carries the server's additive `ends_at` / `renews_at`
   (ISO strings, at most 40 characters; anything else is dropped). Payloads with keys this
   version does not know were and stay valid passes.
 - Tests: `tests/test_tier_sync_2026_10_08.py` (+8); `test_lint.py` paid-tier status uses the
@@ -599,14 +595,14 @@ patch: every caller without an activated account now gets `EntitlementError`.
   token mid-test (flaked 3 in 40 under CPU load). Test only.
 
 ### Added (agent handoff messages, 2026-10-06)
-Spec agent-handoff-messages-spec-2026-10-03 (rows C1 to C17, section 1.6; same coordinated release).
+Same coordinated release.
 - `exceptions.ENTITLEMENT_NEXT` and `exceptions.ENTITLEMENT_HUMAN_ACTION`, beside
   `ENTITLEMENT_MESSAGES` / `ENTITLEMENT_RECOVERY` and keyed by the same eleven codes: the exact
   command an agent runs next (`sibyl init`, `sibyl refresh`, `sibyl init --force`,
   `sibyl email add <address>`, the `pip install -U ...` update, or `done`) and the sentence it
   relays to its person (None when nobody has to act). The single source the MCP server, the
   Hermes adapter and a LangGraph graph read.
-- `EntitlementError` gains `.next`, `.human_action`, `.summary` (the section 8 copy, what `str(e)`
+- `EntitlementError` gains `.next`, `.human_action`, `.summary` (the plain message, what `str(e)`
   was) and `.handoff_lines()`. `str(e)` is now `summary` followed by the block
   (`ask your human: ...` when a person must act, then `next: ...`, always last), so every surface
   that relays the text carries the handoff. `code`, `reason`, `recovery`, `account_url` and the
@@ -624,7 +620,7 @@ Spec agent-handoff-messages-spec-2026-10-03 (rows C1 to C17, section 1.6; same c
   11 skipped.
 
 ### Changed (tier convention, 2026-10-05)
-Spec tier-convention-spec-2026-10-05 section 5 (same coordinated release; version unchanged).
+Same coordinated release; version unchanged.
 - One shared tier module, `sibyl_memory_client.tiers` (stdlib only): the canonical tiers are
   `free`, `pro` and `elite`; `normalize`, `is_paid`, `display` (Free / Pro / Elite), `soft_cap`,
   `PAID_TIERS`, `SOFT_CAPS`, `UNKNOWN_REASON`. Every former copy now routes through it:
@@ -634,7 +630,7 @@ Spec tier-convention-spec-2026-10-05 section 5 (same coordinated release; versio
 - Legacy labels from older servers and credentials (`sync`, `team`, `lifetime`, `stake` -> pro;
   `enterprise` -> elite) are accepted as input-only aliases; tier comparisons are case and
   whitespace tolerant.
-- An unrecognised tier label is treated as Free with the reason code `tier_unknown`:
+- An unrecognized tier label is treated as Free with the reason code `tier_unknown`:
   `decision_allows` answers `(False, "tier_unknown")` (a paid claim answers its canonical tier),
   the paid-feature `TierGateError` names the raw label, and `gate.status()` adds `tier_known`,
   `tier_effective` and the server's `plan` (`acct.plan {tier, src}`) when present. The server
@@ -646,11 +642,10 @@ Spec tier-convention-spec-2026-10-05 section 5 (same coordinated release; versio
 - Tests: `tests/test_tiers_2026_10_05.py` (+37, including the source guard
   `test_no_other_paid_tier_literal`); `test_pro_tier_2026_09_03.py` and
   `test_lifecycle_2026_09_27.py` compare against `tiers.PAID_TIERS` and include elite. Suite
-  817 + 11 skipped -> 854 + 11 skipped (measured on the R1 line `accounts-patch` at `53b914e`,
-  TCP-3, tests in place: 854 passed, 11 skipped, 0 failed; re-run 2026-10-05 for the TCF check).
+  817 + 11 skipped -> 854 + 11 skipped.
 
-### Added (paid tier R1, 2026-09-29, R1B-1)
-Plan plugin-paid-tier-2026-09-29, operator defaults D1-D15 (same coordinated release; version unchanged).
+### Added (automatic save and skill proposals, 2026-09-29)
+Same coordinated release; version unchanged.
 - Automatic save by ACTIVE time (Pro): `lifecycle.state` counts active time per session (a gap
   longer than 5 minutes counts as 5; `note_activity`, `add_active`), keeps bounded settings in
   `lifecycle.json` `autosave` (interval 30 to 240 minutes, default 60; at most 8 a session and 12 a
@@ -676,18 +671,18 @@ Plan plugin-paid-tier-2026-09-29, operator defaults D1-D15 (same coordinated rel
   `exceptions.device_limit_info`, `devices_read_only_message`. `EntitlementGate.status()` adds
   `cap` and `src`.
 
-### Fixed (paid tier R1 check, 2026-09-29, R1B-4)
+### Fixed (automatic save and skill proposals, 2026-09-29)
 - The computer-limit read-only copy says new memories save only on "the computer that signed in
   most recently" (the server's rule: the newest sign-in stays writable), not "the most recently
   used computer".
 - `lifecycle`: a compaction is kept on the SESSION (`sessions[..].compaction_seen`, cleared by a
   save), so one session's compaction no longer makes another session due (Pro automatic save and
   the free save reminder); the tenant-level `compaction_seen` / `save_due_now` keys are gone (an
-  old file's values are dropped on read). `writes_since_save` stays tenant-wide (plan D6.5).
+  old file's values are dropped on read). `writes_since_save` stays tenant-wide.
   `state.next_nudge_seq` / `note_seq_seen`: `record_nudge` returns the sequence number past any
   request the Claude Code transcript already holds.
 
-### Changed (paid tier R1)
+### Changed (automatic save and skill proposals)
 - `SAVE.md` (skills v1.1.0, same release): the Codex row is `~/.codex/skills/<name>/SKILL.md` with
   the quick_validate rules (was the stale `~/.codex/prompts`); headless mode describes the new
   cadence and says the plugin proposes skills separately; curate mode also walks
@@ -695,8 +690,8 @@ Plan plugin-paid-tier-2026-09-29, operator defaults D1-D15 (same coordinated rel
   The SAVE shim says the same.
 - The learner's skill body points at `sibyl skills proposals` (there was never a `sibyl learn`).
 
-### Added (save and debloat, 2026-09-27, SD-1 to SD-3)
-Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unchanged).
+### Added (save and debloat, 2026-09-27)
+Same coordinated release; version unchanged.
 - `sibyl_memory_client.skills` and package data `_skills/SAVE.md`, `_skills/DEBLOAT.md`
   (vendored from the public MIT repos `Sibyl-Labs/sibyl-save` v1.0.0 and `Sibyl-Labs/debloat`
   v1.0.0 with the attribution watermark kept; every adaptation listed in `_skills/CHANGES.md`),
@@ -715,7 +710,7 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
 - `MemoryClient.enable_lifecycle_counting(home)`: a client the plugin's own surfaces enable (the
   MCP server, the Hermes adapter, `sibyl save --fact`) counts successful writes for the save
   reminder (an in-memory counter flushed at most every 30 s or 10 writes); the save procedure's
-  `sibyl_save:last_save` marker resets it. Off by default (SD-7): any other client writes no
+  `sibyl_save:last_save` marker resets it. Off by default: any other client writes no
   lifecycle file. Counters and timestamps only; nothing about content.
 - `testing`: real-home guard helpers (`real_home`, `real_home_snapshot`, `real_home_changes`,
   `assert_home_is_not_real`).
@@ -727,7 +722,7 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
   apply), `test_real_home_guard_2026_09_27.py` 4. Every package conftest now asserts HOME is
   never the real home and fails the session if a watched real-home path changed.
 
-### Fixed (second independent check of save and debloat, 2026-09-27, SD-11 to SD-13)
+### Fixed (second independent check of save and debloat, 2026-09-27)
 - No data-loss window in `apply_one`: the backup of an apply that did not report success is
   removed only when the source is verifiably the file that was read (same size, mtime, inode
   and device); an interruption right after the atomic rewrite keeps it (and so does a source
@@ -749,13 +744,13 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
   checksum path.
 
 ### Tests (second independent check)
-- `test_sd_final_2026_09_27.py` (16); `test_sd_fixes_2026_09_27.py` F1 (migrated ids need an
-  existing file), F2 (symlinked folders resolved; a real location outside home is refused) and F5
-  (capped is never local) adjusted.
+- `test_sd_final_2026_09_27.py` (16); `test_sd_fixes_2026_09_27.py` cases adjusted (migrated
+  ids need an existing file; symlinked folders resolved, a real location outside home is refused;
+  capped is never local).
 
-### Fixed (independent check of save and debloat, 2026-09-27, SD-7 to SD-10)
-- Automatic context trim is authorised per FILE PATH (`policy.auth_id`: the normalised absolute
-  path, `~/<rel>` under home) and matched on the candidate's path only; a name authorised in one
+### Fixed (independent check of save and debloat, 2026-09-27)
+- Automatic context trim is authorized per FILE PATH (`policy.auth_id`: the normalized absolute
+  path, `~/<rel>` under home) and matched on the candidate's path only; a name authorized in one
   project no longer trims the same name in every other project or `~/CLAUDE.md`. Name-only entries
   from the earlier build are dropped with a one-time notice (`policy.take_legacy_notice`).
 - `apply` refuses, before anything is written, a file below a symlinked folder (any ancestor).
@@ -773,18 +768,18 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
 - `run_automatic(allow_apply=, deadline=)` (plan-only when a write could wait on the network or
   the time budget is used); stale `.<name>.*.sibyl-tmp` files next to a candidate are swept.
 - Skill text: `SAVE.md` says Codex gets a marked block in its global AGENTS.md plus a skill (never
-  a custom prompt), and when the Pro save nudge comes (R1 replaced that rule with the active-time
-  cadence above); `DEBLOAT.md` explains `sibyl:keep` for live sections that look like
+  a custom prompt), and when the Pro save nudge comes (a later change replaced that rule with the
+  active-time cadence above); `DEBLOAT.md` explains `sibyl:keep` for live sections that look like
   history and that `auto` is per file path. Watermark hashes and manifest checksums recomputed.
 - Codex gets the same SKILL.md shim frontmatter as Claude Code and Hermes.
 
 ### Tests (independent check of save and debloat)
-- `test_sd_fixes_2026_09_27.py` (F1 per-path authorisation incl. the cross-repo and home cases,
-  F2 symlinked folders, F3 bounds, F4 undo, F5 no-refresh gate and `decides_locally`, F10 opt-in
-  counting, F12 idempotent sibling, the tmp sweep, the `sibyl:keep` advice); adjusted lifecycle,
+- `test_sd_fixes_2026_09_27.py` (per-path authorization incl. the cross-repo and home cases,
+  symlinked folders, bounds, undo, no-refresh gate and `decides_locally`, opt-in counting,
+  idempotent sibling, the tmp sweep, the `sibyl:keep` advice); adjusted lifecycle,
   skills and coverage-guard tests.
 
-### Fixed (independent check fix batch, 2026-09-27, GATE-15)
+### Fixed (independent check fixes, 2026-09-27)
 - **`mem: none` scheduled no refresh.** The server-policy lock was the only
   locked branch that never asked the server again, so a lifted policy (email
   confirmed) reached the device only after a restart and a full exp. It now
@@ -832,7 +827,7 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
   `sibyl memory adopt`, which asks. `MemoryClient.adoption` reports what the
   automatic pass did.
 - **Bootstrap grace could be had, and restarted, with local files.** The 7-day
-  legacy bootstrap grace (spec D10) was anchored on `first_seen_legacy` in
+  legacy bootstrap grace was anchored on `first_seen_legacy` in
   `entitlement.json`: fabricated credentials with the api blocked got 7 days,
   and deleting the file restarted them. `BOOTSTRAP_GRACE_SECONDS` is now 0 and
   the anchor is gone: credentials without an entitlement need ONE verified
@@ -894,9 +889,7 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
   pinned (kid `cb6fda3561b7ba39`, generated 2026-10-02, replacing the build
   placeholder `5dd0b6c80d97bae2`); `PLACEHOLDER_KIDS` is empty.
   `scripts/check_release_keys.py --src src --expect-kids cb6fda3561b7ba39`
-  exits 0 (and still exits 1 against the placeholder). Release day: confirm
-  `/api/plugin/health` `entitlement_public_keys` lists the same kid, then run
-  the compat gate with it.
+  exits 0 (and still exits 1 against the placeholder).
 - `EntitlementError` (`sibyl_memory_client.EntitlementError`): `code` is the
   fine reason (`no_account`, `signed_out`, `expired_offline`,
   `setup_incomplete`, `under_review`,
@@ -914,13 +907,13 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
 ### Changed
 - `_effective_tier()` prefers a verified entitlement's tier over the tier
   cache and the credentials hint: an edited `tier` in credentials.json no
-  longer unlocks the learner or the linter (the CORE-10 residual is closed).
+  longer unlocks the learner or the linter.
   The `tier=` argument is only a hint: every operation needs a verified
   entitlement, whose tier wins.
 - The cap gate takes the entitlement tier as its local hint and sends
   `entitlement` (body and `X-Sibyl-Entitlement`) on `/check-write` INSTEAD of
   `credentials_claim` / `credentials_signature`, so email and wallet are off
-  that wire. An uncapped tier cache is honoured only while the entitlement
+  that wire. An uncapped tier cache is honored only while the entitlement
   says paid or this process just received an uncapped verdict (a forged
   `tier_cache.json` alone never unlocks). A server tier that differs from the
   entitlement's triggers a refresh.
@@ -1074,7 +1067,7 @@ both fixed here.
   runs of identical code on journal-heavy stores. The tie-break is now the row
   text.
 - The relaxed ladder used `sorted(set(...), key=len, reverse=True)`, a stable sort
-  over a SET, so equal-length tokens came out in randomised string-hash order. The
+  over a SET, so equal-length tokens came out in randomized string-hash order. The
   key is now `(-len(t), t)`.
 
 This build reproduces 100 of 100, and the full battery is byte-identical across
@@ -1082,8 +1075,7 @@ This build reproduces 100 of 100, and the full battery is byte-identical across
 
 ### Added
 
-**The cause-carrying verdict contract** (branch `lang-core-verdict`,
-2026-08-31). Four external evaluation cycles reduced to one defect: a zero result
+**The cause-carrying verdict contract** (2026-08-31). Four external evaluation cycles reduced to one defect: a zero result
 that cannot explain itself. `multi_record_search` could return `[]` for five
 structurally different reasons — an unsupported discriminating term, the negation
 policy, three separate scoring gates, an empty store, an honest miss — and all
@@ -1135,10 +1127,9 @@ No gate, threshold, lexicon, ordering or early-return condition was touched. The
 full multilingual battery (PL/EN at 300 and 1400 entities, UA/TR, the 155-query
 paraphrase set, and the hermes provider paths) is **byte-identical to `ef98f5b`
 on every quality field** — ordered row keys, recall, rank-1, noise counts and
-every aggregate. This stage adds explanation, not behaviour.
+every aggregate. This stage adds explanation, not behavior.
 
-Write-time normalization for the search shadow (branch `lang-core-normalize`,
-2026-08-30). One versioned normalizer, `shadow.NORMALIZER_VERSION = 1`, replaces
+Write-time normalization for the search shadow (2026-08-30). One versioned normalizer, `shadow.NORMALIZER_VERSION = 1`, replaces
 the query-time rescue layers stripped below. It renders the stored text at WRITE
 time and the query at READ time from the same code.
 
@@ -1165,7 +1156,7 @@ time and the query at READ time from the same code.
   exactness, then word-start matches, then BM25. Terms the ending rule did not
   shorten carry no score: that single rule, and no stoplist, is what stops 'and'
   or 'gdzie' from scoring every row in the store.
-- **Twin masking closed** (2026-08-07 Finding 2). A single-token query whose
+- **Twin masking closed.** A single-token query whose
   token the normalizer shortened consults the shadow even on a NON-empty strict
   head, and appends. This is deliberately narrower than the 0.7.0 F2
   unconditional append it replaces: it cannot fire on a multi-word query at all,
@@ -1192,8 +1183,7 @@ time and the query at READ time from the same code.
 
 ### Measured effect
 
-Same battery, same 300-entity store, all figures from our own runs
-(`lang-core-rebuild/results/normalized.json`, three-way table in `delta3.txt`):
+Same battery, same 300-entity store, all figures from our own runs:
 
 - `client.search()`: Polish matched recall 16/16 (baseline 0.7.0 was 15/16,
   stripped 8/16), Polish natural 19/19 (19/19, 11/19), Polish noise rows 17
@@ -1210,15 +1200,15 @@ Same battery, same 300-entity store, all figures from our own runs
   smaller space-trigram vocabulary. Entity writes cost about 20 percent more
   (3.79 ms vs 3.12 ms per write) and a 300-row backfill 29.8 ms vs 16.0 ms.
 
-### Documentation (ratification pass 2026-08-31)
+### Documentation (2026-08-31)
 
-Verdict PROMOTE. Two corrections; no behaviour change in this commit.
+Two corrections; no behavior change.
 
 - **Report corrections.** `46a3abf7` is 5 rows / 3 answer-bearing, not 10 / 3
   (a transcription error against this repository's own recorded results). The two
   residual LongMemEval suspects are reclassified from "clean non-losses" to real
   losses: `e982271f` drops the session recording which venue was recommended LAST
-  and keeps only an interchangeable venue card that contains the gold string, and
+  and keeps only an interchangeable venue card that contains the answer string, and
   `gpt4_f420262c` drops the EARLIEST session on an earliest-to-latest ordering
   question. The stated root cause was also wrong for `e982271f`: raising the limit
   to 11, 12, 13 or 15 does not recover its row, so an N2 holdback would not close
@@ -1234,7 +1224,7 @@ Verdict PROMOTE. Two corrections; no behaviour change in this commit.
   35 answer-bearing rows across 7 LongMemEval questions. The distributions
   overlap (a legitimate level needs 12 rows at 1 term, 9 at 2 and 7 at 4; the
   sweep has 30 at 3), so no monotone query-shape budget separates them and a
-  tie-group bound fails identically. Behaviour is unchanged and pinned by
+  tie-group bound fails identically. Behavior is unchanged and pinned by
   `test_corroborated_class_is_NOT_bounded_open_finding`. Contained meanwhile by
   the preserved strict head, an untouched default path and the MCP byte budget.
 
@@ -1261,7 +1251,7 @@ append existing, so it is back with the guard in front of it.
   session and the row stating the figure was one guarded probe away.
 - **Eligibility is coverage COUNT; the idf score only orders.** Letting the score
   filter collapsed a long question to one row: every candidate covered one of
-  three terms and a CO2 fertiliser row matching the rare `curren` outscored every
+  three terms and a CO2 fertilizer row matching the rare `curren` outscored every
   row matching `frien`.
 - **Weakly-corroborated rows are budgeted on the append paths.** Rows covering two
   or more terms all stand; rows covering exactly one are admitted best-first up to
@@ -1275,7 +1265,7 @@ append existing, so it is back with the guard in front of it.
 
 Measured. LongMemEval: changed-suspect questions 9 to 2, answer-bearing rows 107
 to 152 against shipped's 114 to 119, both total-loss questions recovering their
-gold rows, `L1` and the 1,573-entity recall sweep still identical, and 100 of 100
+answer rows, `L1` and the 1,573-entity recall sweep still identical, and 100 of 100
 questions deterministic across three passes (shipped 0.7.0 manages 87). The two
 remaining are cap-boundary effects at limit 10, clean at limit 25, neither a
 recall loss; closing them needs the N2 holdback, which is a head override.
@@ -1299,11 +1289,11 @@ Two changes, both in `client.py`, 31 insertions against 35 deletions.
   Nothing overrides the head now: a saturated last-resort head is returned as-is,
   which is 0.5.0 semantics. Accepted cost, one query shape: `termin rozpatrzenia
   reklamacji` sweeps up the boilerplate phrase in every stored note and fills the
-  cap with it, matching `lang-core-strip`. Baseline 0.7.0 is one row better there
+  cap with it, matching the stripped build. Baseline 0.7.0 is one row better there
   through the F2 append that stage 1 removed on purpose.
 - **The relaxed ladder's tie-break is deterministic.** `sorted(set(...),
   key=len, reverse=True)` is a stable sort over a SET, so equal-length tokens
-  came out in randomised string-hash order; the key is now `(-len(t), t)`. This
+  came out in randomized string-hash order; the key is now `(-len(t), t)`. This
   was cosmetic while nothing read the order and became a non-deterministic ANSWER
   once revision 3's override did. Verified across 12 random seeds and three full
   battery runs at different `PYTHONHASHSEED` values, byte-identical on every row
@@ -1317,11 +1307,10 @@ Battery, all three builds under `PYTHONHASHSEED=0`. `client.search()` Polish
 everywhere, supported-token 6 on all three builds and 0 on the default path.
 Client suite 418 passed / 11 skipped.
 
-### Changed (revision 2, after independent adversarial review 2026-08-30)
+### Changed (revision 2, after independent review 2026-08-30)
 
-The first cut of this work was reviewed independently and returned
-PROMOTE-WITH-FIXES with 2 blockers, both English regressions the battery could not
-see. Full disposition in `stage2-report.md` §10.
+An independent review of the first cut of this work found 2 blockers, both English
+regressions the battery could not see.
 
 - **The shadow no longer runs before the relaxed ladder.** Reverted to the 0.5.0
   order. The ladder searches with FTS5 porter, which reaches `story` from
@@ -1329,8 +1318,8 @@ see. Full disposition in `stage2-report.md` §10.
   `stori` is not a substring of `story` but is one of `historic`. Running the
   shadow first therefore answered with an unrelated row and LOST the correct one,
   for -y/-ies plurals and for every digit-bearing identifier (never shortened, so
-  never a shadow content term, while CORE-11 exists to give it last-resort
-  recall). One narrow exception remains: a last-resort single-token head that
+  never a shadow content term, while the short-identifier rule exists to give it
+  last-resort recall). One narrow exception remains: a last-resort single-token head that
   fills the caller's entire limit is overridden by the shadow, because filling the
   cap from one token means that token matched indiscriminately. A last-resort head
   that does NOT saturate keeps its rows and its rank 1, and the shadow's rows are
@@ -1371,7 +1360,7 @@ byte-identical to the stripped build. Client suite 407 passed / 11 skipped.
 ### Removed
 
 Query-time multilingual rescue layers stripped out of `MemoryClient.search()`
-(operator directive, branch `lang-core-strip`, 2026-08-30). Four external
+(2026-08-30). Four external
 evaluation cycles accreted these layers at QUERY time, each compensating for the
 previous one's side effects. They are being removed so the replacement can be
 built at WRITE time on a clean base. This is a deliberate, measured recall
@@ -1380,15 +1369,15 @@ regression in Polish, not a bug fix.
 - **F2 unconditional shadow append.** The folded-trigram shadow no longer runs on
   every query with its hits appended after the head. It is once again a
   ZERO-HIT-ONLY fallback, exactly as in 0.5.0: reached only when the strict pass
-  and every relaxed variant returned nothing. This restores the 0.5.0 behaviour
-  the 2026-08-07 report filed as Finding 2 (a weak English primary hit again
-  hides a same-fact row in another language).
+  and every relaxed variant returned nothing. This brings back a known 0.5.0
+  limitation (a weak English primary hit again hides a same-fact row in another
+  language).
 - **D2L coverage-gated stem rescue, and its probe ladder in full.** Deleted:
   `_stem_token`, `_stem_truncated_query`, `_head_searchable_text`,
   `_uncovered_stem_tokens`, and the constants `_STEM_MIN_TOKEN`, `_STEM_DROP`,
   `_STEM_FLOOR`, `_GATE_ROW_BYTES`. Deleted from `search()`: the coverage gate,
   the fully-stemmed probe, the selectivity-ordered probe loop (N3) and its
-  no-early-stop behaviour (N3').
+  no-early-stop behavior (N3').
 - **N2 relaxed-single holdback and backfill.** Existed only to reserve cap
   headroom for the D2L rescue; with the rescue gone it has nothing to reserve for.
 
@@ -1403,13 +1392,12 @@ fallback. Nothing else.
 - `multi_record.py` in full: the abstention side is unchanged — N4 any-df
   function-word drop, N5 negation abstention, the `df == 0` content-shaped
   abstention, the anchor/coverage gates, and the N1' diagnostics channel.
-- The MCP fence/scrub stack and every other search behaviour.
+- The MCP fence/scrub stack and every other search behavior.
 
 ### Measured effect
 
 In-house battery, 300-entity store, 32 matched PL/EN queries + 35 natural
-questions + 8 injection-shaped queries, all figures from our own runs
-(`lang-core-rebuild/results/`):
+questions + 8 injection-shaped queries, all figures from our own runs:
 
 - Polish `client.search()` matched recall 15/16 to 8/16; natural battery
   19/19 to 11/19. English unchanged at 16/16 and 14/14 on every path.
@@ -1427,9 +1415,9 @@ questions + 8 injection-shaped queries, all figures from our own runs
 
 ### Tests
 
-Suites that pinned the removed semantics are SKIPPED with the reason
-`removed 2026-08-30 lang-core-strip (operator directive)`, not deleted, so the
-behaviour they asserted stays on the record:
+Suites that pinned the removed semantics are SKIPPED with a dated removal
+reason, not deleted, so the
+behavior they asserted stays on the record:
 `test_covgate_stem_2026_08_12.py`, `test_probe_selectivity_2026_08_16.py` and
 `test_capfill_rescue_2026_08_16.py` at module level; two tests in
 `test_shadow_append_2026_08_12.py` individually. Client suite: 340 passed before,
@@ -1543,12 +1531,9 @@ He also flagged a packaging hazard closed in this release cycle (see mcp/
 hermes CHANGELOGs): `sibyl-memory-mcp` and `sibyl-memory-hermes` floored on
 `sibyl-memory-client>=0.5.0`, so an MCP- or Hermes-only `pip install -U` was a
 silent no-op once `sibyl-memory-cli`'s tighter floor was the only thing
-actually pulling a newer client. He built and emailed a working patch with a
-339/343-passing test run; that attachment did not survive the Gmail-attachment
-retrieval path intact (gzip CRC mismatch, confirmed corrupt against two
-independent decode paths in the same session this shipped). The fix above is
-SIBYL's independent reimplementation against his detailed written analysis,
-verified against the scenarios he reproduced rather than his exact bytes.
+actually pulling a newer client. He also shared a working patch with a
+339/343-passing test run. The fix above was implemented independently from his
+detailed written analysis and verified against the scenarios he reproduced.
 
 ## [0.6.1] - 2026-08-16
 
@@ -1565,7 +1550,7 @@ agent-**default** MCP path (`memory_search` with `tiers` omitted →
 queries: a faithful default-path battery (16 parallel PL + 16 EN facts, Polish
 stored inflected and queried in a DIFFERENT inflection) moved **PL 9/16 → 16/16
 and EN 15/16 → 16/16** — every prior miss was a zero-df function word the lexicon
-did not recognise (N1 / Finding B), not a content-shaped abstention.
+did not recognize (N1), not a content-shaped abstention.
 
 ### Fixed
 
@@ -1590,7 +1575,7 @@ did not recognise (N1 / Finding B), not a content-shaped abstention.
   `inwentaryzacja`) and the injection / `rejected` abstention contract is intact
   (`co0001 nonexistenttokenzzzq report` still returns `[]`).
 
-  **Finding B (adversarial-panel expansion).** The first cut of `_DF0_FUNCTION`
+  **Lexicon expansion.** The first cut of `_DF0_FUNCTION`
   carried only a compact interrogative/copula set, so natural PL/other-language
   questions still zeroed on the default path when they used an inflected function
   form the lexicon missed (the fusional być paradigm is the worst offender:
@@ -1614,11 +1599,11 @@ did not recognise (N1 / Finding B), not a content-shaped abstention.
   additionally dropped any `<=4`-char ASCII-alpha zero-df token; that length net
   was reverted before release because length is not a function-vs-content signal.
   It swept in exactly the short discriminators an entity/company store is queried
-  by (`acme`, `acer`, `weth`, `usdc`, `aero`, `visa`, `ford`, `meta`, `ikea`,
+  by (`acme`, `asus`, `weth`, `usdc`, `aero`, `visa`, `ford`, `meta`, `ikea`,
   `sol`, 3-4-letter names) and, for an *absent* such term, dropped-then-collapsed
   the query into a cross-entity firehose (`acme report` returned 10 unrelated
   reports) instead of abstaining; it also let arbitrary short garbage tokens
-  `continue` past the df=0 early-abort, reopening the CORE-6/MH-3 per-token fanout
+  `continue` past the df=0 early-abort, reopening the per-token fan-out
   bound (`return []` on the first content-shaped absence is restored, so a 24
   short-garbage-token query issues one `client.search()`, not 24). The safe
   direction is preserved: an **unlisted** function word (any language, any length)
@@ -1653,7 +1638,7 @@ did not recognise (N1 / Finding B), not a content-shaped abstention.
   (`test_covgate_stem::test_ladder_longest_first_and_stops` green verbatim); only
   *which* probe wins when hit counts differ.
 
-  **Panel Finding A (regression fix, must-not-ship).** An interim cut bounded the
+  **Regression fix before release.** An interim cut bounded the
   fetch by slicing the probe SELECTION to the `_STEM_PROBE_MAX=8` **longest**
   uncovered stems before measuring selectivity. That truncated the candidate set:
   a query with >8 uncovered stems whose only reachable target sits on a stem past
@@ -1793,7 +1778,7 @@ native-script write+query probe per language). Absorbs PR #25 (0.4.20).
 
 - **Script-aware `multi_record._significant_tokens` (M1+M2+M3).** Splits before
   case-folding, keeps short non-ASCII tokens, and preserves **byte-identical
-  ASCII behaviour** (the pre-0.5.0 stopword + `len>2` + lower token stream is
+  ASCII behavior** (the pre-0.5.0 stopword + `len>2` + lower token stream is
   unchanged). Supersedes PR #25's one-line `\w+` change.
 - **Folded-trigram search shadow (`shadow.py`, schema v4; M4+M5).** A single
   standalone FTS5 `trigram` table (`search_shadow`) holding a FOLDED rendering of
@@ -1846,12 +1831,12 @@ native-script write+query probe per language). Absorbs PR #25 (0.4.20).
   `shadow.shadow_search`, the per-row `_shape_hit` join back to the base table is
   now wrapped so a single row with an undecodable JSON body (corrupt row, partial
   write, manual edit) is SKIPPED rather than raising out of the whole fallback and
-  losing every other valid hit — consistent with the §4.2 "a broken shadow must
-  never take down search" containment stance.
+  losing every other valid hit — consistent with the rule that a broken shadow
+  must never take down search.
 
 ### Rollback
 
-The shadow is additive and reversible. To restore exact v3 behaviour (base data
+The shadow is additive and reversible. To restore exact v3 behavior (base data
 is never affected):
 
 ```sql
@@ -1871,7 +1856,7 @@ PRAGMA user_version = 3;
 
 ### Notes / scope
 
-- **Free-tier cap raised 2 MiB → 5 MiB (operator directive, spec §6):** the
+- **Free-tier cap raised 2 MiB → 5 MiB:** the
   folded copy + trigram index roughly **doubles** the on-disk footprint (measured
   ~2.27× on an English-heavy corpus), which would have made free users reach the
   old 2 MiB cap roughly 2× sooner. Rather than ship that regression, the default
@@ -1879,10 +1864,8 @@ PRAGMA user_version = 3;
   a free user keeps roughly the same effective headroom they had before the shadow
   existed. The client constants `_capcheck.FREE_TIER_CAP_BYTES` and
   `lint.DEFAULT_SOFT_CAP_BYTES` / `TIER_SOFT_CAPS["free"]` now default to 5 MiB,
-  and the user-facing cap messages say "5 MB". **Deploy-time parity (outside this
-  repo):** the server `pricing.js` default `cap_free_bytes` and the server
-  `sibyl_plugin.config.cap_free_bytes` must also be set to `5242880` so the SDK
-  and server agree on the cap.
+  and the user-facing cap messages say "5 MB". The server enforces the same
+  5 MiB cap, so the SDK and server agree.
 - **Honest scope of 100/100:** one native-script write+query probe per language.
   It does NOT claim full linguistic quality — no CJK/Thai word segmentation
   (substring, not semantic), no cross-script/romanization (`Beijing` will not find
@@ -1893,15 +1876,13 @@ PRAGMA user_version = 3;
 
 ## [0.4.19] - 2026-07-05
 
-Super-patch: recovery + adjudication of the remaining Fable 10-lens audit
-findings (`plugin-hardening-superpatch-plan-2026-07-05.md`), covering
+Hardening release: the remaining findings of a pre-publish audit, covering
 `storage.py`, `client.py`, `learning.py`, `_capcheck.py`, and `_heartbeat.py`.
 These fixes compose with the FREE-tier account-level cap aggregation shipped
 in 0.4.18 rather than regressing it.
 
 ### Fixed
-- **Per-thread SQLite connection registry leaked one fd per dead thread (Real
-  #2).** `Storage` tracked opened connections in a plain list so `close()`
+- **Per-thread SQLite connection registry leaked one fd per dead thread.** `Storage` tracked opened connections in a plain list so `close()`
   could reap connections opened by other threads, but nothing pruned an
   entry once its owning thread exited — a long-lived `Storage` under Hermes
   (fresh thread per turn) accumulated one open connection per finished
@@ -1911,7 +1892,7 @@ in 0.4.18 rather than regressing it.
   per-thread connection is also liveness-probed (`total_changes` read) on
   reuse, so a handle closed by another thread's `close()` call is detected
   and transparently reopened instead of raising.
-- **FTS5 v2->v3 migration was not crash-atomic (Real #3).** The old migration
+- **FTS5 v2->v3 migration was not crash-atomic.** The old migration
   ran as three separately-committed steps (drop / recreate / rebuild) with
   no marker; a crash between the drop and the rebuild committing left a
   v3-shaped but empty FTS index, and the shape check then read that as
@@ -1923,7 +1904,7 @@ in 0.4.18 rather than regressing it.
   does a one-time, idempotent FTS rebuild on its first open under 0.4.19
   (the marker was never set by any prior version) — this is expected and
   safe, not a sign of corruption.
-- **`TierCache.store()` used a fixed `<name>.tmp` name (Real #5).** Two
+- **`TierCache.store()` used a fixed `<name>.tmp` name.** Two
   concurrent cap checks — Hermes opens a fresh thread per turn, and
   multiple processes can share `~/.sibyl-memory` — could unlink each
   other's in-flight temp file and crash `os.replace` with a
@@ -1933,7 +1914,7 @@ in 0.4.18 rather than regressing it.
   race) degrades to "skip caching" — logged, never raised into the
   caller's write path.
 - **`accept_proposal`/`reject_proposal` had no in-transaction cap recheck
-  or concurrent-review guard (Hardening #8).** Two callers could both pass
+  or concurrent-review guard.** Two callers could both pass
   the pre-transaction pending-status check and both commit an accept, and
   accepting a large proposal had no cap enforcement inside the write
   transaction that stages the new `reference_documents` row. Both methods
@@ -1944,8 +1925,7 @@ in 0.4.18 rather than regressing it.
   the whole transaction, including the staged reference-doc write. Skipped
   only for cap gates that don't implement `check_total_local` (advanced/
   estimate-only test doubles) — the production `CapGate` always does.
-- **In-transaction CAP-2 recheck could fail open on a 0-byte size read
-  (Hardening #16).** `_maybe_recheck_cap` used `storage.logical_size_bytes`
+- **In-transaction cap recheck could fail open on a 0-byte size read.** `_maybe_recheck_cap` used `storage.logical_size_bytes`
   directly, which returns 0 on any internal error; since this recheck only
   ever runs with a write already staged, a 0 is never a real post-write
   footprint — it means the measurement was unavailable, and passing it to
@@ -1953,31 +1933,27 @@ in 0.4.18 rather than regressing it.
   falls back to the cap gate's own WAL-inclusive `db_size_fn` (the same
   account-level aggregate the pre-write check uses) before gating, so the
   cap is enforced instead of silently bypassed.
-- **CAP-2 absolute-total check swapped shared instance state (Hardening
-  #13).** `check_total` previously monkey-patched `self._db_size_fn` with a
+- **The absolute-total cap check swapped shared instance state.** `check_total` previously monkey-patched `self._db_size_fn` with a
   lambda and restored it in a `finally` — not thread-safe: two concurrent
   callers could observe each other's swapped size fn (a crossed total) or
   leave a patched fn behind if the restore was skipped. The absolute size
   is now threaded through as an explicit keyword argument, removing the
   shared mutable state entirely.
-- **A failed `COMMIT` poisoned the persistent per-thread connection
-  (Hardening #14).** Only the pre-commit path had rollback-on-error
+- **A failed `COMMIT` poisoned the persistent per-thread connection.** Only the pre-commit path had rollback-on-error
   handling; a `COMMIT` failure itself (disk full, I/O error) left the
   connection mid-transaction, so the next write on that thread raised
   "cannot start a transaction within a transaction" for the rest of the
   session. `COMMIT` is now wrapped: on failure a guarded `ROLLBACK` returns
   the connection to autocommit (chained as `__context__`) and the original
   `COMMIT` error is re-raised.
-- **Learner watermark could skip same-timestamp journal rows (Hardening
-  #15).** `_last_watermark` cursored on `MAX(ts)`, so two events sharing a
+- **Learner watermark could skip same-timestamp journal rows.** `_last_watermark` cursored on `MAX(ts)`, so two events sharing a
   timestamp (or a backdated event) could be skipped on the next run. The
   learner now cursors on the monotonic journal `rowid`
   (`learning_runs.cursor_after_rowid`, added via an idempotent one-time
   `ALTER TABLE` on existing databases) with the timestamp kept only for
   readable logs; an explicit `since=` timestamp remains a valid escape
   hatch for a manual re-scan.
-- **Search query string had no length ceiling (Hardening #9, subsumes
-  duplicate finding R15).** `_sanitize_fts5_query` expands every token in
+- **Search query string had no length ceiling.** `_sanitize_fts5_query` expands every token in
   the input into an ANDed, phrase-quoted term and MATCHes it across up to
   four FTS5 tiers; with no bound, a multi-megabyte / ~200k-token query
   became a ~200k-term MATCH executed four times — a CPU/memory DoS
@@ -1986,8 +1962,7 @@ in 0.4.18 rather than regressing it.
   truncate, not a raised error, since search is a read path); real
   natural-language queries are far under the ceiling and are never
   affected.
-- **Co-occurrence learner had no bound on per-event tokens or tracked pairs
-  (R13).** The co-occurrence detector built every 2-combination of an
+- **Co-occurrence learner had no bound on per-event tokens or tracked pairs.** The co-occurrence detector built every 2-combination of an
   event's distinct tokens (O(tokens²) per event); a single pathological
   event could hold tens of thousands of unique strings and hang the run.
   `_extract_tokens` now caps distinct tokens per event at 64, and the
@@ -1998,43 +1973,38 @@ in 0.4.18 rather than regressing it.
   self-inflicted, not third-party.
 
 ### Security
-- **Dict key names leaked verbatim to the Sibyl-routed summarizer prompt
-  (Hardening #1).** `_redact_event_for_prompt`'s shape reducer preserved
+- **Dict key names leaked verbatim to the Sibyl-routed summarizer prompt.** `_redact_event_for_prompt`'s shape reducer preserved
   literal dict key names (`{"keys": sorted(...)}`) — content can hide in a
   key name as easily as in a value. Dict values are now reduced to a
   `{"key_count", "key_lens"}` shape descriptor (sorted lengths only, no
   literal text or ordering signal) via a shared `_key_shape` helper.
-- **Hint redaction was a denylist, not an allowlist (Hardening #11).**
+- **Hint redaction was a denylist, not an allowlist.**
   `_redact_hints_for_prompt` only stripped four explicitly-named
   content-derived fields, so any future content-derived hint field would
   leak by default. Inverted to an allowlist: only known pure-shape/numeric
   fields (`hits`, `cadence_minutes`, `cov`, `confidence`) pass through
-  as-is; `shared_keys` is shaped via `_key_shape` (Hardening #1, it carries
-  key names); every other field is stubbed to a shape descriptor.
-- **Usage heartbeat could leak the account bearer to a non-Sibyl host
-  (Hardening #12).** The heartbeat URL is env-overridable
+  as-is; `shared_keys` is shaped via `_key_shape` (it carries key names); every other field is stubbed to a shape descriptor.
+- **Usage heartbeat could leak the account bearer to a non-Sibyl host.** The heartbeat URL is env-overridable
   (`SIBYL_MEMORY_HEARTBEAT_URL`); without a check, an injected override
   would still receive the `Authorization: Bearer` header. The bearer is
   now attached only when the resolved URL is `https` and its host is
   `sibyllabs.org` or a subdomain (checked via `urlparse().hostname`, not
-  string matching, so a userinfo-spoofed URL like
-  `https://api.sibyllabs.org@evil.com/` resolves to the real host and is
+  string matching, so a userinfo-spoofed URL resolves to its real host and is
   rejected). Any other scheme/host still gets the heartbeat POST, just
   without the bearer.
-- **`TierCache`'s symlink guard was dead code (Hardening #3).** `__init__`
+- **`TierCache`'s symlink guard was dead code.** `__init__`
   called `Path(path).expanduser().resolve()`, which follows a symlinked
   cache file before the later `is_symlink()` checks in `load()`/`store()`
-  ever run, silently defeating the SEC-11 guard. Only the parent directory
+  ever run, silently defeating the symlink guard. Only the parent directory
   is resolved now; the cache file's final path component stays literal, so
   a symlinked cache path is detected and refused (never written through)
   while a relocated/containerized home is still canonicalized correctly.
-- **Storage and cache directories could persist at a loose mode (Hardening
-  #4).** `mkdir(mode=0o700)` is a no-op on an already-existing directory,
+- **Storage and cache directories could persist at a loose mode.** `mkdir(mode=0o700)` is a no-op on an already-existing directory,
   so a pre-existing 0o755 `~/.sibyl-memory` or cache dir kept its umask-
   derived mode. Both `Storage.__init__` and `TierCache.__init__` now
   explicitly `chmod` the directory to `0o700` after `mkdir`, best-effort
   and guarded for chmod-less platforms.
-- **WAL/SHM sidecar files had no symlink/hardlink guard (Hardening #10).**
+- **WAL/SHM sidecar files had no symlink/hardlink guard.**
   SQLite opens `<db>-wal`/`<db>-shm` at fixed paths beside the main file; a
   planted symlink there could redirect the write-ahead log (which holds
   committed rows before checkpoint) to an attacker-chosen file, and the
@@ -2050,11 +2020,11 @@ in 0.4.18 rather than regressing it.
   `proposed_delta_bytes`, and, when a signed claim is present,
   `credentials_signature` + `credentials_claim`); the prior "only
   (account_id, current_size_bytes, proposed_delta_bytes)" wording
-  under-stated it (Contract PII, code half). The wire payload is unchanged;
+  under-stated it. The wire payload is unchanged;
   dropping the claim's `email`/`wallet` is the policy-gated follow-up.
 - Packaging: added the `Repository` URL
   `https://github.com/Sibyl-Labs/Sibyl-Memory` to `[project.urls]`
-  (previously omitted) (R27).
+  (previously omitted).
 
 ## [0.4.18] - 2026-07-05
 
@@ -2070,7 +2040,7 @@ in 0.4.18 rather than regressing it.
   resolved path; missing/unreadable candidates contribute 0 and the walk
   never raises. Each candidate is sized WAL-inclusively via `db_size_bytes`
   (SQLite logical size, `page_count x page_size`), so the aggregate COMPOSES
-  with CAP-1 (0.4.15) rather than regressing it — a plain per-file `st_size`
+  with the 0.4.15 WAL-inclusive cap rather than regressing it — a plain per-file `st_size`
   sum would have under-counted data still sitting in a store's `-wal`
   journal. Free accounts already over the aggregate cap are blocked on their
   next write by design (the boundary check now sees the true account
@@ -2095,7 +2065,7 @@ in 0.4.18 rather than regressing it.
   path (`BYOKSummarizer`) is unchanged and keeps full fidelity: the user
   controls their own inference destination.
 - Extended the same redaction to the `hints` dict on the Sibyl-routed path
-  (multi-model audit follow-up, 2026-06-30). `hints` carried content-derived
+  (audit follow-up, 2026-06-30). `hints` carried content-derived
   fields (`action_signature`/`pair`/`slug`/`title` — normalized first-N tokens
   of the raw `acted` string), which the initial #14 fix left serialized verbatim
   into the prompt. `_redact_hints_for_prompt` now reduces those fields to a shape
@@ -2107,10 +2077,9 @@ in 0.4.18 rather than regressing it.
 - Search fallback: short function words and contraction tails (`us`, `me`, `am`,
   `re`, `ll`, `ve`) are now excluded from the zero-hit single-token recovery
   step, so they can no longer trigger a spurious last-resort match now that the
-  CORE-11 (0.4.15) `len>=2` floor admits short tokens. Strict search is
+  0.4.15 `len>=2` floor admits short tokens. Strict search is
   unaffected (it keeps every token); this only tightens the relaxation step.
-  Complements CORE-11's short-identifier recall (q3/v2/k8). Operator-directed,
-  benchmark-validated (phrasing-invariance: in-contract recall held at 100%,
+  Complements the 0.4.15 short-identifier recall (q3/v2/k8). Benchmark-validated (phrasing-invariance: in-contract recall held at 100%,
   zero new distractors).
 
 ### Hygiene
@@ -2131,13 +2100,13 @@ Pre-launch security audit hardening.
 - Cap enforcement now counts the full footprint including the `-wal`/`-shm`
   sidecars (previously only the main DB file, so burst writes under-reported).
 - The cap gates on the absolute resulting footprint, re-read inside the write
-  transaction (CAP-2) rather than per-write estimate. The in-transaction recheck
+  transaction rather than per-write estimate. The in-transaction recheck
   is LOCAL-ONLY (no network call under the write lock).
 - Fail-open now fails CLOSED for a no-account / no-cache user (was: allowed up
   to 4x the cap when the verify endpoint was unreachable).
 - A 401/403 from tier verification is treated as an authoritative "not entitled"
   and hard-denies; it is no longer classed as a retryable/transient code.
-- `current_cap()` no longer honors a null-account "uncapped" cache (SEC-13).
+- `current_cap()` no longer honors a null-account "uncapped" cache.
 
 ### Fixed
 - `json.loads` on every read path now raises a typed `StorageError` on a
@@ -2155,8 +2124,7 @@ Pre-launch security audit hardening.
 
 ### Fixed
 
-- **Silent write loss under sustained load (CRITICAL; beta report 2026-06-17,
-  report 3.1).** When tier verification was unreachable (e.g. the check-write
+- **Silent write loss under sustained load (CRITICAL; beta report 2026-06-17).** When tier verification was unreachable (e.g. the check-write
   endpoint returning a rate-limit-shaped 401 under a heavy write burst) and there
   was no cached tier, the write was rejected with `TierVerificationError` -- and a
   caller that ignored ok/error lost the write silently. The check-write transport
@@ -2175,11 +2143,11 @@ Pre-launch security audit hardening.
   is returned untouched, and single-token / prefix queries (the `multi_record`
   path) never trigger it. Test: `tests/test_paraphrase_fallback_2026_06_19.py`.
 
-- **Single-value size ceiling (red-team F5, 2026-06-17).** `_check_json` rejects a
+- **Single-value size ceiling (red-team review, 2026-06-17).** `_check_json` rejects a
   single serialized body over 1 MiB with a clear, recoverable error, so one
   oversized value can't flood agent context on recall/search.
 
-- **Bounded learner scan (red-team F6, 2026-06-17).** `Learner._load_events` caps
+- **Bounded learner scan (red-team review, 2026-06-17).** `Learner._load_events` caps
   the per-run journal scan at 10k events (DoS backstop); the watermark advances so
   a large backlog drains across runs instead of spiking memory/CPU in one pass.
 
@@ -2203,9 +2171,9 @@ Pre-launch security audit hardening.
 - **`forget`/archive is recoverable, not a hard delete.** Clarified that
   archiving moves an entity into `archived_entities` (recoverable, stored
   plaintext at rest) rather than destroying it; a hard-delete path is tracked
-  separately. (big-patch PKG-11)
+  separately.
 
-## [0.4.12] - 2026-06-11
+## [0.4.12] (not published) - 2026-06-11
 
 ### Fixed
 
@@ -2215,7 +2183,7 @@ Pre-launch security audit hardening.
   JSON (via the same `_check_json` guard used for metadata) before the INSERT.
   Any other type raises a typed `ValidationError` naming the `body` parameter
   instead of an opaque DB-layer failure. Regression test:
-  `tests/test_set_reference_body_2026_06_11.py` (4 cases). (big-patch PKG-5)
+  `tests/test_set_reference_body_2026_06_11.py` (4 cases).
 
 ## [0.4.11] - 2026-06-11
 
@@ -2230,21 +2198,20 @@ Pre-launch security audit hardening.
   `tenant_id` filtering holds on all three surfaces, so the reported sibling-
   case bleed is attributed to within-tenant topical ranking, addressed by the
   0.4.9 anchor-first resolver and 0.4.10 proximity re-rank. Tests only, no
-  source change. (bugflow)
+  source change.
 
 ### Fixed
 
 - **`search()` silently returned `[]` on unknown tier names.** Unknown values in
   `tiers` now raise `ValueError` (defense in depth behind the MCP-level
   whitelist; direct callers such as the Hermes provider inherit the fix).
-  (bugflow)
 - **Lint timestamp cutoffs were malformed and used deprecated
   `datetime.utcnow()`.** Python `%f` means microseconds (not SQLite's
   seconds-with-millis), so stale-entity and flagged-actor cutoffs rendered as
   `HH:MM:<microseconds>Z` with no seconds field, breaking the lexicographic
   comparison against stored `HH:MM:SS.sssZ` timestamps. Cutoffs now use
   `datetime.now(timezone.utc)` with an exactly aligned `%Y-%m-%dT%H:%M:%S.000Z`
-  format. (bugflow)
+  format.
 
 ## [0.4.10] - 2026-06-08
 
@@ -2305,9 +2272,8 @@ Pre-launch security audit hardening.
   entity FTS, removing topical bleed across categories on multi-entity workloads
   (tester report). Backward compatible (defaults to all categories).
 
-Sourced from beta Runs 24-29 + the bugflow batch dedup; this single
-patch also supersedes ~20 already-fixed entries that had accumulated in the
-bug-batch queue.
+Sourced from beta test runs 24-29; this release also closes about 20 reports
+that earlier fixes had already resolved.
 
 ## [0.4.8] - 2026-06-04
 
@@ -2321,16 +2287,15 @@ bug-batch queue.
   hard-drops operator keywords with no fallback and returns an empty match for an
   all-operator query (no safe expansion exists). Non-prefix phrase mode is unchanged
   (quoted phrases keep `"OR"` literal and valid). Reported via a beta stress suite
-  (LEARNING-SEARCH-PREFIX-OPERATOR-MUTATIONS-STAY-LITERAL, 2026-06-01). Found + verified
-  by bugflow; operator-approved.
+  (2026-06-01).
 
 ## [0.4.7] - 2026-06-02
 
-Bundled bug-fix release from beta/UserSignal reports (several beta testers), triaged + adversarially verified via bugflow.
+Bundled bug-fix release from beta reports (several beta testers), each verified before release.
 
 ### Security
 
-- **Cap-enforcement bypass via a forged tier cache (SEC-13).** A local user could
+- **Cap-enforcement bypass via a forged tier cache.** A local user could
   write `~/.sibyl-memory/tier_cache.json` with `account_id: null` and
   `cap_bytes: null`. For a pre-activation/free user (whose runtime `account_id`
   is also `None`), this matched the cache fast-path and returned "uncapped",
@@ -2338,7 +2303,7 @@ Bundled bug-fix release from beta/UserSignal reports (several beta testers), tri
   uncapped fast-path now requires a real `account_id`; a null-account uncapped
   claim is distrusted and falls through to credentials-hint + server
   enforcement. A legitimately uncapped tier always carries an `account_id`.
-- **Hardlink / symlink DB-path redirect across profiles (SEC-12).**
+- **Hardlink / symlink DB-path redirect across profiles.**
   `Storage.__init__` opened the SQLite DB after `Path.resolve()` (which follows
   symlinks) with no link guard, and `is_symlink()` is `False` for hardlinks. A
   symlinked db path or a hardlinked `memory.db` (`st_nlink > 1`) could redirect
@@ -2381,7 +2346,7 @@ Adversarial remediation (beta stress-test suite): two findings + a review harden
 
 Regression coverage: `tests/test_stress_suite_2026_05_30.py` (7 tests). 96/96 suite green.
 
-### Added (Terminal B — multi-record retrieval, tester Run15)
+### Added (multi-record retrieval, tester Run 15)
 
 - **`multi_record.py` — `multi_record_search(client, query, ...)`.** Two-stage
   retrieve-then-verify search for workflow / linked-record queries (whose answer
@@ -2391,8 +2356,7 @@ Regression coverage: `tests/test_stress_suite_2026_05_30.py` (7 tests). 96/96 su
   `search()` call (same hit shape); `recall()` unchanged. Fixes the tester Run15
   multi-record-miss class (bench 10/10 vs 4/10 single-pass). Uses only the public
   `MemoryClient` surface. NOTE: gate constants are bench-tuned on a 24-record
-  reconstruction, not yet generalized — validate at scale or gate behind a flag
-  before publish.
+  reconstruction (reworked for scale in 0.4.9).
 
 ## [0.4.4] - 2026-05-28
 
@@ -2450,7 +2414,7 @@ natural-language query against the plugin's search returned 0 hits).
 ### Changed
 
 - `_sanitize_fts5_query(raw, *, prefix=False, as_phrase=False)`: new
-  default behaviour: tokenize input into alphanumeric + underscore tokens,
+  default behavior: tokenize input into alphanumeric + underscore tokens,
   wrap each as a single-term phrase, join with spaces. FTS5 treats
   space-joined terms as implicit AND, so every token must appear in the
   matched row (in any order). Callers that need phrase-match semantics
@@ -2461,7 +2425,7 @@ natural-language query against the plugin's search returned 0 hits).
 ### Added
 
 - `tests/test_search_default_mode.py`: 8 regression tests pinning the
-  new default behaviour, including end-to-end multi-word recall against
+  new default behavior, including end-to-end multi-word recall against
   live SQLite + FTS5 storage.
 
 ### Migration
@@ -2473,8 +2437,7 @@ natural-language query against the plugin's search returned 0 hits).
 
 ## [0.4.1] - 2026-05-19
 
-Auth-redesign wave 1 step 15: forward-compat with the server's bearer
-model. `/api/plugin/check-write` accepts `Authorization: Bearer <token>`
+Forward-compat with the server's bearer model. `/api/plugin/check-write` accepts `Authorization: Bearer <token>`
 headers in addition to the existing `session_token` body field. This
 release sends both: body field for older servers, header for the new
 protocol. The server populates device credentials at bind time,
@@ -2487,7 +2450,7 @@ so legacy `session_token`-as-bearer credentials still resolve.
   Token source priority: `payload["bearer_token"]` (server-issued in
   credentials.json schema_version >= 3) → `payload["session_token"]`
   (v1 backward compat). No behavior change against current production
-  server. Companion: api-sibyllabs accepts both paths.
+  server. The server accepts both paths.
 
 ## [0.4.0] - 2026-05-18
 
@@ -2540,8 +2503,7 @@ v0.1.3.
 ### Notes
 
 - The 2 MB free-tier cap (the external tester's product question) is NOT changed in this
-  release. Operator decision to be made separately on whether to raise
-  the cap or document the intent more explicitly.
+  release (it was raised to 5 MB in 0.5.0).
 - Existing 53/53 client tests pass unchanged. New tests covering the
   external-test fixes added in `tests/test_smoke.py`.
 
@@ -2596,27 +2558,27 @@ v0.1.2, `sibyl-memory-mcp` v0.1.1.
 
 ### Security
 
-- **SEC-2**. Atomic 0600-at-create for `TierCache.store`. Previously
+- Atomic 0600-at-create for `TierCache.store`. Previously
   used `write_text(...)` then `os.chmod(..., 0o600)`, leaving a
   world-readable window between syscalls every cache write. Now opens with
   `O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW` and mode `0o600` set at creation
   time. No race window.
-- **SEC-3**. FTS5 query sanitization on every MATCH path. Prevents
+- FTS5 query sanitization on every MATCH path. Prevents
   FTS5 injection / DoS via malformed queries.
-- **SEC-3**. `StorageError` messages no longer echo the absolute
+- `StorageError` messages no longer echo the absolute
   `db_path` or full SQLite error text. Original exception is chained via
   `from e` for debugging; user-visible message stays generic.
-- **SEC-9**. `TierVerificationError` no longer echoes the server-side
+- `TierVerificationError` no longer echoes the server-side
   `error` body string in the user-visible message: strips to a generic
   "Retry shortly" pointer to avoid leaking internal server detail into
   user logs.
-- **SEC-11**. `TierCache.load` refuses to follow symlinks. A
+- `TierCache.load` refuses to follow symlinks. A
   low-privilege attacker who once had write to `~/.sibyl-memory` cannot
   redirect the cache to `/dev/null` or another file via symlink.
 
 ### Fixed
 
-- **C2**. `__version__` no longer hardcoded. Now sourced from
+- `__version__` no longer hardcoded. Now sourced from
   `importlib.metadata.version("sibyl-memory-client")` with the same
   `+source` fallback pattern as sibyl-memory-hermes v0.3.0. The wheel and
   the in-Python `__version__` can no longer drift (v0.3.2 published with
@@ -2631,18 +2593,16 @@ v0.1.2, `sibyl-memory-mcp` v0.1.1.
 ### Hygiene
 
 - Dropped unused `Iterable` and `ConflictError` imports from `client.py`
-  (DC1/DC2). Both remain in `__all__` via re-export.
+  Both remain in `__all__` via re-export.
 
 ## [0.3.2] - 2026-05-16
 
-Audit-remediation release. Companion to api-sibyllabs payment-rail fixes
-and the post-audit shipping pass. Closes T1-3, T1-4, T2-3 from the
-2026-05-16 audit pass (full report: `memory/research/` + email
-msg_id 19e33139dfc3e4d4).
+Audit-remediation release, shipped alongside server-side payment fixes after
+the 2026-05-16 audit pass.
 
 ### Changed
 
-- **T1-3. `archive_entity` now goes through CapGate**. The audit found
+- **`archive_entity` now goes through CapGate**. The audit found
   that `MemoryClient.archive_entity` bypassed the cap check, letting a
   free user at 1.9 MB archive their largest entities (body copied into
   archived_entities, doubling footprint) to keep writing past 2 MB. The
@@ -2650,20 +2610,20 @@ msg_id 19e33139dfc3e4d4).
   (`body + name + category + reason + 200B overhead`), then calls
   `self._cap_gate.check(proposed_delta_bytes=delta)` before the write
   transaction. NotFoundError still raised before any cap-gate side effect.
-- **T1-3. `Learner.accept_proposal` now accepts an optional `cap_gate`**.
+- **`Learner.accept_proposal` now accepts an optional `cap_gate`**.
   `Learner.__init__` gains a `cap_gate: Any = None` parameter. When
   non-None, `accept_proposal` calls `cap_gate.check(proposed_delta_bytes=...)`
   before inserting the `reference_documents` row (skill body can be
   kilobytes). The convenience entry `MemoryClient.learner()` threads
   the client's CapGate through automatically. Direct-import callers can
   override `cap_gate=None` explicitly for tests.
-- **T2-3. `_default_check_write_fn` no longer forges fake decisions on
+- **`_default_check_write_fn` no longer forges fake decisions on
   HTTP error**. Previously a transient 502 response synthesized
   `{ok: False, tier: "free"}` and the caller cached it as authoritative,
   locking a paid user out for up to 7 days. Now raises
   `TierVerificationError` on any HTTP error: the offline-grace path in
   `_refresh_and_check` decides whether to honor a recent cache or hard-cap.
-- **T1-4. TierCacheEntry gains `server_expires_at` + `cache_token` fields**.
+- **TierCacheEntry gains `server_expires_at` + `cache_token` fields**.
   `server_expires_at` is the server-supplied subscription expiry parsed
   from the `expires_at` field on the `/check-write` response. The cache
   is now honored only while `now < min(checked_at + grace_seconds,
@@ -2692,13 +2652,13 @@ msg_id 19e33139dfc3e4d4).
 ### Notes for downstream
 
 - `sibyl-memory-hermes` v0.2.2 ships in lockstep (narrows `recall()`
-  exception handling to `NotFoundError` only, T2-2 fix). Earlier
+  exception handling to `NotFoundError` only). Earlier
   hermes versions still work; the bug they had was over-aggressive
   exception swallowing, harmless to the cap-gate plumbing.
 
 ## [0.3.1] - 2026-05-16
 
-Tamper-evidence release. Companion to api-sibyllabs HMAC signing.
+Tamper-evidence release. Companion to server-side HMAC signing.
 
 ### Added
 
@@ -2726,11 +2686,10 @@ Tamper-evidence release. Companion to api-sibyllabs HMAC signing.
 
 ## [0.3.0] - 2026-05-15
 
-Hard-cap enforcement release. Operator directive 2026-05-15: "how do
-we hard-limit free users to the 2Mb size? and ensure they can't
-circumvent this" → Level 1 (hard write cap) + Level 2 (signed
-credentials.json, deferred) + server-authoritative tier check at the
-boundary. Locked in: 7-day grace cache, hard cap on by default.
+Hard-cap enforcement release: free users are held to the 2 MB size with a
+hard write cap (Level 1) and a server-authoritative tier check at the
+boundary; signed credentials.json (Level 2) is deferred. 7-day grace cache,
+hard cap on by default.
 
 ### Added
 
@@ -2777,16 +2736,17 @@ boundary. Locked in: 7-day grace cache, hard cap on by default.
 - `sibyl-memory-hermes` v0.2.0 plumbs `account_id` and `session_token`
   through to the client. Earlier hermes versions still work but
   pre-activation users hit the strict local 2 MB cap.
-- The Level 2 HMAC-signed `credentials.json` design is in
-  `memory/research/2026-05-15-hard-cap-enforcement.md` (deferred until
-  `PLUGIN_CREDENTIAL_SIGNING_KEY` is provisioned in Doppler/Vercel).
+- The Level 2 HMAC-signed `credentials.json` is deferred to a later
+  release (it shipped in 0.3.1).
+
+## [0.2.1] - 2026-05-15
+
+Maintenance release.
 
 ## [0.2.0] - 2026-05-15
 
-Self-learning + memory-linting release. Operator directive 2026-05-15:
-"add a self-learning cron + function to the memory deployment so the
-memory learns and creates skills from things in the session just as you
-do. could we also do memory linter?"
+Self-learning + memory-linting release: the memory learns from session
+activity and proposes skills, and a linter checks the store.
 
 ### Schema
 
@@ -2799,17 +2759,17 @@ do. could we also do memory linter?"
 - **`learning.py` module** with the full self-learning loop:
   - `Learner` class: scans journal_events since last watermark, runs four pattern detectors, dedupes by slug, persists top-N proposals.
   - Four deterministic detectors: `repeated_action`, `structural_similarity`, `co_occurrence`, `temporal_routine`.
-  - Three pluggable summarizer backends (per operator design directive 2026-05-15):
+  - Three pluggable summarizer backends:
     - `LocalDeterministicSummarizer` (free tier default): pure SQL + Python templates, zero network.
     - `BYOKSummarizer` (paid tier opt-in): user supplies their own inference callable, SDK never holds the key.
-    - `VeniceX402Summarizer` (paid tier hosted). Venice-routed via x402 against the user's pre-funded plugin balance. Endpoint design at `memory/research/2026-05-15-self-learning-design.md`.
+    - `VeniceX402Summarizer` (paid tier hosted). Venice-routed via x402 against the user's pre-funded plugin balance.
   - Review queue API: `list_proposals`, `get_proposal`, `accept_proposal` (writes `reference_documents` row under `skill/<slug>` key with provenance metadata), `reject_proposal`.
   - Both LLM-backed summarizers gracefully fall back to local-deterministic output when the inference callable raises.
 
-- **`lint.py` module**: local memory linter mirroring `scripts/memory-lint.mjs`:
+- **`lint.py` module**: local memory linter:
   - `Linter` class with 9 checks across three severity tiers (critical / warning / info): schema-version, invalid-json-entity, invalid-json-state, invalid-json-journal, duplicate-entity, empty-reference, stale-entity, journal-without-acts, db-soft-cap, fts-rowcount-mismatch, flagged-actors-fresh.
   - `LintReport` dataclass with `to_dict()` (JSON-serializable) + `to_ascii()` (single-block boxed report for CLI).
-  - Tunable thresholds: `soft_cap_bytes` (default 10 MB per operator decision), `stale_days` (default 90), `flag_recency_days` (default 30).
+  - Tunable thresholds: `soft_cap_bytes` (default 10 MB), `stale_days` (default 90), `flag_recency_days` (default 30).
 
 - **`MemoryClient` API surface (additive)**:
   - `client.learner(**kwargs)`: construct a tenant-bound Learner.
@@ -2834,7 +2794,7 @@ do. could we also do memory linter?"
 - `sibyl-memory-hermes` v0.1.0 is binary-compatible with v0.2.0 of this SDK (provider surface unchanged). Hermes-provider tests updated to expect schema_version=2.
 - Local-first promise unchanged: free tier remains zero-network. BYOK / Venice routes are paid-tier opt-in only and the CLI gate enforces tier checks upstream.
 
-### Notes for CLI integration (sibyl-labs-cli, next)
+### Notes for CLI integration (sibyl-memory-cli, next)
 
 The CLI package will expose:
 - `sibyl learn` → runs `client.learn()`.
@@ -2842,11 +2802,11 @@ The CLI package will expose:
 - `sibyl lint` → runs `client.lint()`, prints `to_ascii()`, exits non-zero if `critical_count > 0`.
 - Optional cron install during `sibyl init` (Linux/macOS cron, Windows Task Scheduler) for daily learn + lint.
 
-## [0.1.0] - 2026-05-15
+## [0.1.0] (not published) - 2026-05-15
 
 Initial release.
 
-- SQLite + FTS5 port of the canonical `sibyl_memory.*` Postgres schema (10 base tables + 2 FTS5 virtuals + version table).
+- SQLite + FTS5 memory schema (10 base tables + 2 FTS5 virtuals + version table).
 - `MemoryClient` public API with polymorphic constructor: `MemoryClient.local(path)`.
 - Five-tier model: entities (WARM) / state_documents (HOT) / journal_events (COLD) / reference_documents (REFERENCE) / archived_entities (ARCHIVE) / flagged_actors (FLAGGED).
 - Multi-tenant isolation via `tenant_id` column.

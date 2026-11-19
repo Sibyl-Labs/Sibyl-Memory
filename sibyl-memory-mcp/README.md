@@ -12,7 +12,7 @@ pip install sibyl-memory-mcp
 
 Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through WSL2. Native Windows is not supported.
 
-**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.2, hermes 0.6.0, cli 0.7.0), and each one requires the client of its own release. Upgrade them together, never one alone:
+**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.2, hermes 0.6.1, cli 0.7.0), and each one requires the client of its own release. Upgrade them together, never one alone:
 
 ```bash
 sibyl update --apply
@@ -42,7 +42,7 @@ The server still starts and lists its 15 tools, so your agent can see them and l
 
 Successful results can carry a one-line `notice` (for example "Sibyl Memory has not reached the server for 8 days ...", or a reminder to confirm your email), at most once a day per message.
 
-> **Privacy disclosure.** Your memory content never leaves the machine. The plugin talks to `api.sibyllabs.org` for these things only: activation (`sibyl init`); a daily account check-in that renews this computer's access (account id, this computer's sign-in token, plugin version, OS family; no memory content); a size check when a free account nears its cap (account id, sign-in token, the database's byte size and the proposed delta); and, unless you opt out with `SIBYL_MEMORY_TELEMETRY=0`, an aggregate count of memory operations. The size check and the count also carry this computer's signed access token (account id, tier, cap, device hash, account flags; no personal data). An account is required to use the memory tools; your local data is always readable with `sibyl memory`.
+> **Privacy disclosure.** Your memory content never leaves the machine. The plugin talks to `api.sibyllabs.org` for these things only: activation (`sibyl init`); an account check-in that renews this computer's access (about once an hour on Free, about once a day on Pro) (account id, this computer's sign-in token, plugin version, OS family; no memory content); a size check when a free account nears its cap (account id, sign-in token, the database's byte size and the proposed delta); and, unless you opt out with `SIBYL_MEMORY_TELEMETRY=0`, an aggregate count of memory operations. The size check and the count also carry this computer's signed access token (account id, tier, cap, device hash, account flags; no personal data). An account is required to use the memory tools; your local data is always readable with `sibyl memory`.
 
 ## Add to Claude Code
 
@@ -214,7 +214,7 @@ Full docs at [docs.sibyllabs.org/memory/integrations](https://docs.sibyllabs.org
 ## Tier behavior
 
 - **Free tier**: the 15 tools work. Hard-capped at 5 MB of local storage. Writes that would push past the cap return `CAP_EXCEEDED` with an `upgrade_url`.
-- **Paid tiers** (`pro`, `elite`): the same 15 tools, cap removed.
+- **Pro** (`pro`): the same 15 tools, cap removed.
 
 The cap-gate runs against the **server-authoritative** tier: the local hint is the tier inside the server-signed entitlement (verified offline against a pinned public key), and the cap boundary is decided by the server. Editing a local file does not change either.
 

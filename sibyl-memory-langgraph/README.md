@@ -112,7 +112,8 @@ inherits the posture of the underlying `sibyl-memory-client`, which talks to
 `api.sibyllabs.org` for these things only:
 
 - activation (`sibyl init`);
-- a daily account check-in that renews this computer's access (account id,
+- an account check-in (about hourly on Free, daily on Pro) that renews this
+  computer's access (account id,
   this computer's sign-in token, plugin version, OS family; no memory content);
 - the size check when a free account nears its cap (account id, sign-in
   token, the database's byte size and the proposed delta, and this computer's

@@ -36,7 +36,7 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
   link is kept.
 - Setup and doctor never print another tool's command string.
 
-### Fixed (review panel, 2026-11-14)
+### Fixed (review, 2026-11-14)
 - `sibyl setup hermes` edits `config.yaml` as text instead of re-serializing it: comments,
   anchors, key order, quoting and non-ASCII text stay as written. Only `memory.provider` changes
   (or two lines are added), and the result must parse to the old data with only that value
@@ -84,10 +84,8 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
   sign-in to; unset it", never "retry", "server error: 0" or "connect to the internet". The
   explanation prints at most once per process (`sibyl upgrade` printed it twice). An untrusted
   `SIBYL_UPGRADE_BASE` gets the same treatment. `sibyl whoami` makes no network call.
-- The CLI refuses to send the sign-in to a URL with a backslash, whitespace, a control character or
-  userinfo (`https://evil.com\@sibyllabs.org/x` was allowed), on its own side, before the client's
-  host rule, and for the client gate's `/entitlement` refresh too, so cli 0.7.0 is protected with
-  sibyl-memory-client 0.10.0 installed.
+- Tighter URL validation before the CLI sends the sign-in, including for the account check-in
+  refresh.
 - Codex: a `config.toml` that starts with a UTF-8 BOM is no longer called invalid TOML; the BOM is
   kept.
 - Hermes: the `config.yaml` edit is proven before the plugin install and the backup, so a file setup
@@ -126,7 +124,7 @@ All notable changes to `sibyl-memory-cli` are recorded here. Format follows
 
 ## [0.6.0] - 2026-10-31
 
-One release: the paid tier R2 line, the shipped 0.5.0 fixes it was built beside, the graph line and the release merge items below.
+One release: skill signals (Pro), the shipped 0.5.0 fixes, tiered retrieval and relations, and the onboarding items below.
 
 ### Release summary
 - `sibyl memory neighbors`: the edges of one node. Existing relations are carried over on first open.
@@ -166,17 +164,15 @@ One release: the paid tier R2 line, the shipped 0.5.0 fixes it was built beside,
 - The usage count keeps the opt-out default in the CLI (`test_telemetry_default_2026_10_28.py`, 2).
 - Requires `sibyl-memory-client>=0.10.0`, `sibyl-memory-hermes>=0.6.0`, `[mcp]` `sibyl-memory-mcp>=0.4.0`.
 
-### Paid tier R2: skill signals (built 2026-09-29)
+### Skill signals (Pro, built 2026-09-29)
 
-Spec plugin-paid-tier-r2-spec-2026-09-29 section 1. Requires sibyl-memory-client 0.10.0,
-sibyl-memory-hermes 0.6.0 (and sibyl-memory-mcp 0.4.0 with the `mcp` extra). BYOK drafting
-(spec section 2: `sibyl skills proposals draft`, `sibyl skills summarizer`, `byok.py`) is NOT in
-this release (operator 2026-09-29).
+Requires sibyl-memory-client 0.10.0, sibyl-memory-hermes 0.6.0 (and sibyl-memory-mcp 0.4.0 with
+the `mcp` extra). Drafting skills with your own model key is not in this release.
 
 ### Changed (tier convention, 2026-10-05; carried from 0.5.0)
 - `sibyl status` Free / Pro / Elite, the `tier_unknown` access rows, the hooks mirror with elite
-  and the venv-compat Elite status check are carried from 0.9.0 / 0.5.0 (cherry-picked; the only
-  conflict was `tests/smoke/venv-compat.sh`, both blocks kept). See the 0.5.0 entry. Suite 456 -> 472.
+  and the venv-compat Elite status check are carried from the 0.5.0 release (client 0.9.0). See
+  the 0.5.0 entry. Suite 456 -> 472.
 
 ### Added
 - The Claude Code Stop hook (Pro) records the workflow's tool sequence: it reads the transcript
@@ -195,35 +191,34 @@ this release (operator 2026-09-29).
 - `tests/test_hook_signals_2026_09_29.py` (12): canaries in `tool_use` input values and key
   names never in any file under the home or the hook output; incremental offset; 4 MiB per Stop
   on a 64 MB transcript (timed); offset reset on a changed or truncated transcript; an
-  unreadable transcript keeps the R1 output and the process exits 0; the `claude -p` rule; free,
+  unreadable transcript keeps the automatic-save output and the process exits 0; the `claude -p` rule; free,
   locked and off; sidechain entries; a partial last line waits.
 - `tests/test_skills_signals_cli_2026_09_29.py` (7): the four verbs on Pro, free and locked;
   `save --fact`; the new kinds through list, show, accept (valid SKILL.md, reference copy),
   reject, mute and unmute.
 
-### Changed (R2 check fixes, 2026-09-30)
-- R2F-N4: `sibyl skills signals` help and status say the record keeps tool and MCP server names
+### Changed (2026-09-30)
+- `sibyl skills signals` help and status say the record keeps tool and MCP server names
   (the Claude Code transcript names MCP tools `mcp__<server>__<tool>`), not tool names only;
   README row and the repo README row the same.
-- The Stop hook is now the only recorder of Claude Code tool events when it is wired (mcp 0.4.0
-  R2F-2); nothing changes in the hook itself. Suite 456 passed.
+- The Stop hook is now the only recorder of Claude Code tool events when it is wired (mcp 0.4.0); nothing changes in the hook itself. Suite 456 passed.
 
 ### Tiered retrieval and relations (graph line, built 2026-10-22)
 
-### Changed - Adoption edge outcomes (V1 panel theme A, 2026-10-22)
+### Changed - Adoption edge outcomes (2026-10-22)
 - `sibyl memory adopt` reports links that were already in the account (not copied
   twice) and links held back because their endpoint name exists in the account both
   as itself and as `(before sign-in)` with no record of which one they meant (up to 5
   listed, with how to clear them). A re-run with only held links says so instead of
   "nothing to move".
 
-### Fixed - release train (V1 panel B, 2026-10-22)
+### Fixed - release train (2026-10-22)
 - `version = "0.6.0"`, requires `sibyl-memory-client>=0.10.0`,
   `sibyl-memory-hermes>=0.6.0` and (extra `mcp`) `sibyl-memory-mcp>=0.4.0`. README:
   upgrade the packages together (`sibyl update --apply`).
 - The version pin test moves to 0.6.0 (`test_package_version_is_0_6_0`).
 
-### Changed - bundled procedures v1.2.0 (tiered-retrieval section 3, 2026-10-22)
+### Changed - bundled procedures v1.2.0 (2026-10-22)
 - `sibyl setup` / the lifecycle screens now report "procedures v1.2.0" (client SAVE.md
   agent guidance: which tier to write, links with the node, read top-down). No CLI code
   change; the lifecycle test pin moves 1.1.0 -> 1.2.0.
@@ -233,7 +228,7 @@ this release (operator 2026-09-29).
   [--relation R ...] [--direction out|in|both] [--tier T] [--limit N] [--cursor C]`:
   read-only listing of one node's edges, tenant-resolved like `list` / `search` / `recall`.
 
-## [0.5.0] - Unreleased
+## [0.5.0] - 2026-10-14
 
 ### 2026-10-14 - Pre-release cleanup
 - `sibyl migrate` tells Hermes users to run `sibyl setup hermes` instead of editing
@@ -252,10 +247,10 @@ this release (operator 2026-09-29).
   applicable tax at sibyllabs.org/checkout followed by `sibyl claim`), or free Pro while 100,000 $SIBYL stays
   staked. It no longer mentions a quarterly USDC plan.
 - Comments, docstrings, test file names and this CHANGELOG describe each finding by what it fixed
-  instead of naming testers or internal QA rounds. Text and test file names only; no code changed.
+  instead of by internal labels. Text and test file names only; no code changed.
 
 ### 2026-10-10 - sign-in and display fixes
-- F-1 (contract C1): the api's 401 `signed_out_on_claim` (this computer was signed out when the
+- The api's 401 `signed_out_on_claim` (this computer was signed out when the
   account's email was first confirmed on the account page) is named everywhere the CLI used to
   say only "signed out · run sibyl init" or "session expired": the `sibyl status` Access row (from
   the gate's refresh) and server row, `sibyl email`, `sibyl email verify|add|confirm`, `sibyl
@@ -263,8 +258,8 @@ this release (operator 2026-09-29).
   when your email was confirmed on the account page (<date> UTC). run: sibyl init --force`, and
   the handoff is `next: sibyl init --force`. Any other 401 keeps its old line.
   `gate_http_line` / `gate_http_handoff` take the error body. Tests:
-  `tests/test_signin_display_fixes_2026_10_10.py` (F-1 block).
-- F-1a (contract C2): `sibyl init` with `cli_email_verify` on and the email unconfirmed sends the
+  `tests/test_signin_display_fixes_2026_10_10.py`.
+- `sibyl init` with `cli_email_verify` on and the email unconfirmed sends the
   code without the "confirm it now?" question; the only prompt is for the code (Enter skips).
   Every path that leaves the email unconfirmed (Enter at the code prompt, a wrong or failed code,
   no terminal, `--no-email`, and `cli_email_verify` off) prints `until you confirm your email
@@ -308,7 +303,7 @@ this release (operator 2026-09-29).
   Tests: `tests/test_version_2026_10_08.py`. Tester guide line: `sibyl --version` replaces `pip list`.
 
 ### Fixed (shown tier and plan end, 2026-10-08)
-- F1: every tier the CLI shows is the tier of this computer's current verified pass, the saved
+- Every tier the CLI shows is the tier of this computer's current verified pass, the saved
   credentials tier only when there is no valid pass (`_account_gate.display_tier` /
   `peek_tier`): `sibyl status` (LOCAL Tier row, the uncapped / percent-of-cap DB size, the
   local vs server drift check), the `sibyl init` "already activated" and "Activated." rows,
@@ -318,7 +313,7 @@ this release (operator 2026-09-29).
   `superseded by the access pass (checked ...)` instead of a second tier. `sibyl refresh` and
   the background re-check rewrite the saved tier (client `sync_credentials_tier`). Looking up
   the pass with no `entitlement.json` evaluates nothing, so it never leaves a file behind.
-- F2: the Access row says `active · re-checks in <h>h` (the pass re-check), not `renews in`,
+- The Access row says `active · re-checks in <h>h` (the pass re-check), not `renews in`,
   which read like a billing renewal. A `Plan` row under it shows the billing date from the
   pass's `acct.plan`: `Pro · ends 8 Oct 2027` (a cancellation, or a fixed term) or
   `Pro · renews 8 Oct 2027` (a renewing card plan), in local time; no row when the server sends
@@ -327,23 +322,22 @@ this release (operator 2026-09-29).
 - Tests: `tests/test_tier_plan_2026_10_08.py` (+13); three label assertions updated to
   `re-checks in`. Suite: 911 passed (was 898).
 
-### Changed (web-first onboarding QA patch, 2026-10-08)
-Decision D21 of onboarding-friction-final-analysis-2026-10-08 (findings F7, F12, P1). Messages
-only: flows, exit codes, streams and JSON keys are unchanged.
-- F7: after `Activated.`, `sibyl init` ends `next: sibyl status` instead of `next: sibyl setup`
+### Changed (web-first onboarding, 2026-10-08)
+Messages only: flows, exit codes, streams and JSON keys are unchanged.
+- After `Activated.`, `sibyl init` ends `next: sibyl status` instead of `next: sibyl setup`
   when an agent on this computer is already wired (the installer runs `sibyl setup` before
   `sibyl init`, so this is the common case). The check is the one `sibyl email confirm` already
-  uses (row E24: Hermes or Codex config, or `sibyl-memory` in `~/.claude.json` or
+  uses (Hermes or Codex config, or `sibyl-memory` in `~/.claude.json` or
   `~/.claude/settings.json`; file reads only, no subprocess). When wired, `later: sibyl setup`
   is no longer queued behind `sibyl email add <address>` or `sibyl email verify`. With nothing
   wired the output is unchanged.
 - Tests: seven new init rows (old api, verified, email required with none, unverified required
   and not required, email confirmation not open, Codex wired), each with a harness wired.
-- P1: the approve hint under the code reads "already have a Sibyl Memory account (website or
+- The approve hint under the code reads "already have a Sibyl Memory account (website or
   another computer)? approve this one at <url> instead (sign in there, then type this code)".
   The account may exist only on the website, so "already set up with this email on another
   computer?" was the wrong question.
-- F12: with `features.device_approval` on, the `ask your human:` line printed while `sibyl init`
+- With `features.device_approval` on, the `ask your human:` line printed while `sibyl init`
   waits puts the likeliest path first: "if you already have a Sibyl Memory account, approve this
   computer at <url> with the code <code>; otherwise open <activation page> and sign in with email
   plus that code, a desktop wallet, or USDC from a mobile wallet; I pick it up here". An agent
@@ -353,16 +347,16 @@ only: flows, exit codes, streams and JSON keys are unchanged.
 - The "wire it into your agent" block after `Activated.` no longer tells people to hand-edit
   `~/.hermes/config.yaml`, `pip install sibyl-memory-mcp` or import the provider by hand (it
   contradicted the install flow: installer, then `sibyl setup`, then `sibyl init`, and the
-  dd0ce76 Hermes fix). With nothing wired it is one line, "wire it into your agent: sibyl setup
+  Hermes setup fix). With nothing wired it is one line, "wire it into your agent: sibyl setup
   (wires Claude Code, Codex and Hermes)", and the handoff stays `next: sibyl setup`. With an
-  agent already wired (the F7 check) nothing is printed and the handoff ends
+  agent already wired (the check above) nothing is printed and the handoff ends
   `next: sibyl status`. Two new tests cover both cases and the absence of the old commands.
 
 ### Fixed (agent handoff check, 2026-10-07)
-Findings of the adversarial check of the handoff build (no loop left for an agent that follows
+Findings of an independent check of the handoff build (no loop left for an agent that follows
 only `next:`). Messages only: flows, exit codes, streams and JSON keys are unchanged.
 - Email, when the api does not take confirmation from the terminal (`features.cli_email_verify`
-  absent or false, row E11): `sibyl init` and the `sibyl email` state no longer hand back
+  absent or false): `sibyl init` and the `sibyl email` state no longer hand back
   `sibyl email add <address>` (which could only fail with `not_open` and ask for the address
   again). They ask the person to add and confirm the email at the account page; init ends
   `next: sibyl setup` with `later: sibyl email`, `sibyl email` ends `next: done`.
@@ -373,24 +367,23 @@ only `next:`). Messages only: flows, exit codes, streams and JSON keys are uncha
   `next: sibyl status`). An already-wired harness gets no restart ask; only a changed one does.
 - `sibyl update --apply`: a non-zero pip exit ends `next: done` with "pip exited N upgrading the
   packages (output above); tell me what it said", instead of `next: retry`.
-- `sibyl logout` (rows O1 to O3) ends `next: done` with `later: sibyl init`: signing out no
+- `sibyl logout` ends `next: done` with `later: sibyl init`: signing out no
   longer starts a sign-in.
 - File labels in `sibyl debloat apply|auto|undo` handoffs, the undo hint and the migrate
   "not trimmed" line are shell-quoted, so a label with a space still runs verbatim.
-- Tests: the convention lint sweep now covers memory search and recall, adopt A3/A4/A6/A7,
-  debloat auto, manual and undo, skills install, update --apply (pip failed, pip missing, pipx,
-  upgraded), setup X4 and X6 to X16 through the real wirers, migrate N3 to N10 through
-  `cmd_migrate`, health H1c/H2c, plus the E11 email and logout rows; each new scenario also
+- Tests: the convention lint sweep now covers memory search and recall, adopt, debloat auto,
+  manual and undo, skills install, update --apply (pip failed, pip missing, pipx, upgraded),
+  setup through the real wirers, migrate through `cmd_migrate`, health, plus the email and
+  logout cases above; each new scenario also
   asserts it reached the path it is named for. Suite: 879 passed, 1 skipped (the installed
   Claude Code binary contract test, which skips without `claude` on PATH).
 
 ### Added (agent handoff messages, 2026-10-06)
-Spec agent-handoff-messages-spec-2026-10-03 (section 2 rows I, E, U, K, S, R, H, W, D, O, V, A,
-F, G, P, T, Y, Z, X, N). Messages only: no flow, command, exit code or server contract changes.
+Messages only: no flow, command, exit code or server contract changes.
 - Every stop of a `sibyl` command ends with the handoff block, on stdout, TTY or not: zero or
   more `later: <command>`, at most one `ask your human: <sentence>`, then `next: <command>`
   (or `done`, `retry`, `retry in N minutes`), always the last line. Plain text at column 0, no
-  glyph, no colour. A placeholder (`<code>`, `<address>`, `<index>`, `<cs_code>`, `<file>`) only
+  glyph, no color. A placeholder (`<code>`, `<address>`, `<index>`, `<cs_code>`, `<file>`) only
   appears with the `ask your human:` line that names it.
 - Waits print `ask your human:` and `waiting: <what> (up to m:ss)` once when the watching
   starts: `sibyl init` (the bind, the computer-limit sign-out, device approval) and
@@ -409,7 +402,7 @@ F, G, P, T, Y, Z, X, N). Messages only: no flow, command, exit code or server co
   trim lines of the guided migration.
 - Setup with nothing detected: `later: sibyl setup <target>`, the question, `next: sibyl status`.
 
-### Fixed (agent handoff messages, 2026-10-06; spec section 5.3)
+### Fixed (agent handoff messages, 2026-10-06)
 - `sibyl setup` with two or more harnesses detected, no `--yes` and no terminal no longer raises
   a traceback at the picker: it wires all detected, as `--yes` does, and says so.
 - `sibyl save --fact` on a full free cap prints the cap line (`later: sibyl upgrade`,
@@ -432,13 +425,13 @@ F, G, P, T, Y, Z, X, N). Messages only: no flow, command, exit code or server co
   736 passed (453 before).
 
 ### Changed (tier convention, 2026-10-05)
-Spec tier-convention-spec-2026-10-05 section 5 (same coordinated release; version unchanged).
+Same coordinated release; version unchanged.
 - `sibyl status` prints the tier as Free / Pro / Elite (local and server view, through the
   client's shared `tiers` module); a legacy local label (stake) next to the server's canonical
   one (pro) is no longer reported as drift. The computers line names the plan (`1 of 10 (Elite)`)
   and the size line uses `tiers.is_paid`. Other tier lines (`init`, `whoami`, `claim`, `upgrade`)
   keep their upper-case style but map legacy labels to the canonical word.
-- Access row for an unrecognised signed label: `active · access label "<raw>" is not recognised
+- Access row for an unrecognized signed label: `active · access label "<raw>" is not recognized
   by this version, treated as Free (tier_unknown) · run sibyl update`; a 503 `tier_unknown` from
   the server reads `renewal paused · access label check (tier_unknown) · keep working; it retries
   on its own` and keeps the last valid token.
@@ -451,8 +444,8 @@ Spec tier-convention-spec-2026-10-05 section 5 (same coordinated release; versio
   `test_f11_paid_tier_literal_matches_the_client` compares against `tiers.PAID_TIERS` and a sibling
   covers elite / " Elite " / gold claims. Suite 437 -> 453.
 
-### Added (paid tier R1, 2026-09-29, R1B-2)
-Plan plugin-paid-tier-2026-09-29, operator defaults D1-D15 (same coordinated release; version unchanged).
+### Added (automatic save and skill proposals, 2026-09-29)
+Same coordinated release; version unchanged.
 - The Claude Code Stop hook asks for a headless save by ACTIVE time on Pro: once early (5 memory
   writes or a compaction), then every 60 active minutes (`sibyl autosave`), at most 8 a session and
   12 a day, only with something to save. Each request is numbered ("save 2 of this session") so
@@ -478,7 +471,7 @@ Plan plugin-paid-tier-2026-09-29, operator defaults D1-D15 (same coordinated rel
   `1 of 1 (Free) · Pro: up to 10`; the read-only access row names the computer limit.
 - Codex AGENTS.md block: obey a Sibyl Memory `notice` asking for a save.
 
-### Fixed (paid tier R1 check, 2026-09-29, R1B-4)
+### Fixed (automatic save check, 2026-09-29)
 - Over-the-limit copy says new memories save only on "the computer that signed in most recently"
   (the server keeps the newest sign-in writable), not "the most recently used computer".
 - The device-limit prompt no longer offers to "sign out ... and use this computer instead": this
@@ -487,7 +480,7 @@ Plan plugin-paid-tier-2026-09-29, operator defaults D1-D15 (same coordinated rel
 - Stop hook: an automatic-save request is recorded (per-session and per-day caps, the interval)
   only when it is emitted; one suppressed by the transcript guard costs nothing and the next one is
   numbered past it. A compaction makes only its own session due (the per-session
-  `compaction_seen`); the write count stays the account's (plan D6.5).
+  `compaction_seen`); the write count stays the account's.
 
 One coordinated release with the accounts page. Two things change for users:
 every Sibyl Memory account needs a confirmed email for receipts, security
@@ -496,7 +489,7 @@ activated account is now required for agents to use memory** (MCP, Hermes,
 LangGraph, the SDK). This is a FIVE-package release, not the CLI-only publish
 this entry first described: `sibyl-memory-client` 0.9.0, `sibyl-memory-hermes`
 0.5.0, `sibyl-memory-mcp` 0.3.0, `sibyl-memory-langgraph` 0.3.0 and this CLI
-(the number stays 0.5.0, decision D8). Floors: `client>=0.9.0`,
+(the number stays 0.5.0). Floors: `client>=0.9.0`,
 `hermes>=0.5.0`, `mcp>=0.3.0` (extra), so a partial upgrade cannot pair a gated
 adapter with an un-gated engine. `credentials.json` schema is unchanged; a new
 `entitlement.json` sits beside it. After a confirm the credentials file is
@@ -505,26 +498,26 @@ the old signature (see Security). `sibyl memory` never needs an account.
 Verified in a fresh venv with the five built wheels against hermes-agent 0.19.0
 (current on PyPI at build).
 
-### Added (save and debloat, 2026-09-27, SD-2)
-Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unchanged).
+### Added (save and debloat, 2026-09-27)
+Same coordinated release; version unchanged.
 - `sibyl save` (`--fact`, `--capsule` on Pro, `--preview`, `--status`; bare prints the three
   ways to run the save procedure and writes nothing).
 - `sibyl debloat` (report, `--fyi`, `--json` with the plan when a policy exists, `--root`,
   `--config`, `--include`; always exits 0), `sibyl debloat plan`, `apply [<file>] [--yes]`
   (free: sibling `*-history` file; Pro: a memory reference document; a verified backup first),
-  `auto <file>` / `manual <file>` (the standing per-file authorisation), `undo [<file>]`.
+  `auto <file>` / `manual <file>` (the standing per-file authorization), `undo [<file>]`.
 - `sibyl skills install|status|reset|uninstall`, `sibyl reminders on|off|quiet`, and
   `sibyl hook <event>` (installed by setup; not for manual use).
 - `sibyl setup` / `sibyl migrate` wiring: Claude Code gets `~/.claude/skills/sibyl-save` and
   `sibyl-debloat` plus five hooks in `~/.claude/settings.json` (SessionStart, UserPromptSubmit,
   Stop, PreCompact, SessionEnd; absolute `sibyl` path; timeout 5 s; merged without touching
   any other hook); Codex gets a marked block in `~/.codex/AGENTS.md` (no custom-prompt files:
-  Codex CLI 0.135.0 has no `~/.codex/prompts` loader, spec D9 fallback); Hermes gets
+  Codex CLI 0.135.0 has no `~/.codex/prompts` loader); Hermes gets
   `$HERMES_HOME/skills/`. `sibyl init` installs the procedures right after `entitlement.json`;
   `sibyl update --apply` refreshes them. `sibyl status` gains the `lifecycle` rows.
 - The Claude Code hooks: free = reminders (debloat FYI and unsaved-last-session at start,
   save-due on a prompt); Pro = the start runs the debloat plan and reports, Stop asks the model
-  to run the save procedure headless (R1: by active time, see above; at 5 writes or after a compaction; never
+  to run the save procedure headless (by active time, see above; at 5 writes or after a compaction; never
   on `stop_hook_active`; never twice), PreCompact and SessionEnd write the session capsule.
   Output shapes verified against Claude Code 2.1.283's hook schemas.
 
@@ -539,10 +532,10 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
 ### Tests (save and debloat)
 - `test_lifecycle_cli_2026_09_27.py` 32, `test_migrate_trim_2026_09_27.py` 9; three existing
   tests adjusted for the per-file trim records and the trim safety bounds (test_orchestrator,
-  test_prelaunch_fixes CLI-9, test_setup no-op). `tests/smoke/venv-compat.sh` gains the
+  test_prelaunch_fixes, test_setup no-op). `tests/smoke/venv-compat.sh` gains the
   save/debloat checks.
 
-### Fixed (second independent check of save and debloat, 2026-09-27, SD-11 to SD-13)
+### Fixed (second independent check of save and debloat, 2026-09-27)
 - A symlinked folder above an instruction file no longer disables debloat (Fedora Atomic's
   `/home -> var/home`, a stow-style `~/.claude -> ~/dotfiles/claude`, a project opened through a
   link): the file is trimmed at its real location, never written through the link. `--root` is
@@ -556,8 +549,8 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
 - `test_sd_final_cli_2026_09_27.py` (5): `--root` through a symlink, `auto` stores the real path,
   a stow `~/.claude` free apply, bare undo across two projects, a record without an id.
 
-### Fixed (independent check of save and debloat, 2026-09-27, SD-7 to SD-10)
-- `sibyl debloat auto <file>` authorises that file at its path ("Automatic context trim for this
+### Fixed (independent check of save and debloat, 2026-09-27)
+- `sibyl debloat auto <file>` authorizes that file at its path ("Automatic context trim for this
   file at <path> means: ..."); `manual` takes a name or a path; name-only entries from the earlier
   build are dropped with a one-time notice (`sibyl debloat`, `sibyl status`).
 - `sibyl debloat undo` restores the backup the file's last apply recorded and refuses one that is
@@ -582,10 +575,10 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
 
 ### Tests (independent check of save and debloat)
 - `test_sd_fixes_cli_2026_09_27.py`; adjusted `test_lifecycle_cli_2026_09_27.py` (per-path
-  authorisation, warm tier cache for Pro hook writes, the guarded hook command, Codex skills) and
+  authorization, warm tier cache for Pro hook writes, the guarded hook command, Codex skills) and
   `test_migrate_trim_2026_09_27.py` (pointer text).
 
-### Fixed (independent check fix batch, 2026-09-27, GATE-15)
+### Fixed (independent check fixes, 2026-09-27)
 - `_bearer_headers` (used by `/access`, `/email-verify/request`,
   `/email-verify/confirm`, `/upgrade-nonce`, `/stripe-claim`) now refreshes
   first when this computer holds no usable token (the same ensure-fresh path
@@ -628,11 +621,11 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
   the `entitlement` the api sends next to `credentials` on `/check`, right after
   credentials.json, and drops a token bound to a previous sign-in. An api that
   sends none prints nothing new; the client bootstraps on first use. A
-  malformed value (not a string, over 4096 bytes, not SE1-shaped) is ignored.
+  malformed value (not a string, over 4096 bytes, not in the signed token format) is ignored.
 - `sibyl email confirm` writes the re-issued `entitlement` from the confirm
   answer (the account state inside it must not lag a week).
 - Every session-authenticated call carries `X-Sibyl-Entitlement` when this
-  computer holds a verified, bound token inside its offline grace (spec 5.6);
+  computer holds a verified, bound token inside its offline grace;
   a token the api would refuse is never sent. `sibyl claim` now sends the
   bearer headers too.
 - `sibyl devices`, `sibyl devices revoke` and the logout revoke: with no
@@ -647,7 +640,7 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
   in <h>h`, `offline · <n> days of grace left · connect once to renew`,
   `paused · offline too long ...`, `signed out · run sibyl init`, `under review
   · email sibyl@sibyllabs.org`, ...); when the server is unreachable, the
-  account rows from the last check-in labelled `as of <date>`; with no
+  account rows from the last check-in labeled `as of <date>`; with no
   credentials, "agents cannot use memory until you do. your local data is
   kept."; a count-only hint when the default store holds entities under the
   pre-account default tenant.
@@ -805,8 +798,7 @@ so anything parsing this command's output should read this entry.
   verdict that is never populated.
 
 ### Changed
-- **`sibyl memory search` explains a zero instead of just reporting one** (branch
-  `lang-core-verdict`, 2026-08-31). It used to print `(no matches for 'x')` and
+- **`sibyl memory search` explains a zero instead of just reporting one** (2026-08-31). It used to print `(no matches for 'x')` and
   stop — the terminal-shaped version of the defect this stage closes, and the
   reader is usually a new user deciding whether the product works. Saying "no
   matches" against a store that is simply EMPTY was the single most misleading
@@ -821,28 +813,27 @@ so anything parsing this command's output should read this entry.
 
 ### Changed
 - Require `sibyl-memory-client>=0.7.0` so `sibyl update` / a fresh install pulls
-  the multi-language search part-4 fixes (N4/N5/N1'-diagnostics: a nonzero-df
-  function word no longer anchors/pollutes ranking, a dropped negation word
+  the multi-language search part-4 fixes (a nonzero-df function word no longer anchors/pollutes ranking, a dropped negation word
   abstains instead of silently answering the opposite). No CLI code change.
-  See `sibyl-memory-client` 0.7.0 CHANGELOG for the full N4/N3'/N5/N1' detail.
+  See the `sibyl-memory-client` 0.7.0 CHANGELOG for the full detail.
 
 ## [0.3.22] - 2026-08-16
 
 ### Changed
-- Require `sibyl-memory-client>=0.6.1` so `sibyl update` pulls the multi-language search part-3 fixes (N1/N2/N3: the agent-default MCP path now reaches PL/EN recall parity on question-shaped queries). No CLI code change.
+- Require `sibyl-memory-client>=0.6.1` so `sibyl update` pulls the multi-language search part-3 fixes (the agent-default MCP path now reaches PL/EN recall parity on question-shaped queries). No CLI code change.
 
 ## [0.3.21] - 2026-08-12
 
 Multi-language search, part 2 (Polish-language evaluation) — CLI leg.
 
 ### Fixed
-- **F1 — `sibyl memory list/search/recall` read the wrong tenant on an
+- **`sibyl memory list/search/recall` read the wrong tenant on an
   activated account.** `cmd_memory` opened the store at the hard-coded
   `DEFAULT_TENANT` while the MCP server writes under the account's real tenant,
   so an activated account saw `(no entities)` / `(no matches)` for a perfectly
   healthy store — the surface that made the Polish eval first look like a recall
   failure before the linguistic gap was even reached. `cmd_memory` now resolves
-  the tenant from `credentials.json` via the same Contract-T ladder the server
+  the tenant from `credentials.json` via the same ladder the server
   uses (`tenant_id -> account_id -> DEFAULT_TENANT`, matching `server.py`), like
   `status`/`health` already did, with a call-time `--creds` default fallback so
   direct-`Namespace` unit invocations still resolve. Read-only; no write path
@@ -853,8 +844,8 @@ Multi-language search, part 2 (Polish-language evaluation) — CLI leg.
 
 ### Changed
 - **Dependency floor raised to `sibyl-memory-client>=0.6.0`.** `sibyl memory
-  search` / `sibyl recall` now inherit the F2 unconditional-shadow append and
-  the D2L coverage-gated stem rescue, taking Polish recall to parity with
+  search` / `sibyl recall` now inherit the unconditional search-shadow append
+  and the coverage-gated stem rescue, taking Polish recall to parity with
   English on the eval battery (see `sibyl-memory-client` 0.6.0). No CLI code
   change for this leg.
 
@@ -869,11 +860,10 @@ Multi-language search, part 2 (Polish-language evaluation) — CLI leg.
 
 ## [0.3.19] - 2026-07-05
 
-Super-patch: recovery + adjudication of the remaining Fable 10-lens audit
-findings (`plugin-hardening-superpatch-plan-2026-07-05.md`).
+Hardening release: fixes for the remaining findings of a pre-publish audit.
 
 ### Fixed
-- **`sibyl logout` never revoked the server-side bearer (Real #4).** The
+- **`sibyl logout` never revoked the server-side bearer.** The
   account bearer has no server-side expiry, so a logout that only unlinked
   local credentials left the token valid forever. `logout` now revokes
   THIS device's bearer first, reusing the exact endpoint + auth shape
@@ -884,8 +874,7 @@ findings (`plugin-hardening-superpatch-plan-2026-07-05.md`).
   device's server record, prints the same offline caveat
   (`sibyl devices revoke` from another device) instead of blocking local
   logout, which still proceeds unconditionally.
-- **`credentials.json` dropped the server-issued `tenant_id` (Contract
-  T).** `cmd_init`'s field allowlist (`_CRED_FIELDS`) omitted `tenant_id`,
+- **`credentials.json` dropped the server-issued `tenant_id`.** `cmd_init`'s field allowlist (`_CRED_FIELDS`) omitted `tenant_id`,
   so every activated account silently fell back to the shared
   `DEFAULT_TENANT` on every surface (client/mcp/hermes/langgraph) instead
   of resolving to its own tenant. `tenant_id` is now persisted alongside
@@ -896,8 +885,8 @@ findings (`plugin-hardening-superpatch-plan-2026-07-05.md`).
 ### Changed
 - Packaging: added the `Repository` URL
   `https://github.com/Sibyl-Labs/Sibyl-Memory` to `[project.urls]`
-  (previously omitted) (R27), and bounded the third-party `pyyaml`
-  dependency to `>=6.0,<7` (R29).
+  (previously omitted), and bounded the third-party `pyyaml`
+  dependency to `>=6.0,<7`.
 
 ## [0.3.18] - 2026-06-30
 
@@ -959,7 +948,7 @@ Pre-launch security audit hardening.
 
 ### Fixed
 
-- **Bearer token printed to the terminal (red-team F3, 2026-06-17).** `sibyl upgrade`
+- **Bearer token printed to the terminal (security review, 2026-06-17).** `sibyl upgrade`
   and `sibyl dashboard` printed the full session bearer inside the opened URL to
   stdout (terminal scrollback / tmux / CI logs / screen-shares), violating this
   package's own "session_token is never printed in full" rule. They now print only
@@ -976,10 +965,10 @@ Pre-launch security audit hardening.
   agent: `list [category]`, full-text `search <query>` across all tiers, and
   `recall <category> <name>`. Opens the resolved DB read-only via the SDK (never
   writes) and respects `--db`, so you can inspect any split-brain store that
-  `sibyl status` surfaces. (big-patch PKG-4) Regression test:
+  `sibyl status` surfaces. Regression test:
   `tests/test_memory_cmd_2026_06_16.py` (6 cases).
 
-## [0.3.14] — 2026-06-11
+## [0.3.14] (not published) — 2026-06-11
 
 ### Added
 
@@ -993,7 +982,7 @@ Pre-launch security audit hardening.
   a warning explains that memory is not shared across entry points and how to
   point them at one path. Discovery creates and moves nothing — path
   unification is a separate, migration-gated change. Regression test:
-  `tests/test_status_stores_2026_06_11.py` (4 cases). (big-patch PKG-2/PKG-3)
+  `tests/test_status_stores_2026_06_11.py` (4 cases).
 
 ## [0.3.13] — 2026-06-11
 
@@ -1007,7 +996,7 @@ Pre-launch security audit hardening.
   or a non-object top level; an empty file is still treated as legitimately
   empty. The same fail-fast applies to a valid-but-non-mapping Hermes YAML
   config. `current_state()` now surfaces `settings_parse_error` instead of
-  swallowing it. (bugflow)
+  swallowing it.
 - **`sibyl status` crashed with a TypeError whenever a tier cache existed.**
   `cmd_status` sliced `checked_at` with `[:19]`, but `_capcheck` writes
   `checked_at` as epoch seconds (float), so every `sibyl status` run with a
@@ -1015,7 +1004,7 @@ Pre-launch security audit hardening.
   `TypeError: 'float' object is not subscriptable`. The value is now rendered
   via `time.strftime` when numeric and passed through (truncated to 19 chars)
   when it is already an ISO string; missing or null renders as `?`. Validated
-  against float, ISO-string, missing, null, and zero inputs. (bugflow)
+  against float, ISO-string, missing, null, and zero inputs.
 
 ## [0.3.12] — 2026-06-05
 
@@ -1028,7 +1017,7 @@ Pre-launch security audit hardening.
   with no way forward. Added `--force` to `sibyl migrate`, threaded through
   `cmd_migrate` → `run_guided_setup(force=)` → `wire(force=force)`, so migration
   can overwrite an existing provider when the user explicitly opts in.
-  Regression coverage: `tests/test_migrate_force_2026_06_05.py`. (bugflow)
+  Regression coverage: `tests/test_migrate_force_2026_06_05.py`.
 
 ## [0.3.11] — 2026-06-01
 
@@ -1038,7 +1027,7 @@ Pre-launch security audit hardening.
   `mkdir(mode=0o700)` is a no-op when the directory already exists, so a dir
   created earlier at 0755 kept loose permissions on the credentials directory.
   `os.chmod(~/.sibyl-memory, 0o700)` is now applied explicitly after mkdir.
-  (security; beta report dor_alpha)
+  (security; beta report)
 - **Claude Code MCP registration could report false success.**
   `claude mcp add --scope user` returning exit 0 did not guarantee the server
   showed up in `claude mcp list`. The wirer now verifies via `claude mcp get`
@@ -1144,12 +1133,36 @@ wrote a config entry pointing at the binary without checking it existed.
 The Hermes wirer had self-heal (`_install_plugin()`); the Claude Code and
 Codex wirers did not.
 
+## [0.3.7] — 2026-05-22
+
+### Added
+
+- `sibyl setup codex`: wires Sibyl Memory into Codex by adding a
+  `[mcp_servers.sibyl_memory]` table to `~/.codex/config.toml` (atomic write,
+  `.bak` backup, your other tables and comments kept, a different
+  `sibyl_memory` table is not overwritten without `--force`). Bare
+  `sibyl setup` also detects Codex. New `--codex-config` flag.
+
+### Fixed
+
+- `sibyl setup claude-code` wrote the MCP server to `~/.claude/settings.json`,
+  which Claude Code does not read for MCP servers, and reported success. It now
+  writes `~/.claude.json`. `--claude-settings` still overrides the path.
+
+## [0.3.6] — 2026-05-22
+
+### Added
+
+- `sibyl update`: checks the installed Sibyl Memory packages against PyPI and
+  prints the exact upgrade command. `--apply` runs the upgrade (pipx, venv and
+  PEP 668 aware), `--json` prints machine-readable output. Exit 0 when current,
+  2 when an update is available.
+
 ## [0.3.5] — 2026-05-21
 
 Permanent fix for the silent-success activation foot-gun. 0.3.4 raised the
 CLI poll to 30min and the server pairing TTL to 30min so the two windows
-matched. Operator pushed back: matching constants is a temporary fix that
-re-opens the moment either side moves. The structural fix is one source of
+matched. Matching constants is a temporary fix that re-opens the moment either side moves. The structural fix is one source of
 truth.
 
 ### Changed
@@ -1191,22 +1204,19 @@ plugin just failed to load on the next run.
   silent-success failure mode and tells the user to run
   `sibyl init --force`. Earlier message just said "Re-run sibyl init."
 
-### Companion changes (same session)
+### Companion server changes
 
-- `api-sibyllabs/api/plugin/session-init.js`: `PAIRING_TTL_SECONDS` 15min →
-  30min.
-- `api-sibyllabs/api/plugin/email-bind.js`: error message for expired code
-  updated from "15 min limit" to "30 min limit" + `sibyl init --force`.
-- `sibyllabs/plugin/activate.html`: success modal gains a callout that
-  prompts the user to run `sibyl init --force` if their terminal already
-  showed the timeout message before they bound.
+- The server's pairing-code TTL rose from 15min to 30min.
+- The expired-code error now says "30 min limit" and points at
+  `sibyl init --force`.
+- The activation page's success modal prompts the user to run
+  `sibyl init --force` if their terminal already showed the timeout message
+  before they bound.
 
 ## [0.3.3] — 2026-05-20
 
-Auth subdomain migration. Operator directive: "make sure the temp links are
-being generated at install.sibyllabs.com/plugin/auth or something like this,
-and not sibyllabs.org/install." Surfaced as a trust + phishing-resistance ask
-for the URL that appears in the user's terminal at activation time.
+Auth subdomain migration, for trust and phishing resistance in the URL that
+appears in the user's terminal at activation time.
 
 ### Changed
 
@@ -1215,13 +1225,12 @@ for the URL that appears in the user's terminal at activation time.
   query-string (`?session=<uuid>`) to bare path (`/<uuid>`). The terminal
   output now reads `Opening https://auth.sibyllabs.org/<short-uuid>` —
   shorter, line-wraps less on narrow terminals, easier to verify visually.
-- The Vercel rewrite on `auth.sibyllabs.org` serves the same `/plugin/activate`
+- A rewrite on `auth.sibyllabs.org` serves the same `/plugin/activate`
   page but preserves the user-visible URL, so the wallet popup's "X wants you
   to sign in" header matches the URL bar. Phishing-conscious wallets (Rabby,
   MetaMask in security mode) skip the domain-mismatch warning.
-- Companion api-sibyllabs change (same session): `bind.js` SIWE
-  `expectedDomains` allowlist now includes `auth.sibyllabs.org` alongside
-  `sibyllabs.org` and `sibylcap.com`.
+- Companion server change: the SIWE domain allowlist now includes
+  `auth.sibyllabs.org`.
 
 ### Backward compatibility
 
@@ -1236,10 +1245,7 @@ base hostname (sibyllabs.org subdomain → path; everything else → query).
 
 ## [0.3.2] — 2026-05-20
 
-Branding pass on the banner. Operator directive: "beneath the large
-SIBYL title it needs to say underneath the memory you can hold in
-your hand tagline, 'a Sibyl Labs LLC Product. Agentic Infrastructure
-and Memory Products' or something similar."
+Branding pass on the banner: an attribution line under the tagline.
 
 ### Changed
 
@@ -1250,14 +1256,10 @@ and Memory Products' or something similar."
   hierarchy reads SIBYL > tagline > attribution at a glance. Plain-text
   fallback also includes the line for non-color terminals.
 
-Preview captures at https://sibylcap.com/hud-2026-05-20 (scene 09
-isolates the banner; scenes 01 + 05 show it inline with the rest of
-the activation and install ceremonies).
-
 ## [0.3.1] — 2026-05-20
 
-Operator-directed tuning: "typical app patterns — heavy menus on
-install window and initial setup, light on dashboards etc." v0.3.0
+Tuning toward typical app patterns: heavy menus on the install window
+and initial setup, light on dashboards. v0.3.0
 applied the full section_header treatment uniformly across every
 subcommand. v0.3.1 lightens the daily-use dashboards and keeps the
 ceremony reserved for activation moments.
@@ -1280,7 +1282,7 @@ ceremony reserved for activation moments.
 - `_aesthetic.py` library — unchanged. Applied differently across
   commands per the heavy/light convention.
 
-## [0.3.0] — 2026-05-20
+## [0.3.0] (not published) — 2026-05-20
 
 Visual identity pass across every subcommand. The `sibyl init` brand
 moment (the SIBYL ASCII wordmark with pale-gold → deep-ochre vertical
@@ -1291,7 +1293,7 @@ to the whole surface.
 ### Added
 
 - New `_aesthetic.py` module — shared visual library for the entire CLI.
-  Brand palette derived from the rule 46 creme paper face (PAPER, INK,
+  Brand palette derived from the Sibyl Labs creme paper palette (PAPER, INK,
   ACCENT, JADE, PULSE, RULE, etc.). 24-bit truecolor → 256-color → plain
   text degradation cascade. Letter-spaced eyebrows, gradient titles,
   ASCII rule dividers, key/value rows, status chips with success/warn/
@@ -1330,7 +1332,7 @@ to the whole surface.
   consistency (COLORTERM=truecolor, TERM_PROGRAM whitelist, TERM
   pattern match for kitty/alacritty/256color).
 
-## [0.2.0] — 2026-05-19
+## [0.2.0] (not published) — 2026-05-19
 
 Auth-redesign wave 2 — account-surface CLI commands. Adds `sibyl whoami`
 for a one-line account summary (masked by default, `--full` opt-in) and
@@ -1357,7 +1359,7 @@ for a one-line account summary (masked by default, `--full` opt-in) and
 ## [0.1.4] — 2026-05-18
 
 Maximum-efficiency onboarding release. New `sibyl setup` command auto-detects
-agent frameworks on the user's machine and wires SIBYL as the memory provider
+agent frameworks on the user's machine and wires Sibyl Memory as the memory provider
 in one command. Replaces the prior three-step Hermes flow (`pip install
 sibyl-memory-hermes` + `sibyl-memory-hermes install-plugin` + manual
 `config.yaml` edit) with `sibyl setup`. Also handles Claude Code MCP wiring.
@@ -1374,7 +1376,7 @@ sibyl-memory-hermes` + `sibyl-memory-hermes install-plugin` + manual
 - **`sibyl setup hermes`** / **`sibyl setup claude-code`** — explicit targeting
   for power users (skips detection, wires only the named stack).
 - **Flags**: `--yes` (accept all defaults, still respects destructive-default-N
-  unless `--force` is also passed), `--force` (overwrite existing non-SIBYL
+  unless `--force` is also passed), `--force` (overwrite existing non-Sibyl
   configs), `--dry-run` (print intent without writing), `--hermes-home`,
   `--claude-settings` (override autodetect).
 - **Atomic writes + backups**: every config edit creates a `.bak` sibling
@@ -1438,17 +1440,17 @@ cross-tier search), `sibyl-memory-hermes` v0.3.1, `sibyl-memory-mcp` v0.1.1.
 
 ### Fixed
 
-- **C3** — `__version__` no longer hardcoded. Now sourced from
+- `__version__` no longer hardcoded. Now sourced from
   `importlib.metadata.version("sibyl-memory-cli")` with `+source` fallback.
   Same pattern as sibyl-memory-hermes v0.3.0+. Wheel and `__init__.py`
   can't drift.
-- **C3** — HTTP User-Agent header now built from the runtime
+- HTTP User-Agent header now built from the runtime
   `_client_version()` helper instead of the hardcoded `"sibyl-memory-cli/0.1.0"`.
   Server telemetry will see real versions, not the stale literal.
-- **C3** — `/api/plugin/session-init` payload's `client_version` field
+- `/api/plugin/session-init` payload's `client_version` field
   similarly switched from `__import__("sibyl_memory_cli").__version__` to
   the helper. Telemetry will accurately reflect 0.1.2+.
-- **C4** — post-activation message rewritten. Removed the fictional
+- Post-activation message rewritten. Removed the fictional
   `from hermes_agent import Agent; agent = Agent(memory=SibylMemoryProvider())`
   quickstart (the API never existed in any Hermes release). Replaced with:
   the real Hermes install flow (`sibyl-memory-hermes install-plugin` +
@@ -1457,21 +1459,21 @@ cross-tier search), `sibyl-memory-hermes` v0.3.1, `sibyl-memory-mcp` v0.1.1.
 
 ### Security
 
-- **SEC-2** — `write_credentials_atomic` now creates files at mode 0o600
+- `write_credentials_atomic` now creates files at mode 0o600
   set by the kernel at file-creation time via `os.open(O_WRONLY|O_CREAT|
   O_EXCL|O_NOFOLLOW, 0o600)`. Previously used `write_text()` then
   `os.chmod(0o600)`, leaving a world-readable window between syscalls every
   credential save. No race.
-- **SEC-1** (CLI-side mitigation) — the URL parameter handed to the
+- CLI-side mitigation: the URL parameter handed to the
   browser is now treated as an opaque pairing-session identifier, not as
   the long-lived bearer. After activation completes, the CLI prefers a
   server-issued `bearer_token` field from `/check` (post-fix server flow);
   if absent, falls back to the legacy session-echo flow. Full fix requires
-  the api-sibyllabs server-side change to issue a separate bearer; this
+  the server-side change to issue a separate bearer; this
   release prepares the CLI to consume it when the server-side lands.
   Internal variable renamed `session_token` → `session_id` in `cmd_init`
   to reflect the corrected meaning.
-- **SEC-11** — `read_credentials` refuses to follow symlinks.
+- `read_credentials` refuses to follow symlinks.
 
 ### Dependencies
 
@@ -1485,8 +1487,8 @@ cross-tier search), `sibyl-memory-hermes` v0.3.1, `sibyl-memory-mcp` v0.1.1.
 
 - **SIBYL wordmark banner** at the top of `sibyl init`. ANSI Shadow boxchars,
   24-bit truecolor vertical gradient flowing cream/white at the top through
-  warm gold to deep ochre at the bottom — aligned with the lab visual identity
-  per the operator's brand-discipline rule (creme palette, `--accent #8a6a2a`).
+  warm gold to deep ochre at the bottom — aligned with the Sibyl Labs visual identity
+  (creme palette, `--accent #8a6a2a`).
   Plus a tagline: "memory you can hold in your hand".
 
 ### Implementation notes
@@ -1510,16 +1512,16 @@ cross-tier search), `sibyl-memory-hermes` v0.3.1, `sibyl-memory-mcp` v0.1.1.
 `secrets.randbelow`), prints it in the terminal, and POSTs only its
 sha256 hash to `/api/plugin/session-init` BEFORE opening the browser.
 The code itself never leaves the user's machine until they type it
-into the browser's email panel. Replaces the earlier Resend-backed
-email magic-code flow, removing the external dependency entirely.
+into the browser's email panel. Replaces the earlier emailed
+magic-code flow, removing the external dependency entirely.
 
 The wallet (SIWE) path is unchanged — the pairing code only matters
 for the email panel.
 
 
 
-Initial release. Operator directive 2026-05-16: build the user-facing
-CLI + upgrade page so the SDK + payment-auth machinery has a front door.
+Initial release: the user-facing CLI and upgrade page, a front door for the
+SDK and payment-auth machinery.
 
 ### Added
 

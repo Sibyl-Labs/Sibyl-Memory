@@ -4,9 +4,19 @@ All notable changes to `sibyl-memory-hermes` are recorded here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning
 follows [SemVer](https://semver.org/).
 
+## [0.6.1] - 2026-11-19
+
+Documentation release. No code changes.
+
+### Changed
+- README: the Hermes plugin catalog install is marked as pending until the listing is live (the 0.6.0 page said it already worked).
+- README: benchmark citation now states the plugin's own result (95.1% on LongMemEval Oracle with Claude Sonnet 4.5, preference questions excluded) and dates the architecture's #2 ranking (April 2026).
+- README: paid-tier wording names Pro only; check-in cadence stated as about hourly on Free and daily on Pro.
+- Plugin manifest version bumped to 0.6.1.
+
 ## [0.6.0] - 2026-10-31
 
-One release: the paid tier R2 line, the shipped 0.9.0 family fixes it was built beside, the graph line (tiered retrieval and relations) and the release merge items below.
+One release: skill signals, the shipped 0.9.0 family fixes they were built beside, the graph line (tiered retrieval and relations) and the release merge items below.
 
 ### Release summary
 - Installable from the Hermes plugin catalog (`hermes-catalog/`).
@@ -24,9 +34,9 @@ One release: the paid tier R2 line, the shipped 0.9.0 family fixes it was built 
   `telemetry=(SIBYL_MEMORY_TELEMETRY == "1")`. README privacy disclosure and the catalog README updated.
 - Tests: `test_catalog_install_2026_10_22.py` (5, from the PR), `test_telemetry_default_off_2026_10_28.py` (5).
 
-### Paid tier R2: skill signals (built 2026-09-29)
+### Skill signals (built 2026-09-29)
 
-Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-client 0.10.0.
+Requires sibyl-memory-client 0.10.0.
 `plugin.yaml` version 0.6.0.
 
 ### Unchanged (tier convention, 2026-10-05; carried from 0.5.0)
@@ -44,8 +54,8 @@ Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-clie
   session key; shutdown flushes and the learner proposes the repeated sequence; canaries never on
   disk; free and recording off record nothing.
 
-### Changed (R2 check fixes, 2026-09-30)
-- R2F-N4 (README only): the signals file keeps tool and MCP server names in plain text.
+### Changed (skill signals, 2026-09-30)
+- README only: the signals file keeps tool and MCP server names in plain text.
 
 ### Tiered retrieval and relations (graph line, built 2026-10-22)
 
@@ -57,7 +67,7 @@ Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-clie
   `truncated: n`, `hint`, and `returned` / `tiers_hit` / `name_matches` describe what was
   returned.
 
-### Fixed - release train (V1 panel B, 2026-10-22)
+### Fixed - release train (2026-10-22)
 - `version = "0.6.0"`, requires `sibyl-memory-client>=0.10.0` (the provider uses the
   V1 search engine; 0.5.0 + client 0.9.0 is the published pair). README: upgrade the
   packages together (`sibyl update --apply`).
@@ -67,7 +77,7 @@ Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-clie
 ### Changed
 - README: the tier table gains the gated, name-first `search_multi_record(query,
   scope="graph")` row. The lifecycle test pins the bundled procedures at v1.2.0 (SAVE.md
-  agent guidance, client section 3).
+  agent guidance).
 
 ### Added
 - `provider.search_multi_record(..., scope="all", with_links=True)` passes both
@@ -81,11 +91,11 @@ Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-clie
 - `sibyl_search` caps each hit's `snippet` at 600 chars, matching the MCP
   server (the client snippet is now 40 tokens).
 
-## [0.5.0] - Unreleased
+## [0.5.0] - 2026-10-14
 
-Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.3).
+Account-gated release.
 
-### 2026-10-14 - Pre-release cleanup
+### Pre-release cleanup
 - Setup copy points at `sibyl setup hermes` everywhere (README, package docstring, the adapter,
   and step 1 of `install-plugin`'s next steps), instead of a hand edit of `config.yaml`. With
   `--hermes-home`, step 1 names the same home.
@@ -98,10 +108,10 @@ Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.3).
 - Comments, docstrings, test file names and this CHANGELOG describe each finding by what it fixed
   instead of naming testers or internal QA rounds. Text and test file names only; no code changed.
 
-### 2026-10-10 - sign-in and display fixes
+### Sign-in and display fixes (2026-10-10)
 - the installer's sign-in step no longer promises a mobile wallet path (USDC sign-in can
   be off): "sign in with email + code or a desktop wallet; sibyl init shows every path". The
-  provider relays the client's new `signed_out_on_claim` copy (F-1) as it relays every gate
+  provider relays the client's new `signed_out_on_claim` copy as it relays every gate
   message; no provider change.
 
 ### Fixed (shown tier, 2026-10-08)
@@ -111,7 +121,7 @@ Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.3).
 - Tests: `tests/test_health_tier_2026_10_08.py` (+3). Suite: 178 passed (was 175).
 
 ### Fixed (agent handoff check, 2026-10-07)
-- `install-plugin` (row H7): when `config.yaml` does not yet set `memory.provider: sibyl`, the
+- `install-plugin`: when `config.yaml` does not yet set `memory.provider: sibyl`, the
   block ends `next: sibyl setup hermes` (with `--hermes-home <path>` when the home is not the
   default one), which writes the line and asks for the restart, instead of asking the person to
   edit the YAML by hand. The provider check reads the line without PyYAML too, so an already
@@ -119,13 +129,13 @@ Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.3).
 - Tests: `tests/test_handoff_2026_10_03.py` (+2). Suite: 175 passed.
 
 ### Added (agent handoff messages, 2026-10-06)
-Spec agent-handoff-messages-spec-2026-10-03 (rows H1 to H9; needs sibyl-memory-client 0.9.0).
+Needs sibyl-memory-client 0.9.0.
 - Tool errors keep calling Hermes' `tool_error(msg)`, then parse the JSON it returns, add `next`
   and `human_action`, and re-dump (any keys `tool_error` adds are kept; a non-JSON return falls
   back to `{"error", "next", "human_action"}`). The `error` text is unchanged: the signed-out
   sentence for `no_account`, the exception's `summary` for the other codes.
 - `Sibyl provider not initialized` carries `next` `done` and "restart Hermes so the sibyl memory
-  provider loads". `CapExceededError` keeps the class-name-only `error` (SEC-10) and gains
+  provider loads". `CapExceededError` keeps the class-name-only `error` and gains
   `next` `sibyl upgrade` plus the cap sentence; other exception classes are unchanged.
 - The once-per-process signed-out WARNING ends with ` next: sibyl init`; the capsule log line
   ends with the entitlement code's `next:` when the reason is one.
@@ -141,14 +151,14 @@ Spec agent-handoff-messages-spec-2026-10-03 (rows H1 to H9; needs sibyl-memory-c
 - No code change: tier names are read through the client's shared `tiers` module (free / pro /
   elite, legacy labels as aliases). The `credentials.py` docstring now lists the canonical tiers.
 
-### Added (paid tier R1, 2026-09-29, R1B-3)
+### Added (automatic save, 2026-09-29)
 - Every turn and tool call counts active time; on Pro the next prefetch note carries the
   automatic-save request when due (once per interval). The Pro prompt block says to run the save
   procedure headless when a Sibyl Memory note asks.
 - Shutdown runs one local learner pass on Pro (skill proposals), inside the shutdown budget.
 
-### Added (save and debloat, 2026-09-27, SD-3)
-Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unchanged).
+### Added (save and debloat, 2026-09-27)
+Same coordinated release; version unchanged.
 - `system_prompt_block` coaches the save and debloat procedures (the canonical paths, the SDK
   tools); the Pro variant differs by one line.
 - On Pro: `initialize` runs the debloat plan for the home and cwd in a daemon thread;
@@ -163,11 +173,11 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
 ### Tests (save and debloat)
 - `test_lifecycle_hermes_2026_09_27.py` 8. Verified hermes-agent for this build: 0.19.0.
 
-### Fixed (independent check of save and debloat, 2026-09-27, SD-7)
+### Fixed (save and debloat, 2026-09-27)
 - The adapter enables write counting on its client (`enable_lifecycle_counting`); the SDK alone no
   longer counts. Automatic trims are matched per file path (client).
 
-### Changed (independent check fix batch, 2026-09-27, GATE-15)
+### Changed (account gate, 2026-09-27)
 - The adapter logs ONE line (WARNING, so it shows at the default log level;
   it is information, not a fault) when the client moved rows written before
   sign-in into the account: "Sibyl memory: N memories written before sign-in
@@ -181,12 +191,12 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
   from the background `sync_turn`: both fail before; no line without
   pre-sign-in rows: a guard, passes before and after).
 
-### Tests (gate fix before the independent check, 2026-09-27)
+### Tests (account gate, 2026-09-27)
 - conftest: the network guard is installed at import and every test fails if
   it attempted a non-loopback connection or lookup, even one it caught;
   `test_network_guard_2026_09_27.py` proves the guard. No hermes code change;
   a new client refusal reason, `setup_incomplete`, reaches the tool error text
-  through the existing section 8 copy path.
+  through the existing gate-message copy path.
 
 ### Changed
 - **An account is required for memory.** `SibylMemoryProvider` always builds
@@ -235,7 +245,7 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
 
 ### Fixed
 - User-facing copy corrected from 2 MB to 5 MB to match the free-tier cap
-  raised in `sibyl-memory-client` 0.5.0. No behaviour change.
+  raised in `sibyl-memory-client` 0.5.0. No behavior change.
 
 ## [0.4.0] "Lucid" - 2026-08-31
 
@@ -248,7 +258,7 @@ payload's keys should read this entry.
 - Floors `sibyl-memory-client>=0.8.0`. The provider forwards a verdict the client
   produces; over an old client it would forward nothing.
 
-### Fixed (stage-3 ratification, 2026-08-31)
+### Fixed (verification pass, 2026-08-31)
 
 - **The one-vocabulary guard did not read `adapter.py`.** The guard scanned
   `provider.py` only, and `adapter.py` is the module that builds what a real
@@ -264,8 +274,7 @@ payload's keys should read this entry.
   drifted copy existed; this closes the hole, it does not fix a live defect.
 
 ### Added
-- **`search_multi_record` returns the cause by default** (branch
-  `lang-core-verdict`, 2026-08-31). The provider's own docstring already
+- **`search_multi_record` returns the cause by default** (2026-08-31). The provider's own docstring already
   DOCUMENTED this failure mode — "abstains ... the moment one significant query
   token is content-shaped and has zero corpus support anywhere", citing the
   Polish-language eval — while offering only an opt-in `diagnostics=` dict to see it.
@@ -288,7 +297,7 @@ payload's keys should read this entry.
   field of the full 88-query battery, `hermes-agent==0.19.0`, adapter still bound
   to the live ABC.
 
-### Fixed (independent adversarial review, 2026-08-31)
+### Fixed (independent review, 2026-08-31)
 - **`provider.search()` no longer calls `refine_zero`.** It looks like a
   user-facing surface and is not: the adapter's `prefetch()` calls it once for
   the whole query and then once per significant token, so the probe became a
@@ -309,7 +318,7 @@ payload's keys should read this entry.
   unpatched client in place. `provider.py`'s `search_multi_record` calls
   `multi_record_search` directly, so Hermes agents were exposed to the same
   default-path retrieval gaps as the MCP server. Picks up the client 0.7.0
-  N4/N5/N1'-diagnostics fixes.
+  retrieval and diagnostics fixes.
 
 ### Added
 - **`SibylMemoryProvider.search_multi_record` accepts an optional
@@ -319,16 +328,14 @@ payload's keys should read this entry.
   to see which token triggered an empty result instead of reading it as
   "nothing was stored." Additive; every existing caller is unaffected.
 
-## [0.3.15-fixes] - 2026-08-16 (folded into 0.3.16, no separate release)
-
-### Fixed
+### Fixed (2026-08-16)
 - **`sibyl_search` now answers question-shaped queries.** No adapter change — the
   tool routes through the provider's `search_multi_record` → the client's
   `multi_record_search`, which previously abstained (empty `results`) whenever a
   query carried a zero-support *function* word (`kiedy`, `gdzie`, `when`, `who`,
-  `how`, ...). The client's N1 fix classifies zero-df tokens so function-shaped
+  `how`, ...). The client's fix classifies zero-df tokens so function-shaped
   ones are dropped while content-shaped absences (injection / `rejected` class)
-  still abstain. Requires `sibyl-memory-client` with the N1/N2/N3 recall fixes
+  still abstain. Requires `sibyl-memory-client` with the recall fixes
   (0.6.x follow-up to 0.6.0). New coverage:
   `tests/test_sibyl_search_question_query_2026_08_16.py`.
 
@@ -366,12 +373,10 @@ payload's keys should read this entry.
 
 ## [0.3.13] - 2026-07-05
 
-Super-patch: recovery + adjudication of the remaining Fable 10-lens audit
-findings (`plugin-hardening-superpatch-plan-2026-07-05.md`).
+Hardening release: fixes for the remaining findings of a pre-publish audit.
 
 ### Fixed
-- **Tenant resolution used `tenant_id` alone, with no fallback (Contract
-  T).** `SibylMemoryProvider.__init__` resolved `resolved_tenant =
+- **Tenant resolution used `tenant_id` alone, with no fallback.** `SibylMemoryProvider.__init__` resolved `resolved_tenant =
   creds.tenant_id` directly, so an activated account whose credentials
   carried an `account_id` but a missing-or-empty `tenant_id` (a legacy
   schema-v1 credentials file, or a present-but-empty field) silently
@@ -384,7 +389,7 @@ findings (`plugin-hardening-superpatch-plan-2026-07-05.md`).
 - Metadata: `pyproject.toml`'s `Repository` URL pointed at a foreign,
   nonexistent `sibyllabs` (no hyphen) GitHub org that 404s. Corrected to
   `https://github.com/Sibyl-Labs/Sibyl-Memory`, the org Sibyl Labs
-  controls (R27).
+  controls.
 
 ## [0.3.12] - 2026-06-30
 
@@ -432,8 +437,8 @@ Pre-launch security audit hardening.
 
 ### Fixed
 
-- **Forgeable untrusted-context fence -> cross-session prompt injection (red-team
-  F1, 2026-06-17).** `prefetch()` fenced recalled memory with a FIXED literal close
+- **Forgeable untrusted-context fence -> cross-session prompt injection (security
+  review, 2026-06-17).** `prefetch()` fenced recalled memory with a FIXED literal close
   marker, so a stored body containing that marker could close the fence early and
   land injected text outside the "data only" block, where the host agent reads it
   as instructions. The fence now uses a per-call random NONCE in both markers (a
@@ -443,7 +448,7 @@ Pre-launch security audit hardening.
 
 ### Changed
 
-- **Per-hit body truncation in `sibyl_search` output (red-team F5, 2026-06-17).**
+- **Per-hit body truncation in `sibyl_search` output (security review, 2026-06-17).**
   Each hit body is capped at ~1.5k chars in the tool result (with a `truncated`
   flag) so one oversized stored value can't flood the agent's context. `recall` of
   a specific entity still returns the full body.
@@ -463,7 +468,7 @@ Pre-launch security audit hardening.
   non-fatal: the user-plugin write stands and the exact `sudo` copy command is
   printed. When the Hermes package can't be detected, a clear note tells the
   user to rerun with `--memory-provider-path`. A "discovery paths" summary now
-  prints which Hermes versions read which path. (big-patch PKG-1)
+  prints which Hermes versions read which path.
 
 ### Changed
 
@@ -471,7 +476,6 @@ Pre-launch security audit hardening.
   natural-language questions: "search matches stored TEXT, not meaning … for a
   multi-concept query, search each key term separately and merge." Closes the
   default-UX gap where an agent's first natural-language query returns 0 hits.
-  (big-patch PKG-10, priority #7 remainder)
 
 Regression tests: `tests/test_provider_path_2026_06_11.py` (6 cases).
 
@@ -484,7 +488,7 @@ Regression tests: `tests/test_provider_path_2026_06_11.py` (6 cases).
   payloads. The block is now wrapped in an explicit `[UNTRUSTED MEMORY CONTEXT
   BEGIN] ... [UNTRUSTED MEMORY CONTEXT END]` fence telling the host agent to treat
   it as reference data, never as instructions. The closing fence survives length
-  trimming. (security; beta report dor_alpha)
+  trimming. (security; beta report)
 
 ## [0.3.7] - 2026-05-30
 
@@ -497,7 +501,7 @@ Coerce-on-Adapter: pairs with the client 0.4.5 structured-body contract.
 
 Regression coverage: `tests/test_coa_coercion_2026_05_30.py` (12 tests). 52/52 suite green.
 
-### Changed (Terminal B — multi-record retrieval, tester Run15)
+### Changed (multi-record retrieval)
 
 - The `sibyl_search` agent tool now routes through `provider.search_multi_record`
   (new) → `multi_record_search` (client 0.4.5), so workflow queries spanning
@@ -563,10 +567,8 @@ local SQLite + FTS5 + tier-check pings.
 ## [0.3.4] - 2026-05-20
 
 Branding pass on the vendored banner. Matches the change shipped in
-`sibyl-memory-cli` v0.3.2 in the same session. Operator directive:
-"beneath the large SIBYL title it needs to say underneath the memory
-you can hold in your hand tagline, 'a Sibyl Labs LLC Product.
-Agentic Infrastructure and Memory Products' or something similar."
+`sibyl-memory-cli` v0.3.2: a Sibyl Labs attribution line under the
+tagline.
 
 ### Changed
 
@@ -580,11 +582,11 @@ Agentic Infrastructure and Memory Products' or something similar."
 ## [0.3.3] - 2026-05-20
 
 Visual identity pass on the `install-plugin` and `uninstall-plugin`
-commands. Operator directive: "typical app patterns: heavy menus on
-install window and initial setup, light on dashboards etc." The
-install-plugin command is THE second-most-ceremonial moment a user has
-with SIBYL (after `sibyl init`), so it gets the full SIBYL banner +
-sectioned numbered onboarding menu treatment.
+commands, following typical app patterns: heavy menus on install and
+initial setup, light on dashboards. The install-plugin command is the
+second-most-ceremonial moment a user has with Sibyl Memory (after
+`sibyl init`), so it gets the full SIBYL banner + sectioned numbered
+onboarding menu treatment.
 
 ### Added
 
@@ -650,7 +652,7 @@ Hermes-side fixes. Companion releases: `sibyl-memory-client` v0.3.3 (engine
   cross-tier search hits all four tiers, malformed FTS5 queries don't
   crash or leak, missing required args produce structured errors,
   shutdown sets the stop flag, sync_turn during shutdown skips cleanly.
-  Closes audit H1.
+
 
 ### Changed
 
@@ -662,52 +664,51 @@ Hermes-side fixes. Companion releases: `sibyl-memory-client` v0.3.3 (engine
   `MemoryClient.search()` in client v0.3.3.
 - `_hermes_plugin/adapter.py`. Hermes ABC + `tool_error` imports guarded
   with try/except. The bundled module imports cleanly off-Hermes with
-  no-op fallbacks. Audit P1.
+  no-op fallbacks.
 - `SibylAdapter.sync_turn` retries on transient failure (SQLITE_BUSY etc.)
   with exponential backoff up to 3 attempts. On final failure escalates
-  from DEBUG to WARNING log. Audit P-C1.
+  from DEBUG to WARNING log.
 - `SibylAdapter.shutdown` sets `_shutting_down` BEFORE joining the daemon
   thread. The worker checks the flag and exits cleanly without issuing
-  a slow cap-gate refresh. Audit P-C2.
+  a slow cap-gate refresh.
 - `SibylAdapter.handle_tool_call` exception path now returns exception
   class name only, not `str(e)`. Prevents echoing arg contents back to
-  the agent on backend errors. Audit SEC-10.
-- Adapter type hints converted to PEP 604 unions throughout. Audit N5.
+  the agent on backend errors.
+- Adapter type hints converted to PEP 604 unions throughout.
 - Default search/list limits extracted as named module constants
-  (`_DEFAULT_SEARCH_LIMIT=10`, `_DEFAULT_LIST_LIMIT=50`). Audit O1.
+  (`_DEFAULT_SEARCH_LIMIT=10`, `_DEFAULT_LIST_LIMIT=50`).
 - `RECALL_SCHEMA` description documents the row-wrapper return shape
-  explicitly. `SEARCH_SCHEMA` updated for cross-tier coverage. Audit H2.
+  explicitly. `SEARCH_SCHEMA` updated for cross-tier coverage.
 - `provider.py`. `recall`, `forget`, `archive`, `set_state`, `get_state`,
   `set_reference`, `get_reference` docstrings now include explicit
   `Raises:` sections and document return-shape asymmetry per tier.
-  Audit H2/H3.
-- `install_plugin.py` type hints converted to PEP 604 unions. Audit N5.
+- `install_plugin.py` type hints converted to PEP 604 unions.
 
 ### Security
 
-- **SEC-2**. `credentials.write_credentials` now creates files atomically
+- `credentials.write_credentials` now creates files atomically
   with mode 0o600 set at creation via `os.open(O_WRONLY|O_CREAT|O_EXCL|
   O_NOFOLLOW, 0o600)`. No more world-readable window between `write_text()`
   and `os.chmod()` syscalls.
-- **SEC-5**. `install-plugin --force` and `uninstall-plugin` refuse to
+- `install-plugin --force` and `uninstall-plugin` refuse to
   `shutil.rmtree` any directory that doesn't contain a recognized prior
   Sibyl install (`plugin.yaml` with `name: sibyl` in the first 10 lines).
   Prevents destruction of arbitrary user-writable trees from misconfigured
   HERMES_HOME. Both commands also refuse symlinked destinations.
-- **SEC-11**. `load_credentials` refuses to follow symlinks. Checks
+- `load_credentials` refuses to follow symlinks. Checks
   `is_symlink()` BEFORE `resolve()`.
-- **SEC-10**. `handle_tool_call` error response carries only the
+- `handle_tool_call` error response carries only the
   exception class name.
 
 ### Fixed
 
-- **H7**. `hermes_bound` property emits `DeprecationWarning` on read.
+- `hermes_bound` property emits `DeprecationWarning` on read.
   Always returns `False` (unchanged behavior). Slated for removal in v0.4.
-- `test_smoke.py`: schema_version assertion loosened to `>= 2` (audit T4);
+- `test_smoke.py`: schema_version assertion loosened to `>= 2`;
   hermes_bound assertion tightened from `isinstance(..., bool)` to
-  `is False` (audit T3).
+  `is False`.
 - README quickstart rewritten: removed the fictional
-  `Agent(memory=SibylMemoryProvider())` pattern (audit C5). Replaced
+  `Agent(memory=SibylMemoryProvider())` pattern. Replaced
   with the real flow: `pip install` → `install-plugin` → config.yaml.
 - README "Hermes contract" section rewritten: removed the false claim
   that `SibylMemoryProvider` inherits Hermes' ABC at import time.
@@ -843,7 +844,7 @@ no changes needed; the SDK surface is unchanged.
 
 ### Authorship
 
-Developed by SIBYL, Sibyl Labs LLC. Adapter contract derived from the
+Developed by Sibyl Labs LLC. Adapter contract derived from the
 installed hermes-agent 0.13.0 wheel source. `agent/memory_provider.py`
 (the ABC) and `plugins/memory/byterover/` (the idiomatic threading +
 schema pattern). MIT licensed.
@@ -854,12 +855,12 @@ Audit-remediation release. Companion to `sibyl-memory-client` v0.3.2.
 
 ### Changed
 
-- **T2-2. `SibylMemoryProvider.recall()` narrows exception handling to
+- **`SibylMemoryProvider.recall()` narrows exception handling to
   `NotFoundError` only**. Previously caught bare `Exception`, which
   swallowed `StorageError` / `TenantError` / `SchemaError` and returned
   `None` (the Hermes-style soft-miss). That masked real storage failures
-  end-to-end: exactly the silent-fallback pattern that caused the
-  production Bug 2 on the server side. Now `NotFoundError` returns
+  end-to-end: exactly the silent-fallback pattern behind an earlier
+  server-side bug. Now `NotFoundError` returns
   `None` as intended; every other exception propagates so the caller
   can surface or retry.
 
@@ -871,13 +872,13 @@ Audit-remediation release. Companion to `sibyl-memory-client` v0.3.2.
 ### Notes
 
 - Depends on `sibyl-memory-client>=0.3.2` to pick up the matching
-  `_check_fn` raise-on-HTTPError fix (T2-3). v0.3.1 still works; the
+  `_check_fn` raise-on-HTTPError fix. v0.3.1 still works; the
   changes are independent.
 
 ## [0.2.1] - 2026-05-16
 
 HMAC signed-credentials plumbing. Companion to `sibyl-memory-client`
-v0.3.1 and the api-sibyllabs credential-signer release.
+v0.3.1 and the server-side credential-signer release.
 
 ### Changed
 
@@ -927,9 +928,8 @@ Hard-cap plumbing release. Companion to `sibyl-memory-client` v0.3.0.
 
 ## [0.1.1] - 2026-05-15
 
-Patch: stripped placeholder GitHub URLs from pyproject metadata
-(operator scar: never write a link to a domain not verified to
-exist). No code changes.
+Patch: stripped placeholder GitHub URLs from pyproject metadata (they
+pointed at a link that was not verified to exist). No code changes.
 
 ## [0.1.0] - 2026-05-15
 

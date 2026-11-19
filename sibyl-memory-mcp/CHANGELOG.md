@@ -16,7 +16,7 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 - The MCP SDK logs at WARNING by default, so the per-request "Processing request of type ..."
   line no longer reaches the harness terminal. `FASTMCP_LOG_LEVEL` raises it again.
 
-### Fixed (review panel, 2026-11-14)
+### Fixed (review, 2026-11-14)
 - Dependency floor raised from `mcp>=1.0.0` to `mcp>=1.19.0`. The server passes `meta=` to
   `FastMCP.tool()`, which mcp first accepts in 1.19.0. Measured in throwaway environments: the
   test suite passes on mcp 1.19.0 (282 passed) and fails on 1.18.0 (TypeError: unexpected
@@ -33,7 +33,7 @@ All notable changes to `sibyl-memory-mcp` are recorded here. Format follows
 
 ## [0.4.0] - 2026-10-31
 
-One release: the paid tier R2 line, the shipped 0.9.0 family fixes it was built beside, the graph line (tiered retrieval and relations) and the release merge items below.
+One release: skill signals, the shipped 0.9.0 family fixes they were built beside, the graph line (tiered retrieval and relations) and the release merge items below.
 
 ### Release summary
 - New tools: `memory_link`, `memory_unlink`, `memory_neighbors`, `memory_get_reference`,
@@ -48,16 +48,16 @@ One release: the paid tier R2 line, the shipped 0.9.0 family fixes it was built 
   fails for it). On by default; `SIBYL_MEMORY_RECALL_HUBS=0` turns it off; tuning
   `SIBYL_MEMORY_RECALL_SMALL_HUB_MAX` / `SIBYL_MEMORY_RECALL_SIBLING_CAP` (60). Anyone who already
   has `source_of` edges sees the recall payload gain these keys.
-- The seven graph tools carry the R2 skill-signal wrapper too (`@_recorded`), so every memory tool
+- The seven graph tools carry the skill-signal wrapper too (`@_recorded`), so every memory tool
   records; the tool schemas the host sees are unchanged (fixture test against the graph merge).
 - The experimental tool-text variant from the bench line (`SIBYL_MEMORY_TOOLTEXT_V2`) is not shipped.
 - Usage count keeps the opt-out default (`SIBYL_MEMORY_TELEMETRY=0`); Hermes turned its own off.
 - Requires `sibyl-memory-client>=0.10.0`, `sibyl-memory-hermes>=0.6.0`.
 - Tests: `test_recall_hubs_2026_10_28.py` (8), `test_telemetry_default_2026_10_28.py` (2).
 
-### Paid tier R2: skill signals (built 2026-09-29)
+### Skill signals (built 2026-09-29)
 
-Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-client 0.10.0.
+Requires sibyl-memory-client 0.10.0.
 
 ### Added
 - Skill signals: every memory tool the server handles is one tool event (name and the 12-hex
@@ -72,12 +72,12 @@ Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-clie
   shape; the error path records; free, signed out and recording off record nothing; canaries
   (values, entity name, query, keys) never on disk; the listed tool schemas are unchanged.
 
-### Fixed (R2 check fixes, 2026-09-30)
-- R2F-2: in Claude Code with the sibyl Stop hook wired (`_save_is_hooked()`), the server records
+### Fixed (skill signals, 2026-09-30)
+- In Claude Code with the sibyl Stop hook wired (`_save_is_hooked()`), the server records
   no tool event: the hook's transcript slice already holds these calls and is the record of truth
   there, so each memory tool was counted twice. Other hosts, and Claude Code without the hook,
   record as before. Entity writes (the client's, as hashes) are unaffected.
-- R2F-N4 (README): the signals file keeps tool and MCP server names in plain text.
+- README: the signals file keeps tool and MCP server names in plain text.
 - Tests: +3 in `test_signals_capture_2026_09_29.py` (Claude Code with the hook: no tool event;
   Claude Code without it and another host: all eight recorded). 136 passed.
 
@@ -98,11 +98,11 @@ Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-clie
   reserve included), to an ESTIMATED token budget (`ceil(ascii/4) + non-ASCII chars`;
   default 22,000; `SIBYL_MEMORY_MCP_OUTPUT_TOKENS`, clamped 1,000-125,000) and a hard char
   cap: 190,000 when the session's client is Claude Code, else 45,000 (fallback for hosts
-  that do not honour the annotation); `SIBYL_MEMORY_MCP_OUTPUT_BUDGET` (chars, clamped
+  that do not honor the annotation); `SIBYL_MEMORY_MCP_OUTPUT_BUDGET` (chars, clamped
   4,000-500,000) overrides it. Replaces the 200,000 hits-only budget.
 - `memory_search` degrades in order, only when the result does not fit: hits with a
   `snippet` shorten their body prefix (500, 150) then omit it (`body_omitted: true`; `chars`
-  stays); snippets shorten to 250 chars re-centred on the first match marker; link
+  stays); snippets shorten to 250 chars re-centered on the first match marker; link
   summaries drop `sample` (`sample_omitted: true`, counts stay); only then trailing hits go.
   The verdict gains `degraded` (steps taken) and, on a drop, `truncated: n` and a `hint`.
 - `memory_list`: bodies shortened (500, 150), never omitted, then trailing rows dropped
@@ -113,14 +113,14 @@ Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-clie
   39,697 est. tokens -> 84,020 / 21,005, all 50 hits; JSON-heavy 42,287 -> 20,812 tokens;
   CJK 78,200 -> 12,143 tokens, all 50 hits. Search p50 unchanged within noise.
 
-### Changed - Edge identity (V1 panel theme A, 2026-10-22)
+### Changed - Edge identity (2026-10-22)
 - `memory_remember` returns `inherited_links: n` when it CREATED the entity and n edges
   were already keyed to its name (written for an earlier, forgotten entity of that
   name); those edges read `stale: true` until re-linked or unlinked.
 - `memory_link` returns `changed` (an existing edge's metadata updated or its endpoints
   re-stamped; an identical re-link is a no-op).
 
-### Fixed - V1 panel, graph read side (2026-10-22)
+### Fixed - graph read side (2026-10-22)
 - `memory_neighbors` returns the queried node with `exists` / `archived`, plus a `note`
   when it does not exist (exact, case-sensitive names) or is archived; edges carry
   `stale` (true when the edge was written for an earlier entity of that name; never for a
@@ -132,10 +132,10 @@ Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-clie
   Hit `links.sample` is one edge per relation (largest first, at most five) and `hub: true`
   marks a node above 500 edges in one direction.
 
-### Fixed - V1 panel (PANEL-SYNTHESIS B, D, E, G; 2026-10-22)
+### Fixed - graph line review (2026-10-22)
 - **Release train.** `version = "0.4.0"`, requires `sibyl-memory-client>=0.10.0` and
   `sibyl-memory-hermes>=0.6.0`. With the old floor a partial upgrade (new server, old
-  client) died at import (`count_tiers`; YARROW mcpskew). Floor-compat tests import the
+  client) died at import (`count_tiers`). Floor-compat tests import the
   server and the Hermes provider against the floor client tree, and show the 0.9.0
   client (git 708bd89) cannot serve this server.
 - `memory_search`: `verdict.name_matches` is recomputed when the output budget drops
@@ -149,14 +149,14 @@ Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-clie
   `surfaced_chars`; `offset` / `next_offset` stay in surfaced coordinates.
 - Argument-validation errors name the parameters at fault: `missing`, `unknown`,
   `invalid` (names only, identifier-shaped, at most 10 each; values are never echoed,
-  SEC-14 unchanged). `memory_link(from=..., to=...)` now says `from_node` / `to_node`.
+  as before). `memory_link(from=..., to=...)` now says `from_node` / `to_node`.
 - Tool text: `memory_forget` says links are kept and reconnect `stale` on re-create;
   `memory_set_reference` asks for `metadata.status`. README: upgrade-together note,
   delete row.
-- Tests: `test_v1_panel_fixes_2026_10_22.py` (13); reference-tool tests updated for
+- Tests: 13 new tests for these fixes; reference-tool tests updated for
   `surfaced_chars` and `edges_removed`.
 
-### Changed - Agent guidance (tiered-retrieval spec section 3, 2026-10-22)
+### Changed - Agent guidance (2026-10-22)
 - `memory_remember`'s description says which tier: an entity is a card (under about 1 KB)
   for a thing you will name again, a long text is a reference document, hubs keep
   membership in links written with the node. The module docstring's `memory_search` line
@@ -164,7 +164,7 @@ Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-clie
 - README: "Tools exposed" lists all 15 tools plus how agents should use them (write a card,
   link the documents, read top-down); "8 tools" -> 15 throughout.
 
-### Added - Tier-aware `memory_search` (tiered-retrieval spec 2.C, 2026-10-22)
+### Added - Tier-aware `memory_search` (2026-10-22)
 - `memory_search(query, limit=10, tiers=None, scope="all", with_links=True)`.
   `scope="graph"` runs the gated engine over entities + state only (the "find
   the hub" call); `scope` with `tiers` -> `VALIDATION_ERROR` (tiers is the raw,
@@ -181,7 +181,7 @@ Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-clie
   `scope="graph"` -> `memory_neighbors` -> `memory_get_reference`).
 - Tests: `test_tier_search_tool_2026_10_22.py` (8).
 
-### Added - Reference tier tools (tiered-retrieval spec 2.A, 2026-10-22)
+### Added - Reference tier tools (2026-10-22)
 - Four tools (8 -> 12): `memory_set_reference(key, body, metadata)` -> `{ok, key, chars}`;
   `memory_get_reference(key, offset=0, max_chars=20000)` -> fenced `{ok, key, body, offset,
   chars, next_offset, metadata, updated_at}`, `max_chars` clamped to 1,000-50,000, unknown key
@@ -199,14 +199,14 @@ Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-clie
   gate answers before any argument check on every new tool; reads stay allowed under the
   computer-limit read-only policy and the two writes are refused there.
 
-### Added - Relations tools (tiered-retrieval spec 2.B)
+### Added - Relations tools (2026-10-22)
 - `memory_link(from_node, to_node, relation, metadata=None)` -> `{ok, id, created}`;
   `memory_unlink(from_node, to_node, relation=None)` -> `{ok, removed}`;
   `memory_neighbors(node, relation, direction, tier, category, limit, cursor, preview)` ->
   fenced `{ok, node, edges, count, degree, next_cursor}`. Parameters are `from_node` /
   `to_node` because `from` is not a legal Python parameter name. NodeRefs are JSON objects;
   a JSON string or a bare `{category, name}` entity is accepted. Results are fence-scrubbed
-  (MH-1) and held to the total output budget (MH-2); when the budget drops edges,
+  and held to the total output budget; when the budget drops edges,
   `next_cursor` resumes right after the last returned edge. All three are gated like every
   memory tool. With the reference tools the server lists 15 tools (module docstring updated).
 - `memory_remember(..., links=None)`: the entity and its outgoing edges in one transaction
@@ -216,17 +216,17 @@ Spec plugin-paid-tier-r2-spec-2026-09-29 section 1.2. Requires sibyl-memory-clie
   endpoints) as `memory_remember`; a bad edge rolls back the document write too. The result
   carries `links` (edge count) when edges were given.
 
-### Changed - search hit shape (tiered-retrieval spec 2.D, 2026-10-22)
+### Changed - search hit shape (2026-10-22)
 - `memory_search` hits carry `chars` (the full body length), so an agent can
   tell whether the 1,500-char body is the whole thing.
-- The hit `snippet` (now a 40-token match-centred window from the client) has
+- The hit `snippet` (now a 40-token match-centered window from the client) has
   its own 600-char cap.
 
-## [0.3.0] - Unreleased
+## [0.3.0] - 2026-10-14
 
-Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.2).
+Account-gated release.
 
-### 2026-10-14 - Pre-release cleanup
+### Pre-release cleanup
 - README and package docstring: wiring now leads with `sibyl setup claude-code` and
   `sibyl setup codex`. The manual Codex snippet is the `[mcp_servers.sibyl_memory]` table that
   Codex actually reads (the old `[[mcp_servers]]` snippet is not a form Codex accepts), and the manual
@@ -243,7 +243,7 @@ Account-gated release (spec account-gated-plugin-spec-2026-09-27, 3.2).
   naming testers or internal QA rounds. Text only; no code changed.
 
 ### Added (agent handoff messages, 2026-10-06)
-Spec agent-handoff-messages-spec-2026-10-03 (rows M1 to M7; needs sibyl-memory-client 0.9.0).
+Needs sibyl-memory-client 0.9.0.
 - The handoff envelopes (`ACCOUNT_REQUIRED`, `CAP_EXCEEDED`, `TIER_GATED`,
   `TIER_VERIFICATION_FAILED`) gain `next` (a command, `done`, `retry` or `retry in N minutes`)
   and `human_action` (a sentence or `null`; the key is always present), read from the client
@@ -254,21 +254,21 @@ Spec agent-handoff-messages-spec-2026-10-03 (rows M1 to M7; needs sibyl-memory-c
 - Tests: `tests/test_handoff_2026_10_03.py` (+24, including an exact nine-key assertion on the
   account envelope). Suite: 151 passed.
 
-### Added (paid tier R1, 2026-09-29, R1B-3)
+### Added (automatic save, 2026-09-29)
 - Every tool call counts active time; on Pro a successful result may carry the automatic-save
   request (`Sibyl Memory Pro: about 60 minutes of work since the last save. Run the save
   procedure now in headless mode ...`), once per interval, never on an error. Order: account
   notice, save request, skill-proposals line. Inside Claude Code (initialize `clientInfo.name`)
   with our Stop hook wired, the hook carries the request instead (both host spellings are
-  Claude Code: `claude code`, sent by Claude Code 2.1.285, and `claude-code`; R1B-6 names them in
-  one constant and tests both). A one-time tier-change line.
+  Claude Code: `claude code`, sent by Claude Code 2.1.285, and `claude-code`; both are named in
+  one constant and tested). A one-time tier-change line.
 - The process-start thread runs the local learner after the debloat plan (Pro).
 
-### Added (save and debloat, 2026-09-27, SD-3)
-Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unchanged).
+### Added (save and debloat, 2026-09-27)
+Same coordinated release; version unchanged.
 - Prompts `save` (mode run, preview, setup, headless, curate) and `debloat` (mode measure,
   trim): the procedure text, the installed `~/.sibyl-memory/skills/` file when present (a
-  person's edit is honoured), else the shipped text. In Claude Code: `/mcp__sibyl-memory__save`.
+  person's edit is honored), else the shipped text. In Claude Code: `/mcp__sibyl-memory__save`.
 - Resources `sibyl://skills/SAVE.md`, `sibyl://skills/DEBLOAT.md` (text/markdown),
   `sibyl://skills/manifest` and `sibyl://context/weight` (application/json, stat only).
 - Prompts and resources are never gated; the tools the procedures call are gated as before.
@@ -282,11 +282,11 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
 - `test_lifecycle_prompts_2026_09_27.py` 8 (prompts, validation, resources with a read spy,
   no-credentials access, notice precedence and throttle, Pro start report, free never applies).
 
-### Fixed (independent check of save and debloat, 2026-09-27, SD-7)
+### Fixed (save and debloat, 2026-09-27)
 - The server enables write counting on every client it builds (`enable_lifecycle_counting`); the
   SDK alone no longer counts. Automatic trims are matched per file path (client).
 
-### Changed (independent check fix batch, 2026-09-27, GATE-15)
+### Changed (account gate, 2026-09-27)
 - The first tool result after the client moves pre-sign-in rows into the
   account carries `notice`: "N memories written before sign-in were moved
   into your account on this computer." (once; no code change here, the client
@@ -299,7 +299,7 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
   by a rebuilt server; fails before) and no notice without pre-sign-in rows
   (a guard, passes before and after).
 
-### Tests (gate fix before the independent check, 2026-09-27)
+### Tests (account gate, 2026-09-27)
 - A signed-in server lists rows a pre-account install wrote under the default
   tenant (client 0.9.0 adopts them on the first gated call); credentials with
   no entitlement and the api unreachable answer `ACCOUNT_REQUIRED` with reason
@@ -362,7 +362,7 @@ Spec plugin-save-debloat-spec-2026-09-27 (same coordinated release; version unch
 
 ### Fixed
 - User-facing copy corrected from 2 MB to 5 MB to match the free-tier cap
-  raised in `sibyl-memory-client` 0.5.0. No behaviour change.
+  raised in `sibyl-memory-client` 0.5.0. No behavior change.
 
 ## [0.2.0] "Lucid" - 2026-08-31
 
@@ -384,8 +384,7 @@ meaning.
   reach inside it. Rebuild the image to pick this up.
 
 ### Added
-- **`memory_search` responses now carry a `verdict`** (branch
-  `lang-core-verdict`, 2026-08-31). Until this release `server.py` called
+- **`memory_search` responses now carry a `verdict`** (2026-08-31). Until this release `server.py` called
   `multi_record_search(client, query, limit=safe_limit)` with **no
   `diagnostics=` kwarg**, so the SDK's optional explanation channel — which had
   existed since 0.1.14 — was unreachable from the tool an agent actually calls.
@@ -397,7 +396,7 @@ meaning.
   with `recovery` and a plain-language `explain`.
 - The verdict passes through `_scrub_value` and sits beside the fenced payload.
   It carries numbers, enum values and the caller's own query tokens — never
-  stored-record text — so it composes with the MH-1 fence and the MH-2 output
+  stored-record text — so it composes with the injection fence and the output
   budget rather than becoming a second, unfenced channel out of the store. It is
   reconciled against `count` after `_bound_hits`, so the two can never disagree.
 - **The `_MIN_QUERY_LEN` short-query guard names a cause too.** It was the one
@@ -418,10 +417,10 @@ meaning.
   exactly once per request.
 
 ### Unchanged
-- Search behaviour is untouched. The MCP stdio path is byte-identical to
+- Search behavior is untouched. The MCP stdio path is byte-identical to
   `ef98f5b` on every quality field of the full multilingual battery.
 
-### Fixed (independent adversarial review, 2026-08-31)
+### Fixed (independent review, 2026-08-31)
 - **The empty-store probe ran twice on the default path** (8 `COUNT(*)` per zero
   where the pre-contract build took 1): the engine resolves `EMPTY_STORE` at its
   own single exit, and this tool called `refine_zero` on top. `refine_zero` now
@@ -444,7 +443,7 @@ meaning.
   place, so an MCP-only install (a self-built Docker image, a `pipx`-isolated
   install, anything not going through `sibyl-memory-cli`'s tighter floor)
   could sit on unpatched retrieval code indefinitely while reporting a clean
-  install. Picks up the client 0.7.0 N4/N5/N1'-diagnostics fixes.
+  install. Picks up the client 0.7.0 retrieval and diagnostics fixes.
 - **`memory_search` docstring documents the default-path abstention
   contract.** No behavior change — the untiered path has always been able to
   return `count: 0` on an ordinary paraphrase carrying one unsupported content
@@ -452,23 +451,32 @@ meaning.
   explicitly and tells a caller to retry with `tiers="entity"` (or the
   expected tier) when a query that should match returns nothing.
 
-## [0.1.13-fixes] - 2026-08-16 (folded into 0.1.13, no separate release)
+## [0.1.13] - 2026-08-06
 
-### Fixed
+### Changed
+- **Dependency floor raised to `sibyl-memory-client>=0.5.0`** to pick up
+  multi-language search (schema v4). The untiered `memory_search` path (which
+  routes through the client's `multi_record` linker + `MemoryClient.search`) now
+  resolves non-ASCII / non-Latin / CJK / Thai / compound-token queries that
+  previously returned nothing — a 100-language write+query sweep went from 21/100
+  to 100/100. No `server.py` code change: the improvement is entirely in the
+  client the MCP server calls. See `sibyl-memory-client` 0.5.0.
+
+### Fixed (2026-08-16, no separate release)
 - **Default `memory_search` path (tiers omitted) now answers question-shaped
   queries.** No `server.py` change — the untiered path routes through the client's
   `multi_record_search`, which previously abstained (`count == 0`) whenever a
   query carried a zero-support *function* word (`kiedy`, `gdzie`, `when`, `who`,
-  `how`, ...). The client's N1 fix classifies zero-df tokens so function-shaped
+  `how`, ...). The client's fix classifies zero-df tokens so function-shaped
   ones are dropped while content-shaped absences (injection / `rejected` class)
   still abstain. Default-path recall on a PL/EN question battery went **1/8 →
   8/8**; the tool-boundary abstention contract is unchanged (`co0001
   nonexistenttokenzzzq report` and `was the co0001 order rejected` still return
-  `count == 0`). Requires `sibyl-memory-client` with the N1/N2/N3 recall fixes
+  `count == 0`). Requires `sibyl-memory-client` with the recall fixes
   (0.6.x follow-up to 0.6.0). New coverage:
   `tests/test_default_path_recall_2026_08_16.py`.
 
-### Added
+### Added (2026-08-16, no separate release)
 - **First-party Docker packaging (repo-root `Dockerfile`,
   `docker-compose.yml`, `.dockerignore`) and a README "Run with Docker"
   section.** Non-root user, pinned slim Python base, no secrets baked in,
@@ -483,45 +491,33 @@ meaning.
   to pick up a newer client; a running or previously-built container does not
   update itself.
 
-## [0.1.13] - 2026-08-06
-
-### Changed
-- **Dependency floor raised to `sibyl-memory-client>=0.5.0`** to pick up
-  multi-language search (schema v4). The untiered `memory_search` path (which
-  routes through the client's `multi_record` linker + `MemoryClient.search`) now
-  resolves non-ASCII / non-Latin / CJK / Thai / compound-token queries that
-  previously returned nothing — a 100-language write+query sweep went from 21/100
-  to 100/100. No `server.py` code change: the improvement is entirely in the
-  client the MCP server calls. See `sibyl-memory-client` 0.5.0.
-
 ## [0.1.12] - 2026-07-05
 
-Super-patch: recovery + adjudication of the remaining Fable 10-lens audit
-findings (`plugin-hardening-superpatch-plan-2026-07-05.md`).
+Hardening release: fixes for the remaining findings of a pre-publish audit.
 
 ### Fixed
 - **Client-cache rebuild dropped the old `MemoryClient` without closing it
-  (R26).** `_open_client` rebuilds the cached client on a `credentials.json`
+** `_open_client` rebuilds the cached client on a `credentials.json`
   mtime change (or post-init/post-logout appearance/disappearance), but
   discarded the previous client directly, stranding every per-thread SQLite
   connection it had registered. Repeated credential-mtime changes
   accumulated open connections. The old client's storage is now closed
   (best-effort — a missing/failing `close()` never blocks serving the newly
   built client) before the cache is swapped.
-- **`~/.sibyl-memory` could be created world-readable on first touch (R30).**
+- **`~/.sibyl-memory` could be created world-readable on first touch.**
   `_build_client` used a bare `mkdir(parents=True, exist_ok=True)` with no
   mode; on an already-existing directory `mkdir`'s mode argument is a no-op
   too. The memory directory is now created (and, for the pre-existing case,
   explicitly `chmod`'d) at `0o700`, mirroring the CLI's credential-writing
   path and the client `Storage` hardening.
-- **`memory_search` unknown-tier error had no `code` field (R31).** An
+- **`memory_search` unknown-tier error had no `code` field.** An
   unknown value in the `tiers` CSV param raised a builtin `ValueError`,
   which fell through `_err`'s typed exception chain and produced an error
   envelope with no `code` — inconsistent with every other tool error. It now
   raises the SDK's `ValidationError`, mapped to `code: "VALIDATION_ERROR"`;
   `_err` also gained a fallback `payload.setdefault("code", "ERROR")` so no
   future untyped exception can produce a code-less envelope again.
-- **Tenant resolution had no `account_id` fallback rung (Contract T).**
+- **Tenant resolution had no `account_id` fallback rung.**
   `_build_client` resolved `tenant_id=creds.get("tenant_id") or
   DEFAULT_TENANT` directly, so an activated account with a missing/empty
   `tenant_id` (legacy credentials, or a present-but-empty field) fell back
@@ -532,10 +528,10 @@ findings (`plugin-hardening-superpatch-plan-2026-07-05.md`).
 ### Metadata
 - `pyproject.toml`'s `Repository` URL pointed at a foreign, nonexistent
   `sibyllabs` (no hyphen) GitHub org that 404s in live PyPI metadata.
-  Corrected to `https://github.com/Sibyl-Labs/Sibyl-Memory` (R27).
+  Corrected to `https://github.com/Sibyl-Labs/Sibyl-Memory`.
 - Third-party dependency `mcp` was pinned `>=1.0.0` with no upper bound, so
   a fresh install could auto-pip a future major with breaking changes.
-  Capped to `mcp>=1.0.0,<2` (R29). Internal `sibyl-memory-*` pins are
+  Capped to `mcp>=1.0.0,<2`. Internal `sibyl-memory-*` pins are
   unaffected (stay `>=`, vendor-controlled names).
 
 ## [0.1.11] - 2026-06-25
@@ -561,7 +557,7 @@ Pre-launch security audit hardening.
   the handler-layer errors use, so a fraction of malformed inputs broke a caller's
   JSON parse. The argument-validation guard now emits the same JSON envelope
   (`code: "VALIDATION_ERROR"`); the offending value is still never echoed back
-  (SEC-14). Test: `tests/test_arg_validation_leak_2026_06_02.py`.
+  Test: `tests/test_arg_validation_leak_2026_06_02.py`.
 
 ## [0.1.9] - 2026-06-11
 
@@ -570,7 +566,7 @@ Pre-launch security audit hardening.
 - **`memory_search` silently returned 0 hits on tier typos.** The `tiers` CSV
   param is now validated against the `entity, state, reference, journal`
   whitelist; unknown values (e.g. `entities`) raise a clear `ToolError`
-  (`isError=true`) instead of an empty ok result. (bugflow)
+  (`isError=true`) instead of an empty ok result.
 
 ## [0.1.8] - 2026-06-06
 
@@ -595,7 +591,7 @@ Pre-launch security audit hardening.
   structured payload encoded as JSON, so callers both (a) see `isError: true`
   and (b) can still parse `error`/`code`/`recovery`/`upgrade_url` from the
   message. No tool signatures change; only the error envelope is corrected.
-  Regression coverage: `tests/test_err_toolerror_2026_06_05.py`. (bugflow)
+  Regression coverage: `tests/test_err_toolerror_2026_06_05.py`.
 
 ## [0.1.6] - 2026-06-04
 
@@ -608,15 +604,14 @@ Pre-launch security audit hardening.
   This resolves journal-entry domination of generic-keyword queries at scale
   (an external contributor, 2026-06-02): journal entries previously accounted for 50-80%+ of hits
   on shared terms like "Project"/"Research"/"Budget", outranking relevant entities.
-  Omit `tiers` (or pass null) for the existing all-tier multi-record behaviour. Bumped
-  `sibyl-memory-client>=0.4.8` to pull the prefix-mode FTS5 crash fix. Found + verified
-  by bugflow; operator-approved.
+  Omit `tiers` (or pass null) for the existing all-tier multi-record behavior. Bumped
+  `sibyl-memory-client>=0.4.8` to pull the prefix-mode FTS5 crash fix.
 
 ## [0.1.5] - 2026-06-02
 
 ### Security
 
-- **Argument-validation secret-leak guard (SEC-14).** When a caller passed a
+- **Argument-validation secret-leak guard.** When a caller passed a
   type-invalid argument value (e.g. `limit="sk-live-..."`), the MCP SDK's
   `Tool.run` wrapped the pydantic `ValidationError` as a `ToolError` whose
   message echoed the raw `input_value` back to the wire as an error result, so a
@@ -642,7 +637,7 @@ Coerce-on-Adapter: pairs with the client 0.4.5 structured-body contract.
 
 Regression coverage: `tests/test_coa_coercion_2026_05_30.py` (12 tests, real `call_tool` path). 14/14 suite green.
 
-### Changed (Terminal B — multi-record retrieval, tester Run15)
+### Changed (multi-record retrieval)
 
 - **`memory_search` now routes through `multi_record_search`** (new in
   `sibyl-memory-client` 0.4.5) instead of a single `client.search()` pass.
@@ -681,12 +676,12 @@ raised `ImportError: cannot import name 'CapExceededError' from
 'sibyl_memory_client.exceptions'`. Reported by an external tester (independent
 third-party install test) after the v0.3.3 family ship.
 The 93/93 audit tests passed only because they ran in-tree; there was no
-clean-venv install smoke test in CI. Gap closed by the companion
-`tmp-test/clean-venv-install-smoke.sh` guardrail.
+clean-venv install smoke test in CI. Gap closed by a clean-venv install smoke
+test.
 
 ### Fixed
 
-- **external-test BLOCKER**. `sibyl-memory-mcp` now imports cleanly in a fresh
+- **Import failure in a fresh venv**. `sibyl-memory-mcp` now imports cleanly in a fresh
   venv. The fix lives in the companion `sibyl-memory-client` v0.4.0 which
   exports `CapExceededError` and `TierVerificationError` from the
   `.exceptions` submodule path. This release bumps the client pin to
@@ -718,25 +713,25 @@ Companion releases: `sibyl-memory-client` v0.3.3, `sibyl-memory-hermes` v0.3.1,
 
 ### Fixed
 
-- **C1**. `memory_record_event` now calls the SDK's actual signature
+- `memory_record_event` now calls the SDK's actual signature
   ``client.write_event(*, evaluated, acted, forward, extra, ts)``. The
   previous call ``client.write_event(kind, body, category=category,
   name=name)`` referenced parameters that don't exist and raised
   TypeError on every invocation. The high-level (kind, body, category,
   name) contract is preserved by translating: kind+body → `acted={kind,
   body}`, optional category+name → `extra={category, name}`.
-- **H2**. `memory_get_state` now unpacks the SDK's `{body, updated_at}`
+- `memory_get_state` now unpacks the SDK's `{body, updated_at}`
   return shape into a flat response: `{ok, key, body: <user payload>,
   updated_at: <iso ts>}`. Previously returned `body` containing the full
   wrapper, so "body" meant two different things at different nesting
   depths in the same response.
-- **N3**. `memory_list` `category` parameter is now Optional. Matches
+- `memory_list` `category` parameter is now Optional. Matches
   the SDK + Hermes adapter behavior: pass it to filter, omit to list
   across all categories.
 
 ### Changed
 
-- **P-H1**. `MemoryClient` is cached at module scope. Previously rebuilt
+- `MemoryClient` is cached at module scope. Previously rebuilt
   on every tool call (reading schema.sql from disk + bootstrapping FTS5
   vtables: 10-50 ms per call). Cache invalidates on credentials.json
   mtime change so `sibyl upgrade` is still picked up without a server
@@ -752,7 +747,7 @@ Companion releases: `sibyl-memory-client` v0.3.3, `sibyl-memory-hermes` v0.3.1,
 
 ### Security
 
-- **SEC-4 / SEC-11**. `_load_credentials` refuses to follow symlinks.
+- `_load_credentials` refuses to follow symlinks.
   Previously called `read_text()` on the resolved path, which would
   silently follow.
 
@@ -763,10 +758,9 @@ Companion releases: `sibyl-memory-client` v0.3.3, `sibyl-memory-hermes` v0.3.1,
 
 ## [0.1.0] - 2026-05-17
 
-Initial release. Operator question 2026-05-17: "currently i'm only seeing
-instructions for Hermes agent, how could this be used with claude code or
-codex?": answer: an MCP server wrapping `MemoryClient.local()`. Both Claude
-Code and Codex CLI consume MCP, so a single server unlocks both.
+Initial release: an MCP server wrapping `MemoryClient.local()`, so Sibyl
+Memory works beyond Hermes. Both Claude Code and Codex CLI consume MCP, so a
+single server serves both.
 
 ### Added
 

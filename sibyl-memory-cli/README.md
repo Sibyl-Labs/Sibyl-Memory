@@ -10,7 +10,7 @@ Sibyl Memory runs on Linux, macOS (Apple Silicon and Intel), and Windows through
 
 This pulls in `sibyl-memory-client` (the local SDK) and `sibyl-memory-hermes` (the Hermes provider) automatically.
 
-**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.2, hermes 0.6.0, cli 0.7.0), and each one requires the client of its own release. Upgrade them together, never one alone:
+**Upgrading.** The packages ship as one release train (client 0.10.0, mcp 0.4.2, hermes 0.6.1, cli 0.7.0), and each one requires the client of its own release. Upgrade them together, never one alone:
 
 ```bash
 sibyl update --apply
@@ -71,6 +71,9 @@ sibyl update --apply          Update the installed Sibyl packages in place (pip 
                               included; never installs one you do not have. This is the
                               canonical way to update the plugin, distinct from `sibyl upgrade` (which is
                               the tier/billing flow, not a package update).
+sibyl doctor                  End-to-end check: start the MCP server, list tools, save a marked test
+                              memory, recall it, delete it; checks each agent's wiring (--fix repairs
+                              stale paths).
 sibyl health                  Run the SibylMemoryProvider self-check (schema version, DB path, tenant,
                               entitlement state, pinned key ids).
 sibyl logout                  Sign this computer out: revoke it on the server, remove credentials.json and
@@ -135,7 +138,7 @@ two paths · pick whichever fits your device
 
 The browser opens the sign-in page. Sign in with your email and the code shown in the terminal, or with a desktop wallet (when the server offers it, a third path sends a small USDC amount from a mobile wallet). If you already have an account, `sibyl init` also prints an approve link on `account.sibyllabs.org`: open it on a computer that is already signed in and type the same code. The terminal picks up the moment the binding lands. Credentials are written to `~/.sibyl-memory/credentials.json` at mode 0600, and this computer's signed access file to `~/.sibyl-memory/entitlement.json` (0600).
 
-An account is required for agents to use memory (MCP, Hermes, LangGraph, the SDK). `sibyl init` is the sign-in; there is no separate login command. The access pass is re-checked about once a day (and at the end of a paid plan) and keeps working offline for up to 14 days. Memory written on this computer before you signed in moves into your account at that first sign-in (on this computer only); if the store has held another account, `sibyl init` leaves it and `sibyl memory adopt` asks first.
+An account is required for agents to use memory (MCP, Hermes, LangGraph, the SDK). `sibyl init` is the sign-in; there is no separate login command. The access pass is re-checked about once an hour on Free and about once a day on Pro (and at the end of a paid plan) and keeps working offline for up to 14 days. Memory written on this computer before you signed in moves into your account at that first sign-in (on this computer only); if the store has held another account, `sibyl init` leaves it and `sibyl memory adopt` asks first.
 
 ## Email
 
@@ -189,7 +192,7 @@ L O C A L
   DB size          1,247,300 bytes (1.19 MB · 23.8% of free cap)
 
 A C C E S S
-  Access           active · re-checks in 24h
+  Access           active · re-checks in 1h
   Tier cache       free (checked 2026-05-16 18:12 UTC)
 
 S E R V E R
